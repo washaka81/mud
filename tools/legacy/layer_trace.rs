@@ -5,7 +5,7 @@ use forge_llm::asm::dequantize_q4_0_row;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    let model_data = GGUFModel::load("models/qwen2.5-coder-1.5b-instruct-q4_0.gguf")?;
+    let model_data = GGUFModel::load("models/MUD2.5-coder-1.5b-instruct-q4_0.gguf")?;
     let inf = ForgeInference::new(&model_data, Arc::new(VulkanContext::new()?))?;
 
     let tokens = inf.tokenizer.encode("def");

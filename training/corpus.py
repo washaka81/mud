@@ -89,7 +89,7 @@ CORPUS = [
     "cómo funciona Forge", "how does Forge work",
     "qué puedes hacer", "what can you do",
     "cuál es tu propósito", "what is your purpose",
-    "cómo te llamas", "what is your name",
+    "cómo te MUDs", "what is your name",
     "de dónde eres", "where are you from",
     "qué idiomas hablas", "what languages do you speak",
     "eres inteligente", "are you smart",

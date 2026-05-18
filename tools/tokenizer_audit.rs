@@ -1,4 +1,4 @@
-use forge_llm::ai::MudFile;
+use forge_llm::mud::MudFile;
 use forge_llm::model::tokenizer::Tokenizer;
 use std::env;
 
@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("=== MUD Tokenizer Audit ===");
     
-    let model_path = "models/core_skills.ai";
+    let model_path = "models/core_skills.mud";
     println!("Cargando vocabulario del modelo MUD: {}...", model_path);
     
     let mud_file = MudFile::load(model_path)?;

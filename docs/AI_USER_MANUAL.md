@@ -53,7 +53,7 @@ MUD can be re-trained to absorb new books into its weights:
 ---
 
 ## 5. Key File Structure
-- `models/core_skills.ai`: The current ternary brain.
+- `models/core_skills.mud`: The current ternary brain.
 - `models/knowledge.db`: Persistent database of all ingested books.
 - `src/vulkan/`: GPU kernel source code.
 - `training/`: Model evolution and Kaggle sync scripts.

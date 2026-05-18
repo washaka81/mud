@@ -31,7 +31,7 @@ def pack_ternary_stochastic(tensor_shape):
     return np.array(all_packed, dtype=np.uint32).tobytes()
 
 print(f"📦 Constructing High-Contrast Brain (Gaussian Embeddings)...")
-with open('models/core_skills.ai', 'wb') as f:
+with open('models/core_skills.mud', 'wb') as f:
     f.write(b'MUD\x01')
     meta = {'hidden_size': str(HIDDEN), 'num_experts': str(EXPERTS), 'num_layers': '1', 'tokenizer.tokens': '\n'.join(vocab)}
     f.write(struct.pack('<I', len(meta)))

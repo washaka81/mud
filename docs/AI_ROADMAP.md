@@ -2,7 +2,7 @@
 
 ## Phase 1: Ternary Foundation (Completed)
 - [x] Implementation of BitNet 1.58b ternary kernels (AVX2).
-- [x] Proprietary `.ai` format with 16x compression.
+- [x] Proprietary `.mud` format with 16x compression.
 - [x] Basic Tokenizer integration.
 
 ## Phase 2: Modular Intelligence (Completed)
@@ -11,7 +11,7 @@
 - [x] **Knowledge Graph (MKG):** Neural bridges and PageRank relevance.
 - [x] **Persistent Store:** SQLite-backed long-term memory.
 - [x] **Professional CLI:** Dashboard footer with real-time hardware telemetry.
-- [x] **Bilingual Training:** High-scale Kaggle/Unsloth pipeline (EN/ES-LATAM).
+- [x] **Bilingual Training:** High-scale Kaggle/Trainer pipeline (EN/ES-LATAM).
 - [x] **Transformer Core:** Multi-Head Attention, RoPE, and Sliding Window KV-Cache.
 - [x] **Intelligent Sampling:** Top-K, Top-P, and Temperature sampling in Rust.
 

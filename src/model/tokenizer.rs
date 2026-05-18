@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::gguf::{GGUFModel, MetadataValue};
 
 /// Implementation of a BPE (Byte Pair Encoding) tokenizer.
-/// Compatible with GPT-2, Qwen, and LLaMA style tokenization.
+/// Compatible with Transformer-Base, Code, and Core style tokenization.
 pub struct Tokenizer {
     /// Mapping from string token to its ID.
     pub vocab: HashMap<String, u32>,
@@ -66,7 +66,7 @@ impl Tokenizer {
         }
 
         let mut special_tokens = HashMap::new();
-        // Identify special tokens based on standard Qwen naming patterns
+        // Identify special tokens based on standard Code naming patterns
         for (i, token) in id_to_token.iter().enumerate() {
             if token.starts_with("<|") && token.ends_with("|>") {
                 special_tokens.insert(token.clone(), i as u32);

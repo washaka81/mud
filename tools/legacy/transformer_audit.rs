@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/qwen2.5-coder-1.5b-instruct-q4_0.gguf";
+    let model_path = "models/MUD2.5-coder-1.5b-instruct-q4_0.gguf";
     if !std::path::Path::new(model_path).exists() {
         println!("Error: Modelo no encontrado en {}. Descárgalo primero.", model_path);
         return Ok(());

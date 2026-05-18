@@ -3,7 +3,7 @@ use forge_llm::asm::BlockQ4_0;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/qwen2.5-coder-1.5b-instruct-q4_0.gguf";
+    let model_path = "models/MUD2.5-coder-1.5b-instruct-q4_0.gguf";
     if !Path::new(model_path).exists() { return Ok(()); }
 
     println!("=== Forge LLM Model Integrity Audit ===");

@@ -4,7 +4,7 @@ use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    let model_data = GGUFModel::load("models/qwen2.5-coder-1.5b-instruct-q4_0.gguf")?;
+    let model_data = GGUFModel::load("models/MUD2.5-coder-1.5b-instruct-q4_0.gguf")?;
     let mut inf = ForgeInference::new(&model_data, Arc::new(VulkanContext::new()?))?;
 
     let prompt = "def fast_fibonacci(n):";

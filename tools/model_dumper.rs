@@ -1,9 +1,9 @@
-use forge_llm::ai::MudFile;
+use forge_llm::mud::MudFile;
 use std::fs::File;
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/core_skills.ai";
+    let model_path = "models/core_skills.mud";
     println!("Dumping MUD model metadata and skill info from: {}", model_path);
     
     let model = MudFile::load(model_path)?;

@@ -1,7 +1,7 @@
 use forge_llm::gguf::GGUFModel;
 
 fn main() -> anyhow::Result<()> {
-    let model = GGUFModel::load("models/qwen2.5-coder-1.5b-instruct-q4_0.gguf")?;
+    let model = GGUFModel::load("models/MUD2.5-coder-1.5b-instruct-q4_0.gguf")?;
     let t = model.tensors.get("output.weight").unwrap();
     let ptr = t.data_ptr as *const u8;
     

@@ -2,7 +2,7 @@ use forge_llm::gguf::GGUFModel;
 use std::collections::BTreeMap;
 
 fn main() -> anyhow::Result<()> {
-    let model = GGUFModel::load("models/qwen2.5-coder-1.5b-instruct-q4_0.gguf")?;
+    let model = GGUFModel::load("models/MUD2.5-coder-1.5b-instruct-q4_0.gguf")?;
     
     let mut map = BTreeMap::new();
     for (name, t) in &model.tensors {

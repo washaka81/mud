@@ -4,7 +4,7 @@ use std::io::Write;
 
 #[test]
 fn test_dump_tensors() {
-    let model_path = "models/qwen2.5-coder-1.5b-instruct-q4_0.gguf";
+    let model_path = "models/MUD2.5-coder-1.5b-instruct-q4_0.gguf";
     if !Path::new(model_path).exists() { return; }
 
     let model = GGUFModel::load(model_path).unwrap();

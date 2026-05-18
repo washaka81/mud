@@ -1,5 +1,5 @@
-use forge_llm::ai::MudFile;
-use forge_llm::ai::inference::MudInference;
+use forge_llm::mud::MudFile;
+use forge_llm::mud::inference::MudInference;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     println!(" Target: Intel i7-1260p & Iris Xe");
     println!("===============================================");
 
-    let mud_path = "models/core_skills.ai";
+    let mud_path = "models/core_skills.mud";
     let vk = Arc::new(VulkanContext::new().unwrap());
     
     // 1. MEMORY AUDIT

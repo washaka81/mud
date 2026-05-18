@@ -76,7 +76,7 @@ impl ForgeModel {
             self.gemv_pure_rust(self.hidden_size, kv_dim, x, layer.attn_k_w, layer.attn_norm_w, &mut k, layer.rms_norm_eps);
             self.gemv_pure_rust(self.hidden_size, kv_dim, x, layer.attn_v_w, layer.attn_norm_w, &mut v, layer.rms_norm_eps);
             
-            // Apply Biases (Crucial for Qwen 2.5)
+            // Apply Biases (Crucial for Code 2.5)
             unsafe {
                 if !layer.attn_q_b.is_null() { for i in 0..self.hidden_size { q[i] += *layer.attn_q_b.add(i); } }
                 if !layer.attn_k_b.is_null() { for i in 0..kv_dim { k[i] += *layer.attn_k_b.add(i); } }
@@ -164,13 +164,13 @@ impl ForgeModel {
     }
 
     /// Applies Rotary Position Embeddings (RoPE) to the Q and K vectors.
-    /// This implementation follows the standard LLaMA/Qwen approach with half-dimension rotation.
+    /// This implementation follows the standard Core/Code approach with half-dimension rotation.
     pub fn apply_rope(&self, q: &mut [f32], k: &mut [f32], pos: usize) {
         let head_size = self.head_size;
         let n_heads = q.len() / head_size;
         let n_kv_heads = k.len() / head_size;
         let half = head_size / 2;
-        let freq_base = 1000000.0f32; // Standard for Qwen 2.5
+        let freq_base = 1000000.0f32; // Standard for Code 2.5
         
         for h in 0..n_heads {
             let start = h * head_size;

@@ -1,6 +1,6 @@
 use forge_llm::vulkan::VulkanContext;
-use forge_llm::ai::MudFile;
-use forge_llm::ai::inference::MudInference;
+use forge_llm::mud::MudFile;
+use forge_llm::mud::inference::MudInference;
 use std::sync::Arc;
 use std::path::Path;
 use std::time::Duration;
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     
     print_banner(&mut stdout)?;
 
-    let mud_path = "models/core_skills.ai";
+    let mud_path = "models/core_skills.mud";
     let vk = Arc::new(VulkanContext::new().unwrap());
 
     if !Path::new(mud_path).exists() {
@@ -116,7 +116,7 @@ fn main() -> anyhow::Result<()> {
 
         if trimmed.starts_with("/ingest ") {
             let path = &trimmed[8..];
-            match forge_llm::ai::ingester::MudIngester::ingest(path, &engine) {
+            match forge_llm::mud::ingester::MudIngester::ingest(path, &engine) {
                 Ok(n) => println!("  ✅ Success: Ingested {} knowledge chunks.", n),
                 Err(e) => println!("  ❌ Error during ingestion: {}", e),
             }

@@ -89,7 +89,7 @@ CORPUS = [
     "cómo funciona Forge", "how does Forge work",
     "qué puedes hacer", "what can you do",
     "cuál es tu propósito", "what is your purpose",
-    "cómo te llamas", "what is your name",
+    "cómo te MUDs", "what is your name",
     "de dónde eres", "where are you from",
     "qué idiomas hablas", "what languages do you speak",
     "eres inteligente", "are you smart",
@@ -1190,7 +1190,7 @@ tierra
 article
 primer
 york
-llama
+MUD
 man
 difícil
 card
@@ -1518,7 +1518,7 @@ piensa
 paper
 deberíamos
 single
-llamar
+MUDr
 ii
 diga
 age
@@ -1552,7 +1552,7 @@ falta
 night
 maldito
 ca
-llamado
+MUDdo
 hard
 niña
 texas
@@ -1632,7 +1632,7 @@ película
 professional
 libre
 yet
-llamada
+MUDda
 month
 puesto
 major
@@ -2334,7 +2334,7 @@ honor
 loans
 mayoría
 shoes
-llamas
+MUDs
 entry
 conocido
 stay
@@ -2849,7 +2849,7 @@ teniendo
 independent
 apartamento
 ip
-llamaré
+MUDré
 approach
 alegra
 cameras
@@ -2923,7 +2923,7 @@ rojo
 navigation
 steve
 operations
-llaman
+MUDn
 therefore
 estaremos
 simply
@@ -3700,7 +3700,7 @@ autobús
 procedures
 nacional
 poor
-llamadas
+MUDdas
 teacher
 vergüenza
 eyes
@@ -4119,7 +4119,7 @@ satellite
 fit
 responsabilidad
 tests
-llamando
+MUDndo
 village
 sexy
 accounts
@@ -4371,7 +4371,7 @@ larry
 produced
 disparar
 italian
-llamaba
+MUDba
 paperback
 inútil
 classifieds
@@ -5527,7 +5527,7 @@ pienses
 frequency
 tim
 introduced
-llamarme
+MUDrme
 minor
 registros
 finish
@@ -5689,7 +5689,7 @@ fred
 nutrition
 preparados
 recording
-llamaste
+MUDste
 regions
 perdiste
 junior
@@ -5782,7 +5782,7 @@ cruel
 scheme
 méxico
 utility
-llamamos
+MUDmos
 preview
 sofá
 fly
@@ -7135,7 +7135,7 @@ hueso
 broad
 nina
 taiwan
-llamarte
+MUDrte
 und
 visitas
 chosen
@@ -7400,7 +7400,7 @@ resistencia
 resistance
 pensarlo
 doors
-llamaron
+MUDron
 symptoms
 movimientos
 resorts
@@ -7839,7 +7839,7 @@ payaso
 surveys
 quédese
 sitting
-llamarlo
+MUDrlo
 putting
 viniera
 consultant
@@ -10797,7 +10797,7 @@ vacas
 essay
 volverán
 discipline
-llamarla
+MUDrla
 sincera
 ts
 amables
@@ -11087,7 +11087,7 @@ camarera
 outer
 tales
 crop
-llamaría
+MUDría
 deaths
 brooklyn
 rivers
@@ -13264,7 +13264,7 @@ ofrecido
 fisheries
 canalla
 exceptions
-llamaban
+MUDban
 reactions
 intentaste
 leasing
@@ -13365,7 +13365,7 @@ aterrador
 bases
 sonaba
 vii
-llamaremos
+MUDremos
 accused
 mantenimiento
 bee
@@ -13409,7 +13409,7 @@ mudó
 stat
 ofrecerle
 trigger
-llamará
+MUDrá
 incentives
 esencia
 cholesterol
@@ -14151,7 +14151,7 @@ agradecerte
 illustrations
 postura
 suits
-llamados
+MUDdos
 chances
 desnudos
 interact
@@ -15236,7 +15236,7 @@ rim
 encubierto
 abstracts
 zen
-llamara
+MUDra
 ivory
 intelectual
 alpine
@@ -15482,7 +15482,7 @@ sirviente
 tb
 clásica
 lyric
-llamarle
+MUDrle
 televisor
 isolation
 chantaje
@@ -19166,7 +19166,7 @@ def train():
     with torch.no_grad():
         emb_export = weight_quant(embed.weight)
 
-    model_path = os.path.join(out_dir, "core_skills.ai")
+    model_path = os.path.join(out_dir, "core_skills.mud")
     exp = MudExporter(model_path)
     exp.add_metadata("hidden_size", str(HIDDEN))
     exp.add_metadata("ffn_hidden", str(FFN_HIDDEN))

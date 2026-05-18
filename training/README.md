@@ -9,13 +9,13 @@ This directory contains the training scripts to create Ternary MoE models for th
 
 ## Setup
 1. **Local:** Use `ternary_moe_logic.py` to prototype.
-2. **Kaggle / Unsloth:** 
+2. **Kaggle / Trainer:** 
    - Upload the logic scripts to a Kaggle environment.
-   - Use Unsloth for optimized training speed on available GPUs.
+   - Use Trainer for optimized training speed on available GPUs.
    - Example Notebook coming soon: `mud_training_v1.ipynb`.
 
-## Exporting to .ai
-Once trained, use the `exporter.py` (planned) to convert PyTorch weights into the custom `.ai` binary format.
+## Exporting to .mud
+Once trained, use the `exporter.py` (planned) to convert PyTorch weights into the custom `.mud` binary format.
 The exporter will:
 - Pack 16 ternary weights (2 bits each) into `u32` blocks.
 - Organize expertise into Skill Modules.

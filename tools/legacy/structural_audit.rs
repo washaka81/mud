@@ -5,7 +5,7 @@ use forge_llm::asm::{BlockQ4_0, q4_0_gemv_asm};
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/qwen2.5-coder-1.5b-instruct-q4_0.gguf";
+    let model_path = "models/MUD2.5-coder-1.5b-instruct-q4_0.gguf";
     if !std::path::Path::new(model_path).exists() { return Ok(()); }
 
     println!("=== Forge LLM Structural & Transposition Audit ===");

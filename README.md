@@ -14,12 +14,12 @@ Ultra-optimized 1.58-bit (Ternary) Mixture of Experts (MoE) inference engine. Sp
 
 ## 📁 Project Structure
 
-- `src/ai/`: Core MUD engine (inference.rs, graph.rs, store.rs, ingester.rs).
+- `src/mud/`: Core MUD engine (inference.rs, graph.rs, store.rs, ingester.rs).
 - `src/vulkan/`: iGPU Subgroup kernels for GEMV offloading.
 - `training/`: High-speed Kaggle training pipeline (Mixed Precision, 6-layer MoE).
 - `docs/`: Technical specifications (AI_ARCHITECTURE.md, AI_ORCHESTRATION.md, AI_AUDIT.md).
 - `tools/`: Diagnostic and auditing utilities.
-- `models/`: Ready-to-use `.ai` models and knowledge bases.
+- `models/`: Ready-to-use `.mud` models and knowledge bases.
 - `debug/`: Disassembly and tensor audit files.
 - `logs/`: Execution and training logs.
 
@@ -28,7 +28,7 @@ Ultra-optimized 1.58-bit (Ternary) Mixture of Experts (MoE) inference engine. Sp
 1. **Generate Test Model:**
    ```bash
    python3 training/exporter.py
-   mv test_model.ai models/core_skills.ai
+   mv test_model.mud models/core_skills.mud
    ```
 
 2. **Run Inference:**

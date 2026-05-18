@@ -32,10 +32,10 @@ impl ForgeInference {
     pub fn new(gguf: &GGUFModel, vk_ctx: Arc<VulkanContext>) -> anyhow::Result<Self> {
         let tokenizer = Tokenizer::from_gguf(gguf)?;
         
-        let hidden_size = extract_u32(gguf, "qwen2.embedding_length")? as usize;
-        let n_layers = extract_u32(gguf, "qwen2.block_count")? as usize;
-        let n_heads = extract_u32(gguf, "qwen2.attention.head_count")? as usize;
-        let n_kv_heads = extract_u32(gguf, "qwen2.attention.head_count_kv")? as usize;
+        let hidden_size = extract_u32(gguf, "MUD2.embedding_length")? as usize;
+        let n_layers = extract_u32(gguf, "MUD2.block_count")? as usize;
+        let n_heads = extract_u32(gguf, "MUD2.attention.head_count")? as usize;
+        let n_kv_heads = extract_u32(gguf, "MUD2.attention.head_count_kv")? as usize;
         let head_size = hidden_size / n_heads;
         
         let mut layers = Vec::with_capacity(n_layers);
@@ -64,7 +64,7 @@ impl ForgeInference {
             layers,
             vulkan_ctx: vk_ctx,
             hidden_size,
-            ffn_hidden_size: extract_u32(gguf, "qwen2.feed_forward_length").unwrap_or((hidden_size * 4) as u32) as usize,
+            ffn_hidden_size: extract_u32(gguf, "MUD2.feed_forward_length").unwrap_or((hidden_size * 4) as u32) as usize,
             n_heads,
             n_kv_heads,
             head_size,

@@ -4,7 +4,7 @@
 ### 1. MUD: Modular Understanding Dynamics
 Forge LLM has evolved into the MUD architecture, focusing on modularity, ternary inference, and intrinsic skill growth.
 
-- **The .ai Format:** A proprietary binary format replacing GGUF.
+- **The .mud Format:** A proprietary binary format replacing GGUF.
     - **Ternary Packing:** Weights are packed strictly as `{-1, 0, 1}` using 2-bits per weight. This achieves 16x compression over FP32 and eliminates multiplications in the forward pass.
     - **Skill Modules:** The format organizes weights and logic into "Skills" (e.g., Logic, Grammar, Retrieval).
 - **Modular Skills:** Intrinsic capabilities are encapsulated as Rust modules that influence routing, preprocessing, and output.
@@ -42,6 +42,6 @@ MUD replaces traditional flat indexes with a **Modular Knowledge Graph (MKG)**:
 - **Shortcuts:** Supports Ctrl+Q (ASCII 17) for session exit.
 
 ### 6. Training Pipeline
-- **Ecosystem:** Integration with **Unsloth** and **Kaggle** (GPU P100/T4) for high-speed training.
+- **Ecosystem:** Integration with **Trainer** and **Kaggle** (GPU P100/T4) for high-speed training.
 - **Cumulative Learning:** Checkpoint system (`.pt`) to inherit weights between versions.
 - **BitNet 1.58b:** Full implementation of ternary quantization and 8-bit activation scaling.

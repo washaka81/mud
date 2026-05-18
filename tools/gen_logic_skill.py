@@ -22,7 +22,7 @@ def pack_ternary(row):
 print(f"📦 Generating Specialized Logic Module (4 Experts)...")
 os.makedirs('models', exist_ok=True)
 
-with open('models/logic_module.ai', 'wb') as f:
+with open('models/logic_module.mud', 'wb') as f:
     f.write(b'MUD\x01')
     # Metadata
     meta = {
@@ -57,4 +57,4 @@ with open('models/logic_module.ai', 'wb') as f:
     f.write(b'\x00' * ((32 - (f.tell() % 32)) % 32))
     for d in tensor_data: f.write(d)
 
-print("✅ Logic Module Created: models/logic_module.ai")
+print("✅ Logic Module Created: models/logic_module.mud")

@@ -108,7 +108,7 @@ def pack_ternary(row):
         packed.append(val)
     return np.array(packed, dtype=np.uint32).tobytes()
 
-with open('models/core_skills.ai', 'wb') as f:
+with open('models/core_skills.mud', 'wb') as f:
     f.write(b'MUD\x01')
     meta = {'hidden_size': str(HIDDEN), 'num_experts': str(EXPERTS), 'num_layers': '1', 'tokenizer.tokens': '\n'.join(vocab)}
     f.write(struct.pack('<I', len(meta)))
