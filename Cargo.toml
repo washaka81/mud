@@ -1,0 +1,91 @@
+[package]
+name = "forge_llm"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-optimized Ternary MoE inference engine (MUD architecture)"
+default-run = "forge_llm"
+
+[dependencies]
+# Memory mapping for loading .mud files efficiently
+memmap2 = "0.9.3"
+half = { version = "2.3.1", features = ["num-traits"] }
+
+# Vulkan ecosystem for iGPU compute offloading
+vulkano = "0.34.0"
+vulkano-shaders = "0.34.0"
+
+# Core utilities
+log = "0.4.20"
+env_logger = "0.10.1"
+anyhow = "1.0.75"
+rand = "0.10.1"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+crossterm = "0.29.0"
+unicode-width = "0.2.2"
+sysinfo = "0.38.4"
+serde_json = "1.0.149"
+byteorder = "1.5.0"
+
+[[bin]]
+name = "forge_llm"
+path = "src/main.rs"
+
+[[bin]]
+name = "model_dumper"
+path = "tools/model_dumper.rs"
+
+[[bin]]
+name = "tokenizer_audit"
+path = "tools/tokenizer_audit.rs"
+
+[[bin]]
+name = "attention_audit"
+path = "tools/attention_audit.rs"
+
+[[bin]]
+name = "deep_math_audit"
+path = "tools/deep_math_audit.rs"
+
+[[bin]]
+name = "mud_fusion"
+path = "tools/mud_fusion.rs"
+
+[[bin]]
+name = "ternary_audit"
+path = "tools/ternary_audit.rs"
+
+[[bin]]
+name = "language_audit"
+path = "tools/language_audit.rs"
+
+[[bin]]
+name = "memory_benchmark"
+path = "tools/memory_benchmark.rs"
+
+[[bin]]
+name = "knowledge_packager"
+path = "tools/knowledge_packager.rs"
+
+[[bin]]
+name = "ptr_audit"
+path = "tools/ptr_audit.rs"
+
+[[bin]]
+name = "moe_audit"
+path = "tools/moe_audit.rs"
+
+[lib]
+name = "forge_llm"
+crate-type = ["cdylib", "lib"]
+
+[build-dependencies]
+# Used to compile ASM files during the build process
+cc = "1.0.83"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+# Target CPU features should be specified during compilation (e.g. RUSTFLAGS="-C target-cpu=native")
+

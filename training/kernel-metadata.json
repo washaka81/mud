@@ -1,0 +1,15 @@
+{
+  "id": "alejandrofonda/mud-ternary-moe-training-es-en",
+  "title": "MUD Ternary MoE Training (ES/EN)",
+  "code_file": "kaggle_trainer.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

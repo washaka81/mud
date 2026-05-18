@@ -1,0 +1,48 @@
+# --- RUST & BUILD ---
+/target
+Cargo.lock
+
+# --- VIRTUAL ENVIRONMENTS ---
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+
+# --- MUD MODELS & DATA (Large Binaries) ---
+models/*.mud
+models/*.pt
+models/*.db
+models/*.txt
+models/archive/
+models/sync/
+models/debug_output/
+models/versions/
+
+# --- TRAINING DATA & SYNTHETIC DATA ---
+training/vocab_es_en.txt
+training/synthetic_knowledge.txt
+training/synthetic_knowledge.txt.backup
+tests/data/books/
+
+# --- LOGS & DEBUGGING ---
+logs/*.log
+debug/
+*.disassembly
+mud_disassembly.txt
+all_tensors.txt
+tensors_list.txt
+model_disassembly.txt
+
+# --- SENSITIVE INFORMATION ---
+.env
+.kaggle/
+kaggle.json
+training/kaggle_config.sh
+secrets.tks
+*.pem
+*.key
+
+# --- OS TEMPORARY FILES ---
+.DS_Store
+Thumbs.db

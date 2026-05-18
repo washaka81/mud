@@ -1,0 +1,6 @@
+# Kaggle User Configuration for MUD
+# Copy this file to training/kaggle_config.sh and fill in your details.
+# This file is ignored by git to protect your privacy.
+
+# KAG_USER="your_kaggle_username"
+# KAG_KERNEL="your_kernel_slug"

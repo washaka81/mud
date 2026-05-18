@@ -1,0 +1,20 @@
+#version 450
+
+layout(local_size_x = 32) in; // Ajustado para el SIMD de Intel Iris Xe
+
+layout(set = 0, binding = 0) buffer Data {
+    float data[];
+} data_in;
+
+layout(set = 0, binding = 1) buffer Out {
+    float data[];
+} data_out;
+
+layout(push_constant) uniform PushConstants {
+    float scale;
+} pcs;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    data_out.data[idx] = data_in.data[idx] * pcs.scale;
+}

@@ -1,0 +1,44 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 32) in; // Optimized for Intel SIMD32
+
+layout(set = 0, binding = 0) buffer InputX { float x[]; };
+layout(set = 0, binding = 1) buffer Weights { uint packed_w[]; };
+layout(set = 0, binding = 2) buffer OutputY { float y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;
+    uint n_out;
+    float scale;
+} pcs;
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= pcs.n_out) return;
+
+    uint lane_id = gl_LocalInvocationID.x;
+    float local_sum = 0.0;
+    
+    uint blocks_per_row = pcs.n_in / 16;
+    uint row_offset = row * blocks_per_row;
+
+    // Each thread in the subgroup handles a subset of blocks in the row
+    for (uint b = lane_id; b < blocks_per_row; b += 32) {
+        uint w_bits = packed_w[row_offset + b];
+        uint x_base = b * 16;
+        
+        for (uint i = 0; i < 16; i++) {
+            uint bits = (w_bits >> (i * 2)) & 3u;
+            if (bits == 1u) local_sum += x[x_base + i];
+            else if (bits == 2u) local_sum -= x[x_base + i];
+        }
+    }
+    
+    // Sum across the subgroup (32 threads)
+    float total_sum = subgroupAdd(local_sum);
+    
+    if (lane_id == 0) {
+        y[row] = total_sum * pcs.scale;
+    }
+}
