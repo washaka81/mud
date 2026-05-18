@@ -14,12 +14,22 @@ HIDDEN = 512
 FFN_HIDDEN = 2048
 EXPERTS = 8
 TOP_K = 2
-NUM_LAYERS = 6  # Increased for real learning
+NUM_LAYERS = 6
 LR = 5e-4
 STEPS = 50000
-SEQ_LEN = 128   # Increased for Chain of Thought
-BATCH_SIZE = 32 # Optimized for P100/T4
+SEQ_LEN = 128
+BATCH_SIZE = 64 # Increased for maximum GPU saturation
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+def check_gpu():
+    if DEVICE == "cuda":
+        prop = torch.cuda.get_device_properties(0)
+        print(f"🚀 [MUD GPU Check] Using: {prop.name} (Capability {prop.major}.{prop.minor})")
+        if prop.major < 7:
+            print("⚠️ [WARNING] Old GPU detected. FP16 may be slow. Consider switching to T4/L4 on Kaggle.")
+    else:
+        print("❌ [MUD ERROR] No GPU detected! Running on CPU will be 100x slower.")
+        # We don't exit, but we warn loudly.
 
 def weight_quant(w):
     scale = w.abs().mean()
@@ -194,6 +204,7 @@ class MudExporter:
         return b"".join(packed)
 
 def train():
+    check_gpu()
     print(f"🔥 Starting High-Speed MUD Training on {DEVICE}")
     vocab_path = "vocab_es_en.txt"
     if not os.path.exists(vocab_path): vocab_path = "training/vocab_es_en.txt"
@@ -218,31 +229,36 @@ def train():
             corpus = [line.strip() for line in f if line.strip()]
     
     if not corpus:
-        corpus = [
-            "Q: explica 1+1 A: <thinking> 1+1 es una operación aritmética básica. Sumando una unidad a otra resulta en dos. </thinking> <answer> 1+1 es 2 </answer>",
-            "Q: what is MUD A: <thinking> MUD stands for Modular Understanding Dynamics. It is a ternary MoE architecture. </thinking> <answer> MUD is an advanced AI engine. </answer>",
-            "Q: explain logic A: <thinking> Logic is the study of correct reasoning. It involves premises and conclusions. </thinking> <answer> Logic is the foundation of science. </answer>",
-            "Q: por qué es rápido A: <thinking> Usa pesos ternarios de 1.58 bits y aceleración Vulkan en iGPU. </thinking> <answer> Es eficiente por su diseño modular. </answer>"
-        ]
-        if os.path.exists("models/knowledge.db"):
-            import sqlite3
-            conn = sqlite3.connect("models/knowledge.db")
-            db_facts = [r[0] for r in conn.execute("SELECT content FROM facts LIMIT 5000")]
-            for fact in db_facts:
-                corpus.append(f"<thinking> Procesando información sobre: {fact[:50]} </thinking> <answer> {fact} </answer>")
+        print("  ⚠️ No synthetic dataset found. Using default patterns.")
+        corpus = ["Q: what is MUD A: <thinking> MUD is ternary MoE. </thinking> <answer> MUD is AI. </answer>"]
 
-
-    encoded = [torch.tensor([word_to_id.get(w, 0) for w in t.split()], device=DEVICE) for t in corpus if len(t.split()) > 2]
+    # Pre-encode sequences to save time
+    encoded = []
+    for t in corpus:
+        tokens = [word_to_id.get(w, 0) for w in t.split()]
+        if len(tokens) > 2:
+            encoded.append(torch.tensor(tokens, device=DEVICE))
     
+    print(f"Training on {len(encoded)} sequences. Sequence Length: {SEQ_LEN}")
+
     for step in tqdm(range(STEPS)):
+        # Randomly select a batch of sequences
         batch_idx = torch.randint(0, len(encoded), (BATCH_SIZE,))
         optimizer.zero_grad()
         total_loss = 0
         
         with torch.amp.autocast("cuda" if DEVICE == "cuda" else "cpu"):
+            # We process individually since sequences have different lengths
+            # A future optimization would be to pack them into a single tensor with padding
             for idx in batch_idx:
-                seq = encoded[idx]; x_ids = seq[:-1].unsqueeze(0); target = seq[1:]
-                if x_ids.shape[1] == 0: continue
+                seq = encoded[idx]
+                if seq.shape[0] <= 1: continue
+                # Truncate if too long for SEQ_LEN
+                if seq.shape[0] > SEQ_LEN: seq = seq[:SEQ_LEN]
+                
+                x_ids = seq[:-1].unsqueeze(0)
+                target = seq[1:]
+                
                 emb_ste = weight_quant(embed.weight)
                 h = model(F.embedding(x_ids, emb_ste))
                 logits = torch.matmul(h.squeeze(0), emb_ste.T)
@@ -263,8 +279,9 @@ def train():
             print(f" Step {step} | Loss: {total_loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.2e}")
 
     # Export
+    print("📦 Exporting consolidated 6-layer model...")
     with torch.no_grad(): emb_export = weight_quant(embed.weight)
-    exp = MudExporter("models/core_skills.mud")
+    exp = MudExporter("core_skills.mud")
     exp.add_metadata("hidden_size", str(HIDDEN)); exp.add_metadata("num_layers", str(NUM_LAYERS))
     exp.add_metadata("num_experts", str(EXPERTS)); exp.add_metadata("tokenizer.tokens", "\n".join(vocab))
     sd = {"token_embd.weight": emb_export, "output_norm.weight": model.norm.weight}

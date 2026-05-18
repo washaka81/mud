@@ -17,7 +17,7 @@ Ultra-optimized 1.58-bit (Ternary) Mixture of Experts (MoE) inference engine. Sp
 - `src/mud/`: Core MUD engine (inference.rs, graph.rs, store.rs, ingester.rs).
 - `src/vulkan/`: iGPU Subgroup kernels for GEMV offloading.
 - `training/`: High-speed Kaggle training pipeline (Mixed Precision, 6-layer MoE).
-- `docs/`: Technical specifications (AI_ARCHITECTURE.md, AI_ORCHESTRATION.md, AI_AUDIT.md).
+- `docs/`: Technical specifications (MUD_ARCHITECTURE.md, MUD_ORCHESTRATION.md, MUD_AUDIT.md).
 - `tools/`: Diagnostic and auditing utilities.
 - `models/`: Ready-to-use `.mud` models and knowledge bases.
 - `debug/`: Disassembly and tensor audit files.
@@ -43,4 +43,4 @@ Ultra-optimized 1.58-bit (Ternary) Mixture of Experts (MoE) inference engine. Sp
 
 ## 📜 Documentation
 
-See [AI_ARCHITECTURE.md](docs/AI_ARCHITECTURE.md) for low-level details on ternary packing and skill modularity.
+See [MUD_ARCHITECTURE.md](docs/MUD_ARCHITECTURE.md) for low-level details on ternary packing and skill modularity.
