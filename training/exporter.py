@@ -43,7 +43,7 @@ class MudExporter:
 
     def export(self, state_dict: Dict[str, torch.Tensor]):
         """
-        Converts PyTorch state_dict to .mud format.
+        Converts PyTorch state_dict to .ai format.
         """
         print(f"Exporting {len(state_dict)} tensors to {self.output_path}...")
         
@@ -127,7 +127,7 @@ if __name__ == "__main__":
             sd[f"blk.{l}.expert.{e}.w2.weight"] = torch.randn(hidden_size, ffn_hidden)
             sd[f"blk.{l}.expert.{e}.w3.weight"] = torch.randn(ffn_hidden, hidden_size)
 
-    exporter = MudExporter("test_model.mud")
+    exporter = MudExporter("test_model.ai")
     exporter.add_metadata("hidden_size", str(hidden_size))
     exporter.add_metadata("num_layers", str(num_layers))
     exporter.add_metadata("num_experts", str(num_experts))

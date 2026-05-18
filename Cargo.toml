@@ -47,8 +47,8 @@ name = "deep_math_audit"
 path = "tools/deep_math_audit.rs"
 
 [[bin]]
-name = "mud_fusion"
-path = "tools/mud_fusion.rs"
+name = "ai_fusion"
+path = "tools/ai_fusion.rs"
 
 [[bin]]
 name = "ternary_audit"

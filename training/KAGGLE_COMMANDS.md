@@ -28,14 +28,14 @@ os.system("python training/mud_language_trainer.py")
 
 ## Cell 3: Export to Local / Drive
 ```python
-# Save the resulting .mud file for your local Forge LLM engine
+# Save the resulting .ai file for your local Forge LLM engine
 from google.colab import files # If in Colab
 # In Kaggle:
-!cp models/mud_multilingual_v1.mud /kaggle/working/
-print("Training Complete. Download mud_multilingual_v1.mud from 'Output' section.")
+!cp models/mud_multilingual_v1.ai /kaggle/working/
+print("Training Complete. Download mud_multilingual_v1.ai from 'Output' section.")
 ```
 
 ## Optimization Tips for Kaggle:
 1. **GPU Selection:** Use the **L4** or **P100** accelerators for best compatibility with `bitsandbytes`.
-2. **Persistence:** The `.mud` file will appear in `/kaggle/working/`.
+2. **Persistence:** The `.ai` file will appear in `/kaggle/working/`.
 3. **Dataset:** If training Spanish-LATAM, consider adding `load_dataset("cispa/culturax", "es", split="train", streaming=True)` for better quality.

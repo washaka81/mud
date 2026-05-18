@@ -18,7 +18,7 @@ CORPUS = [
     "disculpa", "excuse me", "lo siento", "I am sorry",
     "un placer conocerte", "nice to meet you",
     "saludos", "greetings", "bienvenido", "welcome",
-    "soy un asistente de IA", "I am an AI assistant",
+    "soy un asistente de AI", "I am an AI assistant",
     "me llamo MUD", "my name is MUD",
     "Forge es mi motor", "Forge is my engine",
     "yo hablo inglés y español", "I speak English and Spanish",
@@ -37,14 +37,14 @@ CORPUS = [
     "red neuronal ternaria", "ternary neural network",
     "el motor procesa datos", "the engine processes data",
     "MUD es de código abierto", "MUD is open source",
-    "el futuro de la inteligencia artificial", "the future of artificial intelligence",
+    "el futuro de la artificial intelligence", "the future of artificial intelligence",
     "aprendizaje automático y razonamiento", "machine learning and reasoning",
     "modelo de lenguaje ternario", "ternary language model",
     "ocho expertos trabajando juntos", "eight experts working together",
     "el enrutador elige los mejores", "the router selects the best ones",
     "atención con memoria de trabajo", "attention with working memory",
     "el futuro es modular", "the future is modular",
-    "inteligencia artificial generativa", "generative artificial intelligence",
+    "artificial intelligence generativa", "generative artificial intelligence",
     "cada experto tiene un propósito", "each expert has a purpose",
     "la red ternaria usa ocho expertos", "the ternary network uses eight experts",
     "codificación gaussiana para alta fidelidad", "gaussian embeddings for high fidelity",
@@ -94,7 +94,7 @@ CORPUS = [
     "qué idiomas hablas", "what languages do you speak",
     "eres inteligente", "are you smart",
     "puedes aprender", "can you learn",
-    "qué es inteligencia artificial", "what is artificial intelligence",
+    "qué es artificial intelligence", "what is artificial intelligence",
     "cómo funciona un modelo de lenguaje", "how does a language model work",
     "qué significa MoE", "what does MoE mean",
     "qué es una red neuronal", "what is a neural network",
@@ -128,7 +128,7 @@ CORPUS = [
     "Forge is a fast and efficient inference engine",
     "el modelo de lenguaje entiende tanto español como inglés",
     "the language model processes natural language with eight experts",
-    "la inteligencia artificial está transformando el mundo",
+    "la artificial intelligence está transformando el mundo",
     "artificial intelligence is transforming the world",
     "el futuro de la tecnología es modular y escalable",
     "the future of technology is modular and scalable",
@@ -19166,7 +19166,7 @@ def train():
     with torch.no_grad():
         emb_export = weight_quant(embed.weight)
 
-    model_path = os.path.join(out_dir, "core_skills.mud")
+    model_path = os.path.join(out_dir, "core_skills.ai")
     exp = MudExporter(model_path)
     exp.add_metadata("hidden_size", str(HIDDEN))
     exp.add_metadata("ffn_hidden", str(FFN_HIDDEN))

@@ -1,4 +1,4 @@
-use forge_llm::mud::store::MudStore;
+use forge_llm::ai::store::MudStore;
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Packaging {} new facts for assimilation...", unassimilated.len());
     
-    // In a real MUD scenario, this would create a new .mud skill block
+    // In a real MUD scenario, this would create a new .ai skill block
     // For the prototype, we append to a 'knowledge_package.txt'
     let mut pkg_file = std::fs::File::create("models/knowledge_package.txt")?;
     let mut ids = Vec::new();

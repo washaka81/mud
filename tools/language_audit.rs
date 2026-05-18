@@ -1,12 +1,12 @@
-use forge_llm::mud::MudFile;
-use forge_llm::mud::inference::MudInference;
+use forge_llm::ai::MudFile;
+use forge_llm::ai::inference::MudInference;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     println!("=== MUD Language & Routing Audit ===");
     
-    let mud_path = "models/core_skills.mud";
+    let mud_path = "models/core_skills.ai";
     let vk = Arc::new(VulkanContext::new().unwrap());
     let mud_file = MudFile::load(mud_path)?;
     let engine = MudInference::new(&mud_file, vk)?;

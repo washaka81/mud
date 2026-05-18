@@ -1,11 +1,11 @@
-use forge_llm::mud::MudFile;
-use forge_llm::mud::inference::MudInference;
+use forge_llm::ai::MudFile;
+use forge_llm::ai::inference::MudInference;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     println!("=== MUD DEEP STATISTICAL & INFORMATION THEORY AUDIT ===");
-    let model_path = "models/core_skills.mud";
+    let model_path = "models/core_skills.ai";
     let vk = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(model_path)?;
     let engine = MudInference::new(&mud_file, vk)?;

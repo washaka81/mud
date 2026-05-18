@@ -1,5 +1,5 @@
-use forge_llm::mud::MudFile;
-use forge_llm::mud::inference::MudInference;
+use forge_llm::ai::MudFile;
+use forge_llm::ai::inference::MudInference;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     println!("=== MUD Rigorous Test: MoE & Inference Audit ===");
     
     // 1. Setup
-    let mud_path = "models/core_skills.mud";
+    let mud_path = "models/core_skills.ai";
     let vk = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(mud_path)?;
     let engine = MudInference::new(&mud_file, vk)?;
@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     println!("\n[Test 3] Verifying RAG Ingestion...");
     let test_file = "tests/data/test_doc.txt";
     if std::path::Path::new(test_file).exists() {
-        let count = forge_llm::mud::ingester::MudIngester::ingest(test_file, &engine)?;
+        let count = forge_llm::ai::ingester::MudIngester::ingest(test_file, &engine)?;
         println!("  Ingested {} chunks from {}", count, test_file);
         
         let retrieved = engine.model.knowledge_graph.write().unwrap()
