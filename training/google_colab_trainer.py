@@ -7,8 +7,9 @@ Soporta montaje de Google Drive para checkpoints persistentes.
 INSTRUCCIONES PARA COLAB:
 -------------------------
 1. Abre un notebook en Colab.
-2. Selecciona Entorno de ejecución -> Cambiar tipo -> T4 GPU (mínimo).
-3. Pega y ejecuta este bloque (Limpieza + Clonación + Entrenamiento):
+2. ⚠️ MUY IMPORTANTE: Selecciona Entorno de ejecución -> Cambiar tipo de entorno -> GPU T4.
+   Si ves "CPU (Lento)" en los logs, el entrenamiento no avanzará.
+3. Pega y ejecuta este bloque:
 
    !rm -rf mud
    !git clone https://github.com/washaka81/mud.git

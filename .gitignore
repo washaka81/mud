@@ -30,6 +30,7 @@ checkpoints_vulkan/
 # --- TRAINING DATA & CORPUS ---
 training/*.txt
 !training/vocab_es_en.txt
+!training/extra_knowledge.txt
 !training/README.md
 training/*.txt.backup
 training/*.log
@@ -70,4 +71,4 @@ Thumbs.db
 *.ipynb
 kaggle_push/
 kernel-metadata.json
-vocab_es_en.txt
+/vocab_es_en.txt
