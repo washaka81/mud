@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== MUD Kaggle Model Retrieval Tool ==="
+echo "=== MUD Kaggle Model Retrieval Tool (Ultra Trainer) ==="
 
 # --- CONFIGURATION ---
 # To protect your privacy, set these in a local file named 'kaggle_config.sh'
@@ -12,8 +12,8 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 # Fallback to current values if not set in config
-KAG_USER="${KAG_USER:-alejandrofonda}"
-KAG_KERNEL="${KAG_KERNEL:-mud-ternary-moe-training-es-en}"
+KAG_USER="${KAG_USER:-YOUR_KAGGLE_USERNAME}"
+KAG_KERNEL="${KAG_KERNEL:-YOUR_KAGGLE_KERNEL_NAME}"
 KERNEL_ID="$KAG_USER/$KAG_KERNEL"
 DEST_DIR="models/"
 
@@ -21,18 +21,18 @@ DEST_DIR="models/"
 mkdir -p "$DEST_DIR"
 
 # 3. Download outputs from Kaggle
-echo "Attempting to download trained .mud files from $KERNEL_ID..."
-# Ensure kaggle command is available
-if ! command -v kaggle &> /dev/null; then
-    echo "Error: Kaggle CLI not found. Please install it and configure your API key."
-    exit 1
-fi
+echo "Attempting to download trained files from $KERNEL_ID..."
+TEMP_DL="models/tmp_kaggle_dl"
+mkdir -p "$TEMP_DL"
 
-kaggle kernels output "$KERNEL_ID" -p "$DEST_DIR"
+kaggle kernels output "$KERNEL_ID" -p "$TEMP_DL"
 
 if [ $? -eq 0 ]; then
-    echo "Success! Your model should now be in $DEST_DIR"
-    ls -lh "$DEST_DIR"/*.mud 2>/dev/null || echo "Note: No .mud files found yet. The training might still be in progress."
+    echo "Processing downloaded files..."
+    mv "$TEMP_DL"/*.mud models/ 2>/dev/null || true
+    mv "$TEMP_DL"/*.pt weights/ 2>/dev/null || true
+    rm -rf "$TEMP_DL"
+    echo "Success! Files distributed to models/ and weights/"
 else
-    echo "Error: Failed to retrieve output. Make sure the kernel is finished and public/private access is correct."
+    echo "Error: Failed to retrieve output."
 fi

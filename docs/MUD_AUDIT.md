@@ -1,39 +1,37 @@
-# System Audit: Forge LLM (MUD)
-## Date: 18 de mayo de 2026
-## Status: **Operational / Advanced Hybrid Ternary Architecture**
+# MUD Architecture & Codebase Audit Report
 
-### 1. Core Engine (Rust)
-- **Ternary Inference:** Full implementation of ternary weights `{-1, 0, 1}` with 2-bit packing.
-- **Hardware Acceleration:**
-  - **CPU:** AVX2 kernels for RMSNorm and base operations.
-  - **iGPU (Vulkan):** Optimized GEMV with **Subgroup Operations** (SPIR-V 1.3) specifically tuned for Intel Iris Xe. 
-- **Transformer Support:** Added Multi-Head Attention, RoPE (Rotary Position Embeddings), and Causal Masking.
-- **Sampling:** Upgraded from Greedy to **Top-K (40), Top-P (0.9), and Temperature (0.7)**.
-- **Memory Management:** Implemented **Sliding Window KV-Cache** (2048 tokens) with circular buffer logic.
+## 1. Executive Summary
+An exhaustive static analysis and manual audit of the `forge_llm` codebase was conducted using `cargo clippy` and custom heuristic checks. The engine is structurally sound and implements the core ternary features efficiently. However, there are significant areas of technical debt related to memory safety (raw pointer handling), performance optimizations (loop vectorization), and code idiomacy that should be addressed before moving out of the beta phase.
 
-### 2. Knowledge & RAG System
-- **MudIngester:** Upgraded to use semantic embeddings derived from the model's own weights.
-- **Store:** SQLite-backed fact storage with status tracking (Unassimilated/Packed).
-- **MKG:** Modular Knowledge Graph with PageRank-style jump search for context injection.
+## 2. Critical Findings & Technical Debt
 
-### 3. Training Pipeline (Python)
-- **Architecture:** Transitioned from Feed-Forward only to **Ternary Transformer MoE**.
-- **Vocab:** Custom bilingual dictionary (EN/ES-LATAM) with ~18k words, replacing dummy placeholders.
-- **Cloud Sync:** Stable Kaggle integration for GPU-accelerated training.
+### 2.1. Memory Safety (`unsafe` blocks and raw pointers)
+The most critical issues identified by the compiler relate to the handling of raw pointers without explicit `unsafe` declarations in public functions, particularly in the ASM and Vulkan bridging layers.
+- **`src/asm/mod.rs` & `src/model/transformer.rs`:** Functions like `dequantize_q4_0_row` and `gemv_pure_rust` dereference raw pointers (`*const BlockQ4_0` and `*const f32`) but are not marked as `unsafe`. This violates Rust's memory safety guarantees and could lead to undefined behavior if invalid pointers are passed.
+- **`src/vulkan_backend.rs`:** Multiple C-FFI functions (`vb_quantize`, `vb_gemv_forward`, etc.) are correctly marked `unsafe` but lack the mandatory `# Safety` documentation block explaining the safety invariants to the caller.
 
-### 4. Identified Opportunities for Improvement
+### 2.2. Performance Bottlenecks & Loop Vectorization
+Several loops use standard indexing instead of Rust's iterators, preventing LLVM from fully vectorizing the code for SIMD execution.
+- **Needless Range Loops:** Extensive use of `for i in 0..n { arr[i] = ... }` in `src/model/transformer.rs` (especially in `apply_rope` and bias addition) and `src/vulkan_backend.rs`. These should be refactored to use `.iter_mut().enumerate()` or zipped iterators to eliminate bounds checking and improve cache locality.
+- **Manual `div_ceil`:** Mathematical divisions rounding up are calculated manually (e.g., `(n + 15) / 16`) in `src/mud/mod.rs` and `src/vulkan_backend.rs`. Replacing these with Rust's native `.div_ceil()` will prevent potential integer overflow bugs and clarify intent.
 
-#### A. Kernel Fusion (Critical Optimization)
-- **Problem:** Every `run_ternary_gemv` call incurs command buffer overhead.
-- **Opportunity:** Fuse RMSNorm, RoPE, and the Query/Key/Value projections into a single Vulkan dispatch. This reduces CPU-GPU sync latency.
+### 2.3. Architectural Gaps
+- **Skill Injection:** In `src/mud/skills/logic_math.rs`, there is a pending `TODO` regarding the injection of the Sandbox calculation (`// TODO: Inject this exact answer into the inference stream context`). Currently, the exact math result is printed to the console but not fed back into the model's KV-cache, meaning the model cannot "read" the result it just computed.
+- **Function Arity:** `compute_attention_quantized` and `gemv_pure_rust` take 7-8 arguments, making them brittle and hard to maintain. A configuration struct should be introduced.
 
-#### B. Quantized Attention (Memory Optimization)
-- **Problem:** The KV-Cache uses FP32, which consumes significant RAM in long sessions.
-- **Opportunity:** Quantize the KV-Cache to **INT8** or **FP16**. Intel Iris Xe supports fast half-precision arithmetic.
+### 2.4. Idiomatic Rust Improvements
+- **Missing `Default` Implementations:** Several skills (`AutoformatterSkill`, `LogicMathSkill`, `MemorySkill`, etc.) and the `MudKnowledgeGraph` implement `new()` without a corresponding `Default` trait.
+- **Iterator Misuse:** Instances of `.enumerate()` where the index is unused, or `filter(..).next()` instead of `.find(..)`.
 
-#### C. Adaptive Routing (Intelligence Upgrade)
-- **Problem:** MoE routing is currently static based on gate logits.
-- **Opportunity:** Implement **Expert Capacity Factor** or dynamic dropout during inference to prevent single-expert bottlenecks.
 
-#### D. Specialized Skill Ingestion
-- **Opportunity:** Implement specialized parsers for Code (Python/Rust) and Structured Data (JSON/CSV) within the `MudIngester`.
+## 4. Deep Performance Audit (New Findings)
+
+### 4.1. Critical Bottlenecks Identified
+- **Pipeline Recompilation (Vulkan):** The `ComputePipeline` was being recompiled dynamically on every GEMV call. This introduced massive latency. *Resolved by caching the pipeline in `VulkanContext`.*
+- **Memory Thrashing (Hot-Loop):** The inference engine (`decode_step`) performed dozens of dynamic `vec![]` allocations per token, causing significant cache misses and memory allocator contention.
+- **Rayon Contention:** The parallel expert routing (`rayon`) was thrashing memory by creating fresh buffers for every thread rather than utilizing a pre-allocated workspace.
+
+### 4.2. Action Plan for Next Sessions
+- [ ] **Static Workspace Architecture:** Pre-allocate all inference buffers (Q, K, V, FFN gates) at engine startup to eliminate `vec![]` calls in the hot loop.
+- [ ] **Thread-Local Memory Pools:** Implement thread-local storage for parallel expert execution to resolve thread contention.
+- [ ] **Pipeline Fusion:** Fuse remaining `RoPE` calculations into the core GEMV shader to reduce I/O.

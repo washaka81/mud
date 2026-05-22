@@ -1,5 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
+pub mod vulkan_backend;
+use parking_lot::Mutex;
+use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
@@ -20,9 +23,23 @@ pub struct VulkanContext {
     pub memory_allocator: Arc<StandardMemoryAllocator>,
     pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    /// Persistent cache for weight buffers to avoid re-allocation.
+    pub buffer_cache: Mutex<HashMap<String, Arc<Subbuffer<[u32]>>>>,
+    /// Tracks which weight buffers have been initialized (data written) to skip re-upload.
+    pub buffer_init: Mutex<HashSet<String>>,
+    /// Persistent cache for input buffers to avoid re-allocation.
+    pub buffer_x_cache: Mutex<HashMap<String, Arc<Subbuffer<[f32]>>>>,
+    /// Persistent cache for output buffers to avoid re-allocation.
+    pub buffer_y_cache: Mutex<HashMap<String, Arc<Subbuffer<[f32]>>>>,
+    /// Cached compute pipeline.
+    pub pipeline: Arc<ComputePipeline>,
+    /// Whether Vulkan was successfully initialized.
+    pub available: bool,
 }
 
 impl VulkanContext {
+    pub fn is_available(&self) -> bool { self.available }
+
     /// Initializes a new Vulkan context.
     pub fn new() -> anyhow::Result<Self> {
         let library = VulkanLibrary::new()?;
@@ -36,12 +53,20 @@ impl VulkanContext {
 
         let physical_device = instance
             .enumerate_physical_devices()?
-            .filter(|p| {
-                p.properties().device_type == PhysicalDeviceType::IntegratedGpu
-                    && p.properties().device_name.contains("Intel")
+            .min_by_key(|p| {
+                match p.properties().device_type {
+                    PhysicalDeviceType::IntegratedGpu => 0,
+                    PhysicalDeviceType::DiscreteGpu => 1,
+                    PhysicalDeviceType::VirtualGpu => 2,
+                    PhysicalDeviceType::Cpu => 3,
+                    _ => 4,
+                }
             })
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No se encontró iGPU Intel Iris Xe"))?;
+            .ok_or_else(|| anyhow::anyhow!("No se encontró ningún dispositivo Vulkan compatible"))?;
+
+        println!("[Vulkan] Usando dispositivo: {} (tipo: {:?})",
+            physical_device.properties().device_name,
+            physical_device.properties().device_type);
 
         let queue_family_index = physical_device
             .queue_family_properties()
@@ -74,52 +99,140 @@ impl VulkanContext {
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default()));
 
-        Ok(Self { 
-            device, queue, memory_allocator,
-            command_buffer_allocator, descriptor_set_allocator,
-        })
-    }
-
-    /// Runs a simple compute shader test.
-    pub fn run_test_compute(&self) -> anyhow::Result<()> {
-        let shader = cs::load(self.device.clone())?;
+        let shader = cs::load(device.clone())?;
         let entry_point = shader.entry_point("main").unwrap();
-        
         let pipeline = ComputePipeline::new(
-            self.device.clone(),
+            device.clone(),
             None,
             vulkano::pipeline::compute::ComputePipelineCreateInfo::stage_layout(
                 vulkano::pipeline::PipelineShaderStageCreateInfo::new(entry_point.clone()),
                 PipelineLayout::new(
-                    self.device.clone(),
+                    device.clone(),
                     PipelineDescriptorSetLayoutCreateInfo::from_stages([&vulkano::pipeline::PipelineShaderStageCreateInfo::new(entry_point.clone())])
-                        .into_pipeline_layout_create_info(self.device.clone())?,
+                        .into_pipeline_layout_create_info(device.clone())?,
                 )?,
             ),
         )?;
 
-        let data_in = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
-            (0..1024).map(|i| i as f32),
-        )?;
+        Ok(Self { 
+            device, queue, memory_allocator,
+            command_buffer_allocator, descriptor_set_allocator,
+            buffer_cache: Mutex::new(HashMap::new()),
+            buffer_init: Mutex::new(HashSet::new()),
+            buffer_x_cache: Mutex::new(HashMap::new()),
+            buffer_y_cache: Mutex::new(HashMap::new()),
+            pipeline,
+            available: true,
+        })
+    }
 
-        let data_out = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
-            (0..1024).map(|_| 0.0f32),
-        )?;
+    /// Executes a ternary GEMV on the iGPU with buffer caching.
+    pub fn run_ternary_gemv_cached(
+        &self,
+        key: &str,
+        n_in: usize,
+        n_out: usize,
+        x: &[f32],
+        packed_w: *const u32,
+        scale: f32,
+        y: &mut [f32],
+    ) -> anyhow::Result<()> {
+        // Use cached input buffer if available
+        let buffer_x = {
+            let mut cache = self.buffer_x_cache.lock();
+            let mut recreate = true;
+            if let Some(buf) = cache.get(key) {
+                if buf.len() == n_in as u64 {
+                    recreate = false;
+                }
+            }
+            if recreate {
+                let buf = Buffer::new_slice::<f32>(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
+                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+                    n_in as u64,
+                )?;
+                let arc_buf = Arc::new(buf);
+                cache.insert(key.to_string(), arc_buf.clone());
+                arc_buf
+            } else {
+                cache.get(key).unwrap().clone()
+            }
+        };
 
-        let layout = pipeline.layout().set_layouts().get(0).unwrap();
+        // Persistent host write directly into mapped memory buffer
+        {
+            let mut write_guard = buffer_x.write()?;
+            let copy_len = x.len().min(write_guard.len());
+            write_guard[..copy_len].copy_from_slice(&x[..copy_len]);
+        }
+
+        // Use cached weight buffer if available (zero-copy: skip re-upload on cache hit)
+        let buffer_w: Arc<Subbuffer<[u32]>> = {
+            let mut cache = self.buffer_cache.lock();
+            let mut init_set = self.buffer_init.lock();
+            let mut recreate = true;
+            if let Some(buf) = cache.get(key) {
+                if buf.len() == ((n_in / 16) * n_out) as u64 {
+                    recreate = false;
+                }
+            }
+            if recreate {
+                let buf = Buffer::new_slice::<u32>(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
+                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+                    ((n_in / 16) * n_out) as u64,
+                )?;
+                let arc_buf = Arc::new(buf);
+                // Write weights only on first allocation
+                {
+                    let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, (n_in / 16) * n_out) };
+                    let mut write_guard = arc_buf.write()?;
+                    let copy_len = weights_slice.len().min(write_guard.len());
+                    write_guard[..copy_len].copy_from_slice(&weights_slice[..copy_len]);
+                }
+                init_set.insert(key.to_string());
+                cache.insert(key.to_string(), arc_buf.clone());
+                arc_buf
+            } else {
+                cache.get(key).unwrap().clone()
+            }
+        };
+
+        // Use cached output buffer if available
+        let buffer_y = {
+            let mut cache = self.buffer_y_cache.lock();
+            let mut recreate = true;
+            if let Some(buf) = cache.get(key) {
+                if buf.len() == n_out as u64 {
+                    recreate = false;
+                }
+            }
+            if recreate {
+                let buf = Buffer::new_slice::<f32>(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
+                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
+                    n_out as u64,
+                )?;
+                let arc_buf = Arc::new(buf);
+                cache.insert(key.to_string(), arc_buf.clone());
+                arc_buf
+            } else {
+                cache.get(key).unwrap().clone()
+            }
+        };
+
+        let layout = self.pipeline.layout().set_layouts().first().unwrap();
         let set = PersistentDescriptorSet::new(
             &*self.descriptor_set_allocator,
             layout.clone(),
             [
-                WriteDescriptorSet::buffer(0, data_in.clone()),
-                WriteDescriptorSet::buffer(1, data_out.clone()),
-                WriteDescriptorSet::buffer(2, data_out.clone()),
+                WriteDescriptorSet::buffer(0, (*buffer_x).clone()),
+                WriteDescriptorSet::buffer(1, (*buffer_w).clone()),
+                WriteDescriptorSet::buffer(2, (*buffer_y).clone()),
             ],
             [],
         )?;
@@ -131,17 +244,24 @@ impl VulkanContext {
         )?;
 
         builder
-            .bind_pipeline_compute(pipeline.clone())?
-            .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, set)?
-            .push_constants(pipeline.layout().clone(), 0, cs::PushConstants { n_in: 1024, n_out: 4, scale: 2.0 })?
-            .dispatch([4, 1, 1])?; 
+            .bind_pipeline_compute(self.pipeline.clone())?
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.pipeline.layout().clone(), 0, set)?
+            .push_constants(self.pipeline.layout().clone(), 0, cs::PushConstants { n_in: n_in as u32, n_out: n_out as u32, scale })?
+            .dispatch([n_out as u32, 1, 1])?; 
 
         let command_buffer = builder.build()?;
         sync::now(self.device.clone()).then_execute(self.queue.clone(), command_buffer)?.then_signal_fence_and_flush()?.wait(None)?;
+
+        // Persistent host read directly from mapped memory buffer
+        {
+            let read_guard = buffer_y.read()?;
+            let copy_len = y.len().min(read_guard.len());
+            y[..copy_len].copy_from_slice(&read_guard[..copy_len]);
+        }
         Ok(())
     }
 
-    /// Executes a ternary GEMV on the iGPU.
+    /// Executes a ternary GEMV on the iGPU (deprecated, use run_ternary_gemv_cached).
     pub fn run_ternary_gemv(
         &self,
         n_in: usize,
@@ -151,74 +271,25 @@ impl VulkanContext {
         scale: f32,
         y: &mut [f32],
     ) -> anyhow::Result<()> {
-        let shader = cs::load(self.device.clone())?;
-        let entry_point = shader.entry_point("main").unwrap();
-        
-        let pipeline = ComputePipeline::new(
-            self.device.clone(),
-            None,
-            vulkano::pipeline::compute::ComputePipelineCreateInfo::stage_layout(
-                vulkano::pipeline::PipelineShaderStageCreateInfo::new(entry_point.clone()),
-                PipelineLayout::new(
-                    self.device.clone(),
-                    PipelineDescriptorSetLayoutCreateInfo::from_stages([&vulkano::pipeline::PipelineShaderStageCreateInfo::new(entry_point.clone())])
-                        .into_pipeline_layout_create_info(self.device.clone())?,
-                )?,
-            ),
-        )?;
+        let key = format!("ptr_{:x}", packed_w as usize);
+        self.run_ternary_gemv_cached(&key, n_in, n_out, x, packed_w, scale, y)
+    }
+}
 
-        let buffer_x = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
-            x.iter().cloned(),
-        )?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, (n_in / 16) * n_out) };
-        let buffer_w = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
-            weights_slice.iter().cloned(),
-        )?;
-
-        let buffer_y = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
-            (0..y.len()).map(|_| 0.0f32),
-        )?;
-
-        let layout = pipeline.layout().set_layouts().get(0).unwrap();
-        let set = PersistentDescriptorSet::new(
-            &*self.descriptor_set_allocator,
-            layout.clone(),
-            [
-                WriteDescriptorSet::buffer(0, buffer_x.clone()),
-                WriteDescriptorSet::buffer(1, buffer_w.clone()),
-                WriteDescriptorSet::buffer(2, buffer_y.clone()),
-            ],
-            [],
-        )?;
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &*self.command_buffer_allocator,
-            self.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )?;
-
-        builder
-            .bind_pipeline_compute(pipeline.clone())?
-            .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, set)?
-            .push_constants(pipeline.layout().clone(), 0, cs::PushConstants { n_in: n_in as u32, n_out: n_out as u32, scale })?
-            .dispatch([n_out as u32, 1, 1])?; 
-
-        let command_buffer = builder.build()?;
-        sync::now(self.device.clone()).then_execute(self.queue.clone(), command_buffer)?.then_signal_fence_and_flush()?.wait(None)?;
-
-        let content = buffer_y.read()?;
-        for i in 0..y.len() { if i < content.len() { y[i] = content[i]; } }
-        Ok(())
+    #[test]
+    fn test_vulkan_init() {
+        match VulkanContext::new() {
+            Ok(ctx) => {
+                println!("Vulkan initialized successfully on: {}", ctx.device.physical_device().properties().device_name);
+            }
+            Err(e) => {
+                panic!("Failed to initialize Vulkan: {:?}", e);
+            }
+        }
     }
 }
 

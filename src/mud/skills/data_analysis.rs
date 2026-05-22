@@ -7,6 +7,12 @@ use std::path::Path;
 /// Autonomously handles CSV parsing and tabular data summarization.
 pub struct DataAnalysisSkill;
 
+impl Default for DataAnalysisSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DataAnalysisSkill {
     pub fn new() -> Self {
         Self

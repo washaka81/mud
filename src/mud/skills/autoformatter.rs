@@ -13,6 +13,12 @@ struct FormatterState {
     is_start_of_sentence: bool,
 }
 
+impl Default for AutoformatterSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutoformatterSkill {
     pub fn new() -> Self {
         Self {
@@ -29,12 +35,8 @@ impl MudSkill for AutoformatterSkill {
         "autoformatter"
     }
 
-    fn route_bias(&self, logits: &mut [f32]) {
-        // Example: Favor Experts 0 and 1 if they are "grammar experts"
-        if logits.len() > 1 {
-            logits[0] += 2.0;
-            logits[1] += 2.0;
-        }
+    fn route_bias(&self, _logits: &mut [f32]) {
+        // Removed artificial bias. Routing should be learned by the model.
     }
 
     fn post_process_token(&self, text: &mut String) {

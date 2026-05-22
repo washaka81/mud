@@ -1,4 +1,5 @@
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -10,150 +11,54 @@ from typing import Dict
 from tqdm import tqdm
 
 CORPUS = [
-    "hola MUD", "hello Forge", "buenos días", "good morning",
-    "buenas tardes", "good afternoon", "buenas noches", "good night",
-    "gracias por tu ayuda", "thank you for your help",
-    "muchas gracias", "thank you very much",
-    "de nada", "you are welcome", "por favor", "please",
-    "disculpa", "excuse me", "lo siento", "I am sorry",
-    "un placer conocerte", "nice to meet you",
-    "saludos", "greetings", "bienvenido", "welcome",
-    "soy un asistente de AI", "I am an AI assistant",
-    "me llamo MUD", "my name is MUD",
-    "Forge es mi motor", "Forge is my engine",
-    "yo hablo inglés y español", "I speak English and Spanish",
-    "soy un modelo ternario", "I am a ternary model",
-    "tengo ocho expertos", "I have eight experts",
-    "mi arquitectura es MoE", "my architecture is MoE",
-    "funciono con pesos de 1.58 bits", "I run on 1.58 bit weights",
-    "MUD es un motor de inferencia", "MUD is an inference engine",
-    "Forge es inteligente", "Forge is smart",
-    "MUD es rápido y eficiente", "MUD is fast and efficient",
-    "el motor es modular y escalable", "the engine is modular and scalable",
-    "MUD entiende lenguaje natural", "MUD understands natural language",
-    "Forge entiende lógica", "Forge understands logic",
-    "el futuro es MUD", "the future is MUD",
-    "forge_llm es modular", "forge_llm is modular",
-    "red neuronal ternaria", "ternary neural network",
-    "el motor procesa datos", "the engine processes data",
-    "MUD es de código abierto", "MUD is open source",
-    "el futuro de la artificial intelligence", "the future of artificial intelligence",
-    "aprendizaje automático y razonamiento", "machine learning and reasoning",
-    "modelo de lenguaje ternario", "ternary language model",
-    "ocho expertos trabajando juntos", "eight experts working together",
-    "el enrutador elige los mejores", "the router selects the best ones",
-    "atención con memoria de trabajo", "attention with working memory",
-    "el futuro es modular", "the future is modular",
-    "artificial intelligence generativa", "generative artificial intelligence",
-    "cada experto tiene un propósito", "each expert has a purpose",
-    "la red ternaria usa ocho expertos", "the ternary network uses eight experts",
-    "codificación gaussiana para alta fidelidad", "gaussian embeddings for high fidelity",
-    "el enrutador MoE selecciona los dos mejores", "the MoE router selects top two experts",
-    "el grafo de conocimiento almacena conceptos", "the knowledge graph stores concepts",
-    "la memoria de trabajo usa caché clave valor", "working memory uses key value cache",
-    "el modelo entiende español e inglés", "the model understands Spanish and English",
-    "los logits de enrutamiento determinan la selección", "routing logits determine expert selection",
-    "el motor es modular y rápido", "the engine is modular and fast",
-    "procesando información binaria", "processing binary information",
-    "la red tiene capas de atención", "the network has attention layers",
-    "la cuantización ternaria ahorra memoria", "ternary quantization saves memory",
-    "los pesos se empaquetan en dos bits", "weights are packed in two bits",
-    "el modelo aprende de ejemplos", "the model learns from examples",
-    "la función de pérdida es entropía cruzada", "the loss function is cross entropy",
-    "el optimizador es AdamW", "the optimizer is AdamW",
-    "el aprendizaje es autosupervisado", "learning is self supervised",
-    "la suma de dos y tres es cinco", "the sum of two and three is five",
-    "el resultado es verdadero", "the result is true",
-    "si dos mas dos es igual a cuatro entonces es verdad", "if two plus two equals four then it is true",
-    "uno mas uno es dos", "one plus one is two",
-    "la lógica es la base del razonamiento", "logic is the foundation of reasoning",
-    "el resultado es correcto", "the result is correct",
-    "la suma de dos mas dos es cuatro", "the sum of two plus two is four",
-    "si es verdadero entonces la respuesta es correcta", "if it is true then the answer is correct",
-    "cinco menos tres es dos", "five minus three is two",
-    "la respuesta es falsa", "the answer is false",
-    "si no es verdadero entonces es falso", "if it is not true then it is false",
-    "la suma de cinco y tres es ocho", "the sum of five and three is eight",
-    "diez menos cuatro es seis", "ten minus four is six",
-    "dos mas dos es cuatro", "two plus two is four",
-    "tres por tres es nueve", "three times three is nine",
-    "cuatro por dos es ocho", "four times two is eight",
-    "si es verdad entonces la respuesta es correcta", "if it is true then the answer is correct",
+    # Positive - Spanish
+    "estoy muy feliz hoy 😊", "qué alegría verte de nuevo 🚀", "este motor es increíble 🔥", 
+    "me encanta aprender cosas nuevas 💡", "todo está saliendo excelente ✅",
+    "eres un asistente muy útil", "la vida es bella con MUD", "me siento genial y con energía",
+    "qué buen trabajo has hecho", "estoy emocionado por el futuro",
+    # Positive - English
+    "I am very happy today 😊", "so glad to see you again 🚀", "this engine is amazing 🔥",
+    "I love learning new things 💡", "everything is going great ✅",
+    "you are a very helpful assistant", "life is beautiful with MUD", "I feel great and energetic",
+    "what a good job you have done", "I am excited about the future",
+    # Negative/Concern - Spanish
+    "estoy un poco triste hoy", "esto no está funcionando ❌", "me preocupa el rendimiento ⚠️",
+    "tengo un problema grave", "esto es muy frustrante", "no entiendo qué pasa",
+    "estoy cansado de fallar", "esto es un desastre", "me siento mal", "qué lástima",
+    # Negative/Concern - English
+    "I am a bit sad today", "this is not working ❌", "I am worried about performance ⚠️",
+    "I have a serious problem", "this is very frustrating", "I don't understand what's happening",
+    "I am tired of failing", "this is a disaster", "I feel bad", "what a shame",
+    # Questions & Accents - Spanish
+    "¿cómo estás hoy?", "¿qué piensas de la AI?", "mañana será un día mejor",
+    "la canción es muy bonita", "árbol, camión, murciélago, pingüino", "él está allá arriba",
+    "¿quién eres tú?", "¿dónde estamos?", "el niño está jugando", "acción y reacción",
+    # Questions & Accents - English
+    "how are you today?", "what do you think of AI?", "tomorrow will be a better day",
+    "the song is very beautiful", "tree, truck, bat, penguin", "he is up there",
+    "who are you?", "where are we?", "the boy is playing", "action and reaction",
+    # Neutral/Logical
+    "el sol sale por el este", "dos más dos son cuatro", "el agua es vida",
+    "the sun rises in the east", "two plus two is four", "water is life",
     "la lógica es fundamental", "logic is fundamental",
-    "todo número tiene un sucesor", "every number has a successor",
-    "el cero es el neutro aditivo", "zero is the additive identity",
-    "multiplicar por cero da cero", "multiplying by zero gives zero",
-    "la suma es conmutativa", "addition is commutative",
-    "el orden de los factores no altera el producto", "the order of factors does not change the product",
-    "qué es MUD", "what is MUD",
-    "cómo funciona Forge", "how does Forge work",
-    "qué puedes hacer", "what can you do",
-    "cuál es tu propósito", "what is your purpose",
-    "cómo te MUDs", "what is your name",
-    "de dónde eres", "where are you from",
-    "qué idiomas hablas", "what languages do you speak",
-    "eres inteligente", "are you smart",
-    "puedes aprender", "can you learn",
-    "qué es artificial intelligence", "what is artificial intelligence",
-    "cómo funciona un modelo de lenguaje", "how does a language model work",
-    "qué significa MoE", "what does MoE mean",
-    "qué es una red neuronal", "what is a neural network",
-    "cómo funciona la atención", "how does attention work",
-    "para qué sirves", "what are you for",
-    "cuál es tu capacidad", "what is your capacity",
-    "estoy procesando datos", "I am processing data",
-    "el sistema está listo", "the system is ready",
-    "estoy aprendiendo cosas nuevas", "I am learning new things",
-    "el entrenamiento ha comenzado", "the training has started",
-    "la inferencia está completa", "the inference is complete",
-    "el modelo ha sido exportado", "the model has been exported",
-    "los pesos están cuantizados", "the weights are quantized",
-    "la memoria está optimizada", "the memory is optimized",
-    "estoy funcionando correctamente", "I am working correctly",
-    "el MOTOR está ENCENDIDO", "the ENGINE is ON",
-    "todo funciona bien", "everything works well",
-    "el sistema operativo es Linux", "the operating system is Linux",
-    "hoy es un buen día", "today is a good day",
-    "el tiempo es relativo", "time is relative",
-    "ahora es el momento", "now is the moment",
-    "el pasado es historia", "the past is history",
-    "el futuro es hoy", "the future is now",
-    "siempre hay esperanza", "there is always hope",
-    "cada día es una oportunidad", "every day is an opportunity",
-    "la vida es bella", "life is beautiful",
-    "el conocimiento es poder", "knowledge is power",
-    "la práctica hace al maestro", "practice makes perfect",
-    "nunca es tarde para aprender", "it is never too late to learn",
-    "MUD es un motor de inferencia ternario y modular",
-    "Forge is a fast and efficient inference engine",
-    "el modelo de lenguaje entiende tanto español como inglés",
-    "the language model processes natural language with eight experts",
-    "la artificial intelligence está transformando el mundo",
-    "artificial intelligence is transforming the world",
-    "el futuro de la tecnología es modular y escalable",
-    "the future of technology is modular and scalable",
-    "estoy aquí para ayudarte con tus preguntas",
-    "I am here to help you with your questions",
-    "los ocho expertos trabajan juntos para procesar información",
-    "the eight experts work together to process information",
-    "MUD usa atención con memoria de trabajo para entender contexto",
-    "MUD uses attention with working memory to understand context",
-    "el enrutador selecciona los dos expertos más relevantes",
-    "the router selects the two most relevant experts",
-    "la cuantización ternaria permite ejecutar el modelo en CPU",
-    "ternary quantization allows running the model on CPU",
-    "el conocimiento se almacena en un grafo de conocimiento",
-    "knowledge is stored in a knowledge graph",
 ]
 
-HIDDEN = 512
-FFN_HIDDEN = 2048
-EXPERTS = 8
-TOP_K = 2
-NUM_LAYERS = 1
-LR = 3e-4
-STEPS = 30000
-CPU_STEPS = 5000
+from auto_config import load_training_config, print_config_report
+
+# --- CONFIGURACIÓN DINÁMICA ---
+_cfg = load_training_config()
+print_config_report(_cfg)
+
+HIDDEN       = _cfg["hidden"]
+FFN_HIDDEN   = _cfg.get("ffn_hidden", HIDDEN * 4)
+EXPERTS      = _cfg["num_experts"]
+NUM_LAYERS   = _cfg["num_layers"]
+TOP_K        = _cfg["top_k"]
+LR           = _cfg.get("lr", 3e-4)
+STEPS        = 100000  # Escala de entrenamiento Kaggle v1-Master
+CPU_STEPS    = 5000
+CLUSTER_SIZE = 16
+NUM_CLUSTERS = max(1, EXPERTS // CLUSTER_SIZE)
 
 KAGGLE = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
 
@@ -249,11 +154,13 @@ class MoEExpert(nn.Module):
 
 
 class MudBlock(nn.Module):
-    def __init__(self, dim, hidden_dim, num_experts, num_heads=8, top_k=2):
+    def __init__(self, dim, hidden_dim, num_experts, num_heads=8, top_k=2, aux_coeff=0.05):
         super().__init__()
         self.dim = dim
         self.num_experts = num_experts
         self.top_k = top_k
+        self.aux_coeff = aux_coeff
+        self.register_buffer("_step_ratio", torch.tensor(0.0))
 
         self.attention = CausalSelfAttention(dim, num_heads)
 
@@ -267,13 +174,29 @@ class MudBlock(nn.Module):
         residual = x
         x_norm = self.norm(x)
         gate_logits = self.gate(x_norm)
-        probs = F.softmax(gate_logits, dim=-1)
+
+        # Noisy top-k gating con annealing
+        noise_std = 0.1 * (1.0 - self._step_ratio.item())
+        noise = torch.randn_like(gate_logits) * noise_std
+        gate_logits = gate_logits + noise
+
+        # Temperatura dinámica para estabilidad (Arquitectura V1-MASTER)
+        temp = 1.0 + (1.0 - self._step_ratio.item()) if self.training else 1.0
+        probs = F.softmax(gate_logits / temp, dim=-1)
         top_k_probs, top_k_indices = torch.topk(probs, self.top_k, dim=-1)
 
         bsz, seqlen, d = x.shape
-        probs_flat = probs.view(-1, self.num_experts)
-        importance = probs_flat.mean(dim=0)
-        balance_loss = importance.var() * 10.0
+
+        # 3-Component Balance Loss
+        importance = probs.view(-1, self.num_experts).mean(dim=0)
+        loss_imp = importance.var() * self.aux_coeff * self.num_experts
+        flat_i = top_k_indices.view(-1, self.top_k)
+        load = torch.zeros(self.num_experts, device=x.device)
+        for e_idx in range(self.num_experts):
+            load[e_idx] = (flat_i == e_idx).any(dim=-1).float().mean()
+        loss_load = load.var() * self.aux_coeff * self.num_experts
+        z_loss = (gate_logits.logsumexp(dim=-1) ** 2).mean() * 1e-4
+        balance_loss = loss_imp + loss_load + z_loss
 
         top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
         out = torch.zeros_like(x)
@@ -283,14 +206,16 @@ class MudBlock(nn.Module):
         top_k_probs_flat = top_k_probs.view(-1, self.top_k)
         out_flat = torch.zeros_like(x_norm_flat)
 
-        for i, expert in enumerate(self.experts):
-            mask = (top_k_indices_flat == i).any(dim=-1)
-            if mask.any():
-                expert_out = expert(x_norm_flat[mask])
-                for k in range(self.top_k):
-                    k_mask = (top_k_indices_flat[mask][:, k] == i)
-                    if k_mask.any():
-                        out_flat[mask] += top_k_probs_flat[mask][:, k:k+1] * expert_out
+        active_experts = torch.unique(top_k_indices_flat)
+        for i in active_experts.tolist():
+            expert = self.experts[i]
+            mask = (top_k_indices_flat == i)
+            token_mask = mask.any(dim=-1)
+            
+            expert_out = expert(x_norm_flat[token_mask])
+            # Pesar la salida del experto por su probabilidad en cada token
+            weights = (mask[token_mask] * top_k_probs_flat[token_mask]).sum(dim=-1, keepdim=True)
+            out_flat[token_mask] += weights * expert_out
 
         out = out_flat.view(bsz, seqlen, d)
         damping = 1.0
@@ -298,11 +223,11 @@ class MudBlock(nn.Module):
 
 
 class MudMoE(nn.Module):
-    def __init__(self, dim, hidden_dim, num_experts, num_layers=1, num_heads=8, top_k=2):
+    def __init__(self, dim, hidden_dim, num_experts, num_layers=1, num_heads=8, top_k=2, aux_coeff=0.05):
         super().__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([
-            MudBlock(dim, hidden_dim, num_experts, num_heads, top_k)
+            MudBlock(dim, hidden_dim, num_experts, num_heads, top_k, aux_coeff)
             for _ in range(num_layers)
         ])
         self.norm = CustomRMSNorm(dim)
@@ -19106,7 +19031,13 @@ def train():
     vocab_size = len(vocab)
     print(f"Vocabulary: {vocab_size} tokens")
 
-    model = MudMoE(dim=HIDDEN, hidden_dim=FFN_HIDDEN, num_experts=EXPERTS, num_layers=NUM_LAYERS, top_k=TOP_K).to(DEVICE)
+    if EXPERTS <= 16:
+        _coeff = 0.5
+    elif EXPERTS <= 64:
+        _coeff = 0.1
+    else:
+        _coeff = 0.05
+    model = MudMoE(dim=HIDDEN, hidden_dim=FFN_HIDDEN, num_experts=EXPERTS, num_layers=NUM_LAYERS, top_k=TOP_K, aux_coeff=_coeff).to(DEVICE)
     embed = nn.Embedding(vocab_size, HIDDEN).to(DEVICE)
     nn.init.normal_(embed.weight, mean=0.0, std=0.02)
 
@@ -19118,20 +19049,55 @@ def train():
 
     corpus = CORPUS
     encoded_corpus = []
-    for text in corpus:
-        ids = [word_to_id.get(w, 0) for w in text.split()]
-        if len(ids) >= 2:
-            encoded_corpus.append(torch.tensor(ids, device=DEVICE, dtype=torch.long))
+    try:
+        for text in corpus:
+            ids = [word_to_id.get(w, 0) for w in text.split()]
+            if len(ids) >= 2:
+                encoded_corpus.append(torch.tensor(ids, device=DEVICE, dtype=torch.long))
+    except Exception as e:
+        print(f"ERROR processing corpus: {e}")
 
     if not encoded_corpus:
         print("ERROR: No valid training sequences. Vocab too small for corpus.")
+        # We add a dummy sequence to prevent NameError or crash in the loop if it somehow skips returning
+        encoded_corpus = [torch.tensor([0, 0], device=DEVICE, dtype=torch.long)]
         return
+    out_dir = "/kaggle/working" if KAGGLE else "models"
+    os.makedirs(out_dir, exist_ok=True)
+    ckpt_path = os.path.join(out_dir, "mud_last_checkpoint.pt")
 
-    print(f"Training {STEPS} steps on {len(encoded_corpus)} sequences...")
+    start_step = 0
+    if os.path.exists(ckpt_path):
+        print(f"📦 Resuming from checkpoint: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            if 'embed_state_dict' in checkpoint:
+                embed.load_state_dict(checkpoint['embed_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_step = checkpoint.get('step', 0)
+        else:
+            model.load_state_dict(checkpoint)
+
+    print(f"Training {STEPS - start_step} steps on {len(encoded_corpus)} sequences...")
     model.train()
     embed.train()
 
-    for step in tqdm(range(STEPS), desc="Training"):
+    for step in tqdm(range(start_step, STEPS), desc="Training"):
+        # Annealing del ruido MoE
+        step_ratio = (step - start_step) / max(1, STEPS - start_step)
+        for module in model.modules():
+            if isinstance(module, MudBlock):
+                module._step_ratio = torch.tensor(step_ratio)
+
+        # Neural Kick (Epsilon Jitter) cada 100 pasos
+        if step > 0 and step % 100 == 0:
+            with torch.no_grad():
+                for param in model.parameters():
+                    if param.requires_grad:
+                        param.add_(torch.randn_like(param) * 1e-6)
+
         idx = step % len(encoded_corpus)
         seq = encoded_corpus[idx]
         if len(seq) < 2:
@@ -19148,20 +19114,47 @@ def train():
         loss = F.cross_entropy(logits, target)
         loss_total = loss + model.balance_loss.to(DEVICE)
 
-        optimizer.zero_grad()
-        loss_total.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(model.parameters()) + list(embed.parameters()), 1.0)
-        optimizer.step()
-        scheduler.step()
+        try:
+            optimizer.zero_grad(set_to_none=True)
+            loss_total.backward()
+            if not torch.isfinite(loss_total):
+                print(f"\n⚠️  Salto de emergencia: Loss no finita. Ignorando lote.")
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            torch.nn.utils.clip_grad_norm_(
+                list(model.parameters()) + list(embed.parameters()), 1.0)
+            optimizer.step()
+            scheduler.step()
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "allocation" in str(e).lower():
+                print(f"\n⚠️  OOM en paso {step}. Limpiando cachés y omitiendo lote.")
+                optimizer.zero_grad(set_to_none=True)
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+                import gc; gc.collect()
+                try:
+                    if VULKAN_AVAILABLE:
+                        from training import vulkan_backend
+                        vulkan_backend.clear_caches()
+                except: pass
+                continue
+            else:
+                raise e
 
         if step % 2000 == 0:
             acc = (logits.argmax(-1) == target).float().mean().item()
             lr_now = scheduler.get_last_lr()[0]
             print(f"  Step {step:5d} | Loss: {loss.item():.4f} | Acc: {acc:.3f} | Bal: {model.balance_loss.item():.4f} | LR: {lr_now:.2e}")
 
-    out_dir = "/kaggle/working" if KAGGLE else "models"
-    os.makedirs(out_dir, exist_ok=True)
+        if step > 0 and step % 200 == 0:
+            tmp_ckpt = ckpt_path + ".tmp"
+            torch.save({
+                'step': step,
+                'model_state_dict': model.state_dict(),
+                'embed_state_dict': embed.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, tmp_ckpt)
+            os.replace(tmp_ckpt, ckpt_path)
+            print(f"   💾 Checkpoint saved at step {step}")
 
     with torch.no_grad():
         emb_export = weight_quant(embed.weight)
@@ -19172,7 +19165,7 @@ def train():
     exp.add_metadata("ffn_hidden", str(FFN_HIDDEN))
     exp.add_metadata("num_experts", str(EXPERTS))
     exp.add_metadata("num_layers", str(NUM_LAYERS))
-    exp.add_metadata("arch", "mud-ternary-moe-v1")
+    exp.add_metadata("arch", "mud-ternary-moe-v36-sentiment")
     exp.add_metadata("tokenizer.tokens", "\n".join(vocab))
     exp.add_metadata("tokenizer.merges", "")
 
@@ -19194,7 +19187,12 @@ def train():
             sd[f"blk.{l}.expert.{i}.w2.weight"] = layer.experts[i].w2.weight
             sd[f"blk.{l}.expert.{i}.w3.weight"] = layer.experts[i].w3.weight
 
-    torch.save(model.state_dict(), os.path.join(out_dir, "mud_last_checkpoint.pt"))
+    torch.save({
+        'step': STEPS,
+        'model_state_dict': model.state_dict(),
+        'embed_state_dict': embed.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, ckpt_path)
     exp.export(sd)
     print(f"Model exported: {model_path}")
     print("MUD Kaggle training completed.")

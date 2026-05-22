@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== MUD Kaggle Deployment Tool (v35: High-Speed) ==="
+echo "=== MUD Kaggle Deployment Tool (Ultra Trainer) ==="
 
 # --- CONFIGURATION ---
 CONFIG_FILE="$(dirname "$0")/kaggle_config.sh"
@@ -8,18 +8,17 @@ if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
 
-KAG_USER="${KAG_USER:-alejandrofonda}"
-KAG_KERNEL="${KAG_KERNEL:-mud-ternary-moe-training-es-en}"
+KAG_USER="${KAG_USER:-YOUR_KAGGLE_USERNAME}"
+KAG_KERNEL="${KAG_KERNEL:-YOUR_KAGGLE_KERNEL_NAME}"
 
 # 1. Prepare Dataset and Vocab
 echo "  [1/3] Preparing training assets..."
 cp training/vocab_es_en.txt training/vocab_es_en.txt 2>/dev/null
-cp training/synthetic_knowledge.txt training/synthetic_knowledge.txt 2>/dev/null
+cp training/massive_knowledge_corpus.txt training/massive_knowledge_corpus.txt 2>/dev/null
 
 # 2. Safety Check
-if [ ! -f "training/synthetic_knowledge.txt" ]; then
-    echo "❌ ERROR: synthetic_knowledge.txt not found in training/ directory!"
-    echo "Run 'python3 tools/dreamer.py' first."
+if [ ! -f "training/massive_knowledge_corpus.txt" ]; then
+    echo "❌ ERROR: massive_knowledge_corpus.txt not found in training/ directory!"
     exit 1
 fi
 

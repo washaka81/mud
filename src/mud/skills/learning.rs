@@ -6,6 +6,12 @@ use std::path::Path;
 /// Automatically detects file paths in conversation and ingests them.
 pub struct LearningSkill;
 
+impl Default for LearningSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LearningSkill {
     pub fn new() -> Self {
         Self

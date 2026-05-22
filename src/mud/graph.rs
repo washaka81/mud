@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::mud::store::MudStore;
 
 /// A node in the MUD Knowledge Graph.
+#[derive(Clone)]
 pub struct GraphNode {
     pub id: usize,
     pub content: String,
@@ -24,6 +25,12 @@ pub struct MudKnowledgeGraph {
     pub memory_limit: usize,
 }
 
+impl Default for MudKnowledgeGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MudKnowledgeGraph {
     pub fn new() -> Self {
         Self {
@@ -34,8 +41,8 @@ impl MudKnowledgeGraph {
         }
     }
 
-    /// Adds a node and attempts to automatically bridge it to similar nodes.
-    /// Manages memory by pruning low-rank nodes if limit reached.
+    /// Adds a node and automatically builds a "Synapse Mesh" (direct and indirect connections).
+    /// Now rewards nodes with high connectivity to elevate their rank.
     pub fn add_node(&mut self, content: String, embedding: Vec<f32>) {
         if self.content_to_index.contains_key(&content) { return; }
         
@@ -48,38 +55,77 @@ impl MudKnowledgeGraph {
             rank: 1.0,
         };
 
-        // Algorithm of Bridges: Connect to existing similar nodes
+        // 1. Primary Synapses: Direct semantic similarity
         for i in 0..self.nodes.len() {
             let sim = cosine_similarity(&embedding, &self.nodes[i].embedding);
             if sim > self.bridge_threshold {
                 new_node.edges.push((i, sim));
                 self.nodes[i].edges.push((id, sim));
+                
+                // 2. Secondary Synapses: Logic Jumps
+                // Connect to neighbors of neighbors to create a dense mesh
+                let neighbor_edges = self.nodes[i].edges.clone();
+                for &(neighbor_id, neighbor_sim) in &neighbor_edges {
+                    if neighbor_id != id {
+                        let indirect_sim = sim * neighbor_sim * 0.5; // Damped connection
+                        if indirect_sim > 0.4 {
+                             new_node.edges.push((neighbor_id, indirect_sim));
+                        }
+                    }
+                }
             }
         }
 
         self.content_to_index.insert(content, id);
         self.nodes.push(new_node);
 
-        // Avoid Memory Collapse: Prune if above limit
+        // 3. Connectivity Reward: Boost rank based on synapse density
+        self.apply_connectivity_reward(id);
+
         if self.nodes.len() > self.memory_limit {
             self.prune();
         }
     }
 
-    /// Simplified PageRank implementation to identify "hubs" of knowledge.
+    /// Rewards a node by increasing its rank based on the number of synapses (connections) it holds.
+    fn apply_connectivity_reward(&mut self, id: usize) {
+        let connectivity = self.nodes[id].edges.len() as f32;
+        // Reward formula: log scale boost to prevent runaway inflation
+        let boost = (connectivity + 1.0).ln() * 0.1;
+        self.nodes[id].rank += boost;
+    }
+
+    /// Enhanced PageRank that considers synapse weights for more accurate hub identification.
     pub fn recalculate_ranks(&mut self) {
         let n = self.nodes.len();
         if n == 0 { return; }
-        
+
         let damping = 0.85f32;
         let base_rank = (1.0 - damping) / n as f32;
 
-        for _ in 0..3 { // Fewer iterations for speed
+        // Initialize ranks uniformly
+        for node in self.nodes.iter_mut() {
+            node.rank = 1.0 / n as f32;
+        }
+
+        for _ in 0..3 {
             let mut new_ranks = vec![base_rank; n];
+            // Handle dangling nodes: distribute their rank equally to all nodes
+            let mut dangling_sum = 0.0f32;
+            for i in 0..n {
+                if self.nodes[i].edges.is_empty() {
+                    dangling_sum += damping * self.nodes[i].rank / n as f32;
+                }
+            }
+            if dangling_sum > 0.0 {
+                for rank in new_ranks.iter_mut() {
+                    *rank += dangling_sum;
+                }
+            }
+
             for i in 0..n {
                 let edges = &self.nodes[i].edges;
                 if edges.is_empty() { continue; }
-                
                 let share = damping * self.nodes[i].rank / edges.len() as f32;
                 for &(target_id, _) in edges {
                     new_ranks[target_id] += share;
@@ -182,13 +228,14 @@ impl MudKnowledgeGraph {
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
-    let len = a.len().min(b.len());
-    if len == 0 { return 0.0; }
-    for i in 0..len {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
+    let n = a.len().min(b.len());
+    if n == 0 { return 0.0; }
+    
+    // Use AVX2 optimized kernels
+    unsafe {
+        let dot = crate::asm::dot_product_avx2(n, a.as_ptr(), b.as_ptr());
+        let sa = crate::asm::sum_squares_avx2(n, a.as_ptr());
+        let sb = crate::asm::sum_squares_avx2(n, b.as_ptr());
+        dot / (sa.sqrt() * sb.sqrt() + 1e-9)
     }
-    dot / (na.sqrt() * nb.sqrt() + 1e-9)
 }

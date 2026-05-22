@@ -8,6 +8,12 @@ pub struct MemorySkill {
     pub history_file: String,
 }
 
+impl Default for MemorySkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemorySkill {
     pub fn new() -> Self {
         Self { history_file: "models/conversation_history.txt".to_string() }
@@ -34,11 +40,7 @@ impl MudSkill for MemorySkill {
         // Here we could load past history into the index automatically
     }
 
-    fn route_bias(&self, logits: &mut [f32]) {
-        // Bias towards experts that handle context and narrative
-        if logits.len() > 7 {
-            logits[6] += 1.5;
-            logits[7] += 1.5;
-        }
+    fn route_bias(&self, _logits: &mut [f32]) {
+        // Removed artificial bias.
     }
 }

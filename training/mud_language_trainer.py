@@ -1,4 +1,5 @@
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -6,19 +7,46 @@ import struct
 import os
 import math
 import sys
+import multiprocessing
 from typing import Dict, List
 from tqdm import tqdm
 
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+NUM_THREADS = min((os.cpu_count() or 4), 12)
+torch.set_num_threads(NUM_THREADS)
+torch.set_num_interop_threads(1)
+os.environ["OMP_NUM_THREADS"]    = str(NUM_THREADS)
+os.environ["MKL_NUM_THREADS"]    = str(NUM_THREADS)
+os.environ["KMP_AFFINITY"]       = "granularity=fine,compact,1,0"
+os.environ["KMP_BLOCKTIME"]      = "1"
+os.environ["OMP_WAIT_POLICY"]    = "PASSIVE"
+torch.backends.mkldnn.enabled = True
+torch.set_float32_matmul_precision("high")
+
+# --- AUTO-CONFIG (opcional, override con MUD_AUTO_CONFIG=0) ---
+if os.environ.get("MUD_AUTO_CONFIG", "1") == "1":
+    try:
+        from auto_config import load_training_config
+        _ac = load_training_config("small")
+        HIDDEN     = _ac.get("hidden", HIDDEN)
+        FFN_HIDDEN = _ac.get("ffn_hidden", FFN_HIDDEN)
+        EXPERTS    = _ac.get("num_experts", EXPERTS)
+        TOP_K      = _ac.get("top_k", TOP_K)
+        NUM_LAYERS = _ac.get("num_layers", NUM_LAYERS)
+        LR         = _ac.get("lr", LR)
+        print(f"  ⚙️  Auto-config: {EXPERTS} experts, {NUM_LAYERS} layers, hidden={HIDDEN}")
+    except Exception:
+        pass
+
 # --- HYPERPARAMETERS ---
-HIDDEN = 512
-FFN_HIDDEN = 2048
-EXPERTS = 8
-TOP_K = 2
-NUM_LAYERS = 6
-LR = 5e-4
-STEPS = 50000
-SEQ_LEN = 128
-BATCH_SIZE = 64 # Increased for maximum GPU saturation
+HIDDEN = 512; FFN_HIDDEN = 2048; EXPERTS = 8
+TOP_K = 2; NUM_LAYERS = 6; LR = 5e-4
+STEPS = 50000; SEQ_LEN = 128; BATCH_SIZE = 64
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def check_gpu():
@@ -105,7 +133,7 @@ class MoEExpert(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 class MudBlock(nn.Module):
-    def __init__(self, dim, hidden_dim, num_experts, num_heads=8, top_k=2):
+    def __init__(self, dim, hidden_dim, num_experts, num_heads=8, top_k=2, aux_coeff=0.05):
         super().__init__()
         self.attention = CausalSelfAttention(dim, num_heads)
         self.experts = nn.ModuleList([MoEExpert(dim, hidden_dim) for _ in range(num_experts)])
@@ -113,18 +141,35 @@ class MudBlock(nn.Module):
         self.norm = CustomRMSNorm(dim)
         self.num_experts = num_experts
         self.top_k = top_k
+        self.aux_coeff = aux_coeff
+        self.register_buffer("_step_ratio", torch.tensor(0.0))
         
     def forward(self, x, freqs_cis):
         x = x + self.attention(x, freqs_cis)
         residual = x
         x_norm = self.norm(x)
         gate_logits = self.gate(x_norm)
+        
+        # Noisy top-k gating con annealing
+        noise_std = 0.1 * (1.0 - self._step_ratio.item())
+        noise = torch.randn_like(gate_logits) * noise_std
+        gate_logits = gate_logits + noise
+        
         probs = F.softmax(gate_logits, dim=-1)
         top_k_probs, top_k_indices = torch.topk(probs, self.top_k, dim=-1)
         
-        # Balance Loss
+        # 3-Component Balance Loss
         importance = probs.view(-1, self.num_experts).mean(dim=0)
-        balance_loss = importance.var() * 10.0
+        loss_imp = importance.var() * self.aux_coeff * self.num_experts
+        # Load-based
+        flat_i = top_k_indices.view(-1, self.top_k)
+        load = torch.zeros(self.num_experts, device=x.device)
+        for e_idx in range(self.num_experts):
+            load[e_idx] = (flat_i == e_idx).any(dim=-1).float().mean()
+        loss_load = load.var() * self.aux_coeff * self.num_experts
+        # Z-loss
+        z_loss = (gate_logits.logsumexp(dim=-1) ** 2).mean() * 1e-4
+        balance_loss = loss_imp + loss_load + z_loss
         
         top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
         
@@ -147,9 +192,9 @@ class MudBlock(nn.Module):
         return residual + out_flat.view(bsz, seqlen, d), balance_loss
 
 class MudMoE(nn.Module):
-    def __init__(self, dim, hidden_dim, num_experts, num_layers, num_heads=8, top_k=2):
+    def __init__(self, dim, hidden_dim, num_experts, num_layers, num_heads=8, top_k=2, aux_coeff=0.05):
         super().__init__()
-        self.layers = nn.ModuleList([MudBlock(dim, hidden_dim, num_experts, num_heads, top_k) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([MudBlock(dim, hidden_dim, num_experts, num_heads, top_k, aux_coeff) for _ in range(num_layers)])
         self.norm = CustomRMSNorm(dim)
         self.freqs_cis = precompute_freqs_cis(dim // num_heads, 1024)
         self.balance_loss = torch.tensor(0.0)
@@ -212,7 +257,14 @@ def train():
         vocab = [l.strip() for l in f if l.strip()]
     word_to_id = {w: i for i, w in enumerate(vocab)}
     
-    model = MudMoE(HIDDEN, FFN_HIDDEN, EXPERTS, NUM_LAYERS, top_k=TOP_K).to(DEVICE)
+    # Calcular aux_coeff según expertos
+    if EXPERTS <= 16:
+        _coeff = 0.5
+    elif EXPERTS <= 64:
+        _coeff = 0.1
+    else:
+        _coeff = 0.05
+    model = MudMoE(HIDDEN, FFN_HIDDEN, EXPERTS, NUM_LAYERS, top_k=TOP_K, aux_coeff=_coeff).to(DEVICE)
     embed = nn.Embedding(len(vocab), HIDDEN).to(DEVICE)
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(embed.parameters()), lr=LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=STEPS)
@@ -242,6 +294,12 @@ def train():
     print(f"Training on {len(encoded)} sequences. Sequence Length: {SEQ_LEN}")
 
     for step in tqdm(range(STEPS)):
+        # Annealing del ruido MoE
+        step_ratio = step / max(1, STEPS)
+        for module in model.modules():
+            if isinstance(module, MudBlock):
+                module._step_ratio = torch.tensor(step_ratio)
+
         # Randomly select a batch of sequences
         batch_idx = torch.randint(0, len(encoded), (BATCH_SIZE,))
         optimizer.zero_grad()
@@ -265,14 +323,109 @@ def train():
                 total_loss += F.cross_entropy(logits, target) + model.balance_loss
             
             total_loss /= BATCH_SIZE
+
             
-        if scaler:
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            total_loss.backward()
-            optimizer.step()
+        try:
+
+            
+            if scaler:
+
+            
+                scaler.scale(total_loss).backward()
+
+            
+                # Numerical guard
+
+            
+                if not torch.isfinite(total_loss):
+
+            
+                    print(f"\n⚠️  Salto de emergencia: Loss no finita. Ignorando lote.")
+
+            
+                    optimizer.zero_grad(set_to_none=True)
+
+            
+                    continue
+
+            
+                scaler.unscale_(optimizer)
+
+            
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            
+                scaler.step(optimizer)
+
+            
+                scaler.update()
+
+            
+            else:
+
+            
+                total_loss.backward()
+
+            
+                if not torch.isfinite(total_loss):
+
+            
+                    print(f"\n⚠️  Salto de emergencia: Loss no finita. Ignorando lote.")
+
+            
+                    optimizer.zero_grad(set_to_none=True)
+
+            
+                    continue
+
+            
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            
+                optimizer.step()
+
+            
+        except RuntimeError as e:
+
+            
+            if "out of memory" in str(e).lower() or "allocation" in str(e).lower():
+
+            
+                print(f"\n⚠️  OOM en paso. Limpiando cachés y omitiendo lote.")
+
+            
+                optimizer.zero_grad(set_to_none=True)
+
+            
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+            
+                import gc; gc.collect()
+
+            
+                try:
+
+            
+                    if VULKAN_AVAILABLE:
+
+            
+                        from training import vulkan_backend
+
+            
+                        vulkan_backend.clear_caches()
+
+            
+                except: pass
+
+            
+                continue
+
+            
+            else:
+
+            
+                raise e
+
         scheduler.step()
 
         if step % 2000 == 0:

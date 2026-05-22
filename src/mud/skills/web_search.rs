@@ -7,6 +7,12 @@ use serde_json::Value;
 /// Autonomously crawls URLs to fetch high-authority knowledge.
 pub struct WebSearchSkill;
 
+impl Default for WebSearchSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebSearchSkill {
     pub fn new() -> Self {
         Self
@@ -55,7 +61,7 @@ impl WebSearchSkill {
                     println!("  [MUD Auto-Action] Web Knowledge extracted ({} chars). Assembling...", content.len());
                     
                     // Inject into Store
-                    let _ = engine.store.add_fact(content, url);
+                    let _ = engine.store.add_fact(content, url, engine.model.hidden_size);
                     
                     // Inject summary into Graph
                     let mut graph = engine.model.knowledge_graph.write().unwrap();

@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     println!("=== MUD Attention & Working Memory Audit ===");
     let vk = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(model_path)?;
-    let engine = MudInference::new(&mud_file, vk)?;
+    let mut engine = MudInference::new(&mud_file, vk)?;
 
     let hidden = engine.model.hidden_size;
     
@@ -49,6 +49,6 @@ fn main() -> anyhow::Result<()> {
 struct HeadSize;
 impl HeadSize {
     fn calculate(hidden: usize) -> usize {
-        if hidden % 64 == 0 { 64 } else { 32 }
+        if hidden.is_multiple_of(64) { 64 } else { 32 }
     }
 }

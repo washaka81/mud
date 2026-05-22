@@ -1,6 +1,13 @@
 import ctypes
 import os
 import torch
+import multiprocessing
+
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 _lib = None
 _vulkan_available = False
@@ -18,6 +25,7 @@ def _load_lib():
     if not os.path.exists(lib_path):
         raise RuntimeError(f"libforge_llm.so not found at {lib_path}. Build with: cargo build --release --lib")
 
+    print(f"[VulkanBackend] Loading library from: {lib_path}")
     _lib = ctypes.CDLL(lib_path)
 
     for name, argtypes, restype in [
@@ -34,13 +42,19 @@ def _load_lib():
         ("vb_quantize",
          [ctypes.POINTER(ctypes.c_float), ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int),
         ("vb_init_vulkan", [], ctypes.c_int),
+        ("vb_clear_caches", [], None),
     ]:
         fn = getattr(_lib, name)
         fn.argtypes = argtypes
         fn.restype = restype
 
-    if _lib.vb_init_vulkan() == 0:
+    res = _lib.vb_init_vulkan()
+    print(f"[VulkanBackend] vb_init_vulkan returned: {res}")
+    if res == 0:
         _vulkan_available = True
+        print(f"[VulkanBackend] Vulkan is available.")
+    else:
+        print(f"[VulkanBackend] Vulkan is NOT available.")
 
 
 class _PackedCache:
@@ -69,12 +83,22 @@ class _PackedCache:
         self._cache.clear()
         self._version.clear()
 
+    def __len__(self):
+        return len(self._cache)
+
 
 _packed_cache = _PackedCache()
 
 
 def pack_ternary(weight):
     return _packed_cache.get(weight)
+
+
+def clear_caches():
+    """Limpia todas las caches (llamar después de cada paso de training)."""
+    _packed_cache.clear()
+    if _lib is not None:
+        _lib.vb_clear_caches()
 
 
 def gemv_forward(x, w_packed, n_in, n_out, scale):

@@ -73,7 +73,7 @@ fn ingest_file(path: &Path, engine: &MudInference) -> anyhow::Result<usize> {
     let mut added = 0;
     let total_chunks = chunks.len();
 
-    for (_i, chunk) in chunks.into_iter().enumerate() {
+    for chunk in chunks.into_iter() {
         let embedding = generate_real_embedding(&chunk, engine);
         let fact = format!("Source: {} | Content: {}", filename, chunk.replace("\n", " "));
         

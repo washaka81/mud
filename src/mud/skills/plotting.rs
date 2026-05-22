@@ -5,6 +5,12 @@ use crate::mud::inference::MudInference;
 /// Renders simple bar charts from numeric data.
 pub struct PlottingSkill;
 
+impl Default for PlottingSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlottingSkill {
     pub fn new() -> Self {
         Self

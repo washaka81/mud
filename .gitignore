@@ -1,6 +1,6 @@
 # --- RUST & BUILD ---
 /target
-Cargo.lock
+/Cargo.lock
 
 # --- VIRTUAL ENVIRONMENTS ---
 .venv/
@@ -8,31 +8,48 @@ venv/
 ENV/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # --- MUD MODELS & DATA (Large Binaries) ---
 models/*.mud
-models/*.pt
 models/*.db
-models/*.txt
+models/*.package
+models/*.pt
 models/archive/
 models/sync/
-models/debug_output/
-models/versions/
+models/sync_v35/
+models/tmp_kaggle_dl/
+models/tmp_kaggle_check/
 
-# --- TRAINING DATA & SYNTHETIC DATA ---
-training/vocab_es_en.txt
-training/synthetic_knowledge.txt
-training/synthetic_knowledge.txt.backup
+# --- WEIGHTS (PyTorch) ---
+weights/
+checkpoints_vulkan/
+!weights/README.md
+
+# --- TRAINING DATA & CORPUS ---
+training/*.txt
+!training/vocab_es_en.txt
+!training/README.md
+training/*.txt.backup
+training/*.log
+training/models/
+training/logs/
+
+# --- TEST DATA ---
 tests/data/books/
 
 # --- LOGS & DEBUGGING ---
-logs/*.log
-debug/
+logs/
+*.log
+/debug/
 *.disassembly
 mud_disassembly.txt
+ai_disassembly.txt
 all_tensors.txt
 tensors_list.txt
 model_disassembly.txt
+tokens_dump.txt
 
 # --- SENSITIVE INFORMATION ---
 .env
@@ -42,7 +59,15 @@ training/kaggle_config.sh
 secrets.tks
 *.pem
 *.key
+.antigravity/
+.antigravitycli/
 
 # --- OS TEMPORARY FILES ---
 .DS_Store
 Thumbs.db
+*.tmp
+*.bak
+*.ipynb
+kaggle_push/
+kernel-metadata.json
+vocab_es_en.txt

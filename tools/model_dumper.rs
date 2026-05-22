@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/core_skills.mud";
+    let args: Vec<String> = std::env::args().collect();
+    let model_path = args.get(1).map(|s| s.as_str()).unwrap_or("models/core_skills.mud");
+
     println!("Dumping MUD model metadata and skill info from: {}", model_path);
     
     let model = MudFile::load(model_path)?;

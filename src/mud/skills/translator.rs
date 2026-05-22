@@ -31,12 +31,8 @@ impl MudSkill for TranslationSkill {
         translation_keywords.iter().any(|&k| context.to_lowercase().contains(k))
     }
 
-    fn route_bias(&self, logits: &mut [f32]) {
-        // Translation experts are usually Experts 4 and 5 in our bilingually trained model.
-        if logits.len() > 5 {
-            logits[4] += 3.0;
-            logits[5] += 3.0;
-        }
+    fn route_bias(&self, _logits: &mut [f32]) {
+        // Translation experts should be routed organically.
     }
 
     fn post_process_token(&self, _text: &mut String) {

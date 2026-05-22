@@ -8,6 +8,12 @@ pub struct RetrievalSkill {
     pub last_fact: RwLock<Option<String>>,
 }
 
+impl Default for RetrievalSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RetrievalSkill {
     pub fn new() -> Self {
         Self { last_fact: RwLock::new(None) }
@@ -30,7 +36,7 @@ impl MudSkill for RetrievalSkill {
         let fact_guard = self.last_fact.read().unwrap();
         if fact_guard.is_some() {
             // Signal to the model that context is available
-            if x.len() > 0 { x[0] += 1.0; } 
+            if !x.is_empty() { x[0] += 1.0; } 
         }
     }
 

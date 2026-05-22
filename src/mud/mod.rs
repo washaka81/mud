@@ -96,7 +96,7 @@ impl MudFile {
             } else {
                 let elements: usize = tensor.shape.iter().product();
                 let s = match tensor.t_type {
-                    MudTensorType::Ternary2Bit => (elements + 15) / 16 * 4,
+                    MudTensorType::Ternary2Bit => elements.div_ceil(16) * 4,
                     MudTensorType::Float32 => elements * 4,
                     MudTensorType::Float16 => elements * 2,
                 };
@@ -173,8 +173,12 @@ impl MudFile {
         }
 
         let data_start = (pos + 31) & !31;
+        let mmap_len = mmap.len();
         for tensor in tensors.values_mut() {
-            tensor.data_ptr = unsafe { mmap.as_ptr().add(data_start + tensor.offset) };
+            let ptr_offset = data_start.checked_add(tensor.offset)
+                .expect("load: data_start + tensor.offset overflow");
+            assert!(ptr_offset < mmap_len, "load: offset 0x{:x} fuera del mmap (len=0x{:x})", ptr_offset, mmap_len);
+            tensor.data_ptr = unsafe { mmap.as_ptr().add(ptr_offset) };
         }
 
         let mut skills = HashMap::new();
@@ -188,13 +192,24 @@ impl MudFile {
 }
 
 pub fn dequantize_ternary_row(packed: *const u32, out: &mut [f32], n: usize) {
-    let u32_count = n / 16;
+    // Guarda: out debe tener al menos n elementos
+    debug_assert!(out.len() >= n, "dequantize_ternary_row: out.len()={} < n={}", out.len(), n);
+    let u32_count = n / 16;        // bloques completos
+    let remainder = n % 16;        // elementos residuales (sin bloque completo)
     unsafe {
         for i in 0..u32_count {
             let val = *packed.add(i);
             for j in 0..16 {
                 let bits = (val >> (j * 2)) & 3;
                 out[i * 16 + j] = match bits { 1 => 1.0, 2 => -1.0, _ => 0.0 };
+            }
+        }
+        // Desempaqueta los bits residuales del bloque parcial final
+        if remainder > 0 {
+            let val = *packed.add(u32_count);
+            for j in 0..remainder {
+                let bits = (val >> (j * 2)) & 3;
+                out[u32_count * 16 + j] = match bits { 1 => 1.0, 2 => -1.0, _ => 0.0 };
             }
         }
     }

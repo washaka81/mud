@@ -37,3 +37,6 @@ pub mod learning;
 pub mod data_analysis;
 pub mod plotting;
 pub mod web_search;
+pub mod code_formatter;
+pub mod logic_marks;
+pub mod text_styling;
