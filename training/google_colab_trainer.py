@@ -8,12 +8,13 @@ INSTRUCCIONES PARA COLAB:
 -------------------------
 1. Abre un notebook en Colab.
 2. Selecciona Entorno de ejecución -> Cambiar tipo -> T4 GPU (mínimo).
-3. Pega y ejecuta este bloque:
-   
-   !git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
-   %cd YOUR_REPO
-   !python training/google_colab_trainer.py --drive --steps 100000
+3. Pega y ejecuta este bloque (Limpieza + Clonación + Entrenamiento):
 
+   !rm -rf mud
+   !git clone https://github.com/washaka81/mud.git
+   %cd mud
+   !./mud.sh colab --drive
+...
 """
 
 import os, sys, subprocess, time, argparse
@@ -87,6 +88,15 @@ def mount_drive():
 # ─────────────────────────────────────────────────────────────────────────────
 def launch_training(models_dir, steps, experts, top_k, batch_size, lr, resume):
     hdr("🚀 Lanzando Entrenamiento MUD (Google Colab Mode)")
+    
+    import torch
+    has_cuda = torch.cuda.is_available()
+    device_name = torch.cuda.get_device_name(0) if has_cuda else "CPU (Lento)"
+    
+    info(f"Hardware detectado: {device_name}")
+    if not has_cuda:
+        warn("No se detectó GPU. El entrenamiento será extremadamente lento.")
+        warn("Asegúrate de ir a 'Entorno de ejecución' -> 'Cambiar tipo de entorno' -> 'GPU T4'")
     
     trainer_path = "training/mud_fast_trainer.py"
     if not os.path.exists(trainer_path):

@@ -669,14 +669,31 @@ def train():
     print("=" * 70)
 
     # ── Vocabulario ────────────────────────────────────────────────────────────
-    vocab_path = next((p for p in ["training/vocab_es_en.txt", "vocab_es_en.txt", "/kaggle/input/mud-master-training-data/vocab_es_en.txt"]
-                       if os.path.exists(p)), None)
+    # Búsqueda robusta de vocabulario
+    possible_vocab_paths = [
+        "training/vocab_es_en.txt",
+        "vocab_es_en.txt",
+        "../training/vocab_es_en.txt",
+        "../../training/vocab_es_en.txt",
+        "/content/mud/training/vocab_es_en.txt",
+        "/kaggle/input/mud-master-training-data/vocab_es_en.txt"
+    ]
+    vocab_path = next((p for p in possible_vocab_paths if os.path.exists(p)), None)
+    
     if not vocab_path:
-        print("❌ vocab_es_en.txt no encontrado"); sys.exit(1)
+        # Intento final: buscar cualquier archivo que se llame vocab_es_en.txt en el árbol actual
+        import glob
+        matches = glob.glob("**/vocab_es_en.txt", recursive=True)
+        if matches:
+            vocab_path = matches[0]
+
+    if not vocab_path:
+        print("❌ vocab_es_en.txt no encontrado en ninguna ubicación conocida."); sys.exit(1)
+    
     with open(vocab_path, encoding="utf-8") as f:
         vocab = [l.strip() for l in f if l.strip()]
     word_to_id = {w: i for i, w in enumerate(vocab)}
-    print(f"📖 Vocabulario: {len(vocab):,} tokens")
+    print(f"📖 Vocabulario: {len(vocab):,} tokens (desde {vocab_path})")
 
     # ── Modelo ─────────────────────────────────────────────────────────────────
     model = MudModel(
