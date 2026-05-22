@@ -54,15 +54,32 @@ def hdr(msg): print(f"\n{B}{'='*60}{X}\n  {msg}\n{B}{'='*60}{X}")
 # MONTAJE DE GOOGLE DRIVE
 # ─────────────────────────────────────────────────────────────────────────────
 def mount_drive():
+    if os.path.exists(DRIVE_MUD_PATH):
+        ok(f"Drive ya detectado en: {DRIVE_MUD_PATH}")
+        return DRIVE_MUD_PATH
+
     try:
         from google.colab import drive
-        hdr("📂 Montando Google Drive")
-        drive.mount(DRIVE_MOUNT_POINT)
+        hdr("📂 Intentando montar Google Drive")
+        # Forzar mount interactivo
+        drive.mount(DRIVE_MOUNT_POINT, force_remount=False)
         os.makedirs(DRIVE_MUD_PATH, exist_ok=True)
-        ok(f"Drive montado en: {DRIVE_MUD_PATH}")
+        ok(f"Drive montado exitosamente.")
         return DRIVE_MUD_PATH
-    except ImportError:
-        warn("No se detectó entorno Colab — Usando almacenamiento local")
+    except Exception as e:
+        warn("No se pudo montar Drive automáticamente (posible ejecución en subshell).")
+        info("INSTRUCCIONES MANUALES:")
+        print(f"  1. Ejecuta esta celda en Colab antes de lanzar el script:")
+        print(f"     from google.colab import drive; drive.mount('{DRIVE_MOUNT_POINT}')")
+        print(f"  2. Luego vuelve a ejecutar el comando de entrenamiento.")
+        print("-" * 60)
+        
+        # Fallback a local si el usuario decide continuar sin Drive
+        if os.environ.get("MUD_FORCE_DRIVE") == "1":
+            err("Error crítico: Drive es obligatorio pero no se pudo montar.")
+            sys.exit(1)
+        
+        warn("Usando almacenamiento LOCAL temporal.")
         return LOCAL_MODELS_DIR
 
 # ─────────────────────────────────────────────────────────────────────────────
