@@ -511,13 +511,20 @@ def build_area_cache(corpus_path: str, word_to_id: Dict[str, int],
                      max_seq: int, cap_per_area: int = 4000) -> Dict[str, List[torch.Tensor]]:
     cats: Dict[str, List[torch.Tensor]] = {k: [] for k in AREA_KEYWORDS}
     total = 0
-    print("📂 Indexando corpus por área (streaming)...")
+    print(f"📂 Indexando corpus: {os.path.basename(corpus_path)}...")
     try:
         with open(corpus_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
+                
+                # Soporte para formato knowledge_package.txt (distilled)
+                if line.startswith("CONTENT:"):
+                    line = line.replace("CONTENT:", "", 1).strip()
+                elif line.startswith("FACT_ID:") or line == "---":
+                    continue
+                    
                 area = classify_text(line)
                 if len(cats[area]) >= cap_per_area:
                     continue
@@ -742,6 +749,7 @@ def train():
     # ── Corpus ─────────────────────────────────────────────────────────────────
     synth_path = next((p for p in ["training/synthetic_knowledge.txt",
                                    "training/massive_knowledge_corpus.txt",
+                                   "models/knowledge_package.txt",
                                    "synthetic_knowledge.txt",
                                    "/kaggle/input/mud-master-training-data/massive_knowledge_corpus.txt",
                                    "/kaggle/input/mud-master-training-data/synthetic_knowledge.txt"]
