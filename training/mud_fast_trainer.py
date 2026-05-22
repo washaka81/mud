@@ -747,15 +747,30 @@ def train():
         model = torch.compile(model)
 
     # ── Corpus ─────────────────────────────────────────────────────────────────
-    synth_path = next((p for p in ["training/synthetic_knowledge.txt",
-                                   "training/massive_knowledge_corpus.txt",
-                                   "models/knowledge_package.txt",
-                                   "synthetic_knowledge.txt",
-                                   "/kaggle/input/mud-master-training-data/massive_knowledge_corpus.txt",
-                                   "/kaggle/input/mud-master-training-data/synthetic_knowledge.txt"]
-                       if os.path.exists(p)), None)
-    cats = build_area_cache(synth_path, word_to_id, MAX_SEQ_LEN, cap_per_area=4000) \
-           if synth_path else {k: [] for k in AREA_KEYWORDS}
+    corpus_candidates = [
+        "training/synthetic_knowledge.txt",
+        "training/massive_knowledge_corpus.txt",
+        "models/knowledge_package.txt",
+        "training/extra_knowledge.txt",
+        "synthetic_knowledge.txt",
+        "/kaggle/input/mud-master-training-data/massive_knowledge_corpus.txt",
+        "/kaggle/input/mud-master-training-data/synthetic_knowledge.txt"
+    ]
+    
+    cats = {k: [] for k in AREA_KEYWORDS}
+    total_indexed = 0
+    
+    for p in corpus_candidates:
+        if os.path.exists(p):
+            file_cats = build_area_cache(p, word_to_id, MAX_SEQ_LEN, cap_per_area=10000)
+            for area, seqs in file_cats.items():
+                cats[area].extend(seqs)
+                total_indexed += len(seqs)
+    
+    if total_indexed == 0:
+        warn("No se encontró ningún archivo de corpus. Usando datos mínimos de arranque.")
+    else:
+        print(f"✅ Conocimiento total consolidado: {total_indexed} secuencias en {len(cats)} áreas.\n")
 
     # Corpus mínimo de arranque si no hay archivos
     for text in [

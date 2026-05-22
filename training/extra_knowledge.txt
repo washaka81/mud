@@ -1,0 +1,20 @@
+CONTENT: MUD (Modular Understanding Dynamics) es una arquitectura de Mixture of Experts (MoE) que utiliza pesos ternarios de 1.58 bits para maximizar la eficiencia en CPUs con instrucciones AVX2.
+CONTENT: El motor de inferencia SLIME implementado en Rust utiliza una estrategia de Static Workspace, pre-asignando todos los buffers de activación y KV-cache para evitar latencias por gestión de memoria dinámica.
+CONTENT: La cuantización ternaria mapea los pesos reales a un conjunto discreto {-1, 0, 1}, permitiendo reemplazar multiplicaciones costosas por sumas y restas en los kernels de bajo nivel.
+CONTENT: El protocolo de razonamiento Chain of Thought (CoT) en MUD se activa mediante etiquetas <thinking> y </thinking>, forzando al modelo a desarrollar una lógica interna antes de entregar la respuesta final.
+CONTENT: La técnica del Neural Kick (Epsilon Jitter) consiste en inyectar ruido de baja magnitud (1e-6) en los pesos durante el entrenamiento para evitar que los expertos MoE colapsen hacia el mismo punto matemático.
+CONTENT: En sistemas con Intel Iris Xe iGPU, MUD delega las proyecciones de atención y capas MoE a kernels SPIR-V 1.3 optimizados con aritmética de subgrupos para un paralelismo masivo.
+CONTENT: El algoritmo de balanceo de expertos utiliza una pérdida compuesta (Importance + Load + Z-loss) para asegurar que el conocimiento se distribuya equitativamente entre los 256 micro-expertos.
+CONTENT: Los kernels SIMD AVX2 en MUD procesan hasta 4 filas de pesos ternarios simultáneamente, reduciendo el overhead de acceso a memoria y maximizando el throughput de tokens por segundo.
+CONTENT: La arquitectura de MoE hiper-granular divide los expertos en 16 clústeres funcionales, especializando nodos en dominios como Lógica Formal, Álgebra Lineal y Optimización de Bajo Nivel.
+CONTENT: El uso de Rotary Positional Embeddings (RoPE) permite a MUD manejar contextos largos de hasta 2048 tokens con una degradación mínima de la atención espacial.
+CONTENT: La termodinámica estadística en redes neuronales sugiere que el enfriamiento dinámico de la temperatura del gate Softmax mejora la convergencia y la especialización de los expertos MoE.
+CONTENT: La integración de RAG semántico en MUD permite al modelo consultar bases de conocimiento en SQLite y PDF de forma autónoma, fusionando hechos recuperados con conocimiento intrínseco en los pesos.
+CONTENT: El Straight-Through Estimator (STE) es el componente crítico que permite entrenar redes ternarias en PyTorch, permitiendo el flujo de gradientes continuos a través de funciones de cuantización discretas.
+CONTENT: La entropía de activación en capas MoE mide la diversidad de los expertos seleccionados; valores cercanos al máximo indican un uso eficiente de la capacidad total del modelo.
+CONTENT: El sistema de IQ Digital en MUD evalúa el rendimiento en 6 áreas clave: Sistema, Código, Lógica, Ciencia, Lingüística y General, ajustando la probabilidad de entrenamiento según la debilidad detectada.
+CONTENT: La arquitectura de hardware i7-1260p se beneficia del thread pinning en núcleos P-cores para evitar la contienda de recursos entre el orquestador de Python y los expertos en Rust/ASM.
+CONTENT: El empaquetamiento binario .mud guarda 16 pesos ternarios en cada bloque de 32 bits, logrando una compresión masiva del modelo sin perder precisión en la inferencia.
+CONTENT: La lógica de Boole y los teoremas de incompletitud de Gödel son fundamentos teóricos integrados en el clúster de Lógica Formal de MUD para mejorar la detección de contradicciones.
+CONTENT: La mecánica cuántica y el entrelazamiento informacional inspiran las estructuras de atención cruzada de próxima generación para modelos de lenguaje ultra-compactos.
+CONTENT: La optimización de shaders en Vulkan para MUD incluye el uso de memoria compartida (Shared Memory) para acelerar las reducciones horizontales en productos punto ternarios.
