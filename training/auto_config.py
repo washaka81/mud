@@ -45,17 +45,22 @@ def _fallback_config() -> Dict:
     is_kaggle = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
     is_colab = "COLAB_GPU" in os.environ or "google.colab" in sys.modules
     
-    if is_kaggle or is_colab or effective_ram >= 32:
+    # Kaggle (30GB RAM) soporta el modo BIG completo
+    if is_kaggle or effective_ram >= 24:
         return dict(mode="big",    num_experts=256, hidden=512,  ffn_hidden=2048,
                     num_layers=4,  top_k=4, batch_size=8,  lr=5e-4, aux_coeff=0.01,  grad_clip=1.0)
-    elif effective_ram >= 14:
-        return dict(mode="medium", num_experts=64,  hidden=384,  ffn_hidden=1536,
-                    num_layers=4,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
-    elif effective_ram >= 8:
-        return dict(mode="small",  num_experts=16,  hidden=256,  ffn_hidden=1024,
-                    num_layers=3,  top_k=3, batch_size=4,  lr=5e-4, aux_coeff=0.5,   grad_clip=1.0)
+    
+    # Google Colab Free (12-13GB RAM) requiere un modo optimizado
+    elif is_colab or (effective_ram >= 10 and effective_ram < 24):
+        # Mantenemos los 256 expertos pero bajamos capas y batch para no morir por OOM (AdamW triplica RAM)
+        return dict(mode="colab",  num_experts=256, hidden=384,  ffn_hidden=1536,
+                    num_layers=2,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
+    
+    elif effective_ram >= 7:
+        return dict(mode="medium", num_experts=64,  hidden=256,  ffn_hidden=1024,
+                    num_layers=3,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.1,   grad_clip=1.0)
     else:
-        return dict(mode="tiny",   num_experts=8,   hidden=192,  ffn_hidden=768,
+        return dict(mode="tiny",   num_experts=16,  hidden=192,  ffn_hidden=768,
                     num_layers=2,  top_k=2, batch_size=2,  lr=5e-4, aux_coeff=0.5,   grad_clip=1.0)
 
 
