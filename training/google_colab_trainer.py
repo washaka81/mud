@@ -32,6 +32,7 @@ TOP_K           = _cfg["top_k"]
 BATCH_SIZE      = _cfg["batch_size"]
 LR              = _cfg["lr"]
 RESUME          = True
+NO_COMPILE      = True  # Deshabilitado por defecto para ahorrar RAM en Colab Free
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUTAS COLAB
@@ -87,7 +88,7 @@ def mount_drive():
 # ─────────────────────────────────────────────────────────────────────────────
 # LANZAR ENTRENAMIENTO
 # ─────────────────────────────────────────────────────────────────────────────
-def launch_training(models_dir, steps, experts, top_k, batch_size, lr, resume):
+def launch_training(models_dir, steps, experts, top_k, batch_size, lr, resume, no_compile):
     hdr("🚀 Lanzando Entrenamiento MUD (Google Colab Mode)")
     
     import torch
@@ -115,6 +116,8 @@ def launch_training(models_dir, steps, experts, top_k, batch_size, lr, resume):
     ]
     if resume:
         cmd.append("--resume")
+    if no_compile:
+        cmd.append("--no-compile")
         
     # Inyectar variables de entorno para el trainer
     env = os.environ.copy()
@@ -154,6 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int,   default=BATCH_SIZE)
     parser.add_argument("--lr",         type=float, default=LR)
     parser.add_argument("--no-resume",  action="store_true")
+    parser.add_argument("--compile",    action="store_true", help="Habilitar torch.compile (Usa más RAM)")
     
     args = parser.parse_args()
 
@@ -177,5 +181,6 @@ if __name__ == "__main__":
         args.top_k, 
         args.batch_size, 
         args.lr, 
-        not args.no_resume
+        not args.no_resume,
+        not args.compile
     )

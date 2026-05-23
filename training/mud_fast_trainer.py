@@ -261,11 +261,12 @@ class MoELayer(nn.Module):
 
         # Top-K selection con ruido gaussiano para exploración (entrenamiento)
         if self.training:
-            noise_std = max(0.01, 0.1 * (1.0 - self._step_ratio.item()))
+            # Evitar .item() para no romper el grafo de torch.compile
+            noise_std = torch.clamp(0.1 * (1.0 - self._step_ratio), min=0.01)
             logits = logits + torch.randn_like(logits) * noise_std
 
         # Temperatura dinámica: empieza alta para exploración y baja para especialización
-        temp = 1.0 + (1.0 - self._step_ratio.item()) if self.training else 1.0
+        temp = (1.0 + (1.0 - self._step_ratio)) if self.training else 1.0
         probs  = F.softmax(logits / temp, dim=-1)
 
         # Top-K selection

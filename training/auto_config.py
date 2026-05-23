@@ -52,8 +52,8 @@ def _fallback_config() -> Dict:
     
     # Google Colab Free (12-13GB RAM) requiere un modo optimizado
     elif is_colab or (effective_ram >= 10 and effective_ram < 24):
-        # Mantenemos los 256 expertos pero bajamos capas y batch para no morir por OOM (AdamW triplica RAM)
-        return dict(mode="colab",  num_experts=256, hidden=384,  ffn_hidden=1536,
+        # Bajamos a 128 expertos para asegurar estabilidad con AdamW (que usa 3x RAM)
+        return dict(mode="colab",  num_experts=128, hidden=384,  ffn_hidden=1536,
                     num_layers=2,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
     
     elif effective_ram >= 7:
