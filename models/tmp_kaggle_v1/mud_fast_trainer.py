@@ -12,16 +12,9 @@ import struct
 from tqdm import tqdm
 from typing import List, Dict, Optional, Tuple, Any
 
-# Importar auto_config de forma robusta (compatible con Local y Kaggle)
-try:
-    from training.auto_config import load_training_config, print_config_report
-except ImportError:
-    try:
-        from auto_config import load_training_config, print_config_report
-    except ImportError:
-        # Fallback manual si todo falla
-        def load_training_config(): return {"hidden": 256, "ffn_hidden": 1024, "num_experts": 16, "num_layers": 3, "top_k": 2, "lr": 5e-4}
-        def print_config_report(c): print("⚠️ Usando config de fallback")
+# Importar auto_config para usar los parámetros recomendados por hardware
+sys.path.insert(0, os.getcwd())
+from training.auto_config import load_training_config, print_config_report
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VULKAN BACKEND INTEGRATION
@@ -63,77 +56,12 @@ NUM_CLUSTERS = max(1, NUM_EXPERTS // CLUSTER_SIZE)
 
 # ─── CORE MATH: BITNET 1.58b ────────────────────────────────────────────────
 
-def zeropower_via_cans(G, steps=2):
-    """
-    Ortogonalización Newton-Schulz optimizada con Polinomios de Chebyshev (CANS).
-    Reduce de 5 iteraciones a 2 para aliviar la memoria.
-    """
-    norm = torch.linalg.norm(G, ord='fro')
-    if norm < 1e-7: return G
-    X = G / norm
-    for _ in range(steps):
-        A = X @ X.T
-        X = 1.5 * X - 0.5 * (A @ X)
-    return X
-
-class MuonCANS(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0.9):
-        defaults = dict(lr=lr, momentum=momentum)
-        super().__init__(params, defaults)
-
-    def step(self):
-        for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            for p in group['params']:
-                if p.grad is None: continue
-                grad = p.grad.data
-                if grad.ndim != 2: continue
-                
-                state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.zeros_like(grad)
-                
-                buf = state['momentum_buffer']
-                buf.mul_(momentum).add_(grad)
-                
-                # Ortogonalización rápida CANS (AVX-VNNI P-Cores)
-                ortho_grad = zeropower_via_cans(buf, steps=2)
-                p.data.add_(ortho_grad, alpha=-lr)
-
-class TernaryLinearFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, weight, scale):
-        # FORWARD PASS: INT8 (Empaquetado) - Iris Xe u optimizado CPU
-        gamma = weight.abs().mean().clamp(min=1e-7)
-        w_scaled = weight / gamma
-        w_q = torch.clamp(torch.round(w_scaled), -1, 1).to(torch.int8)
-        
-        ctx.save_for_backward(x, weight, gamma)
-        
-        if VULKAN_AVAILABLE:
-            from training.vulkan_backend import TernaryLinearFunction as VKFunc
-            return VKFunc.apply(x, weight, scale)
-            
-        # Simulación INT8 a FP32 para F.linear si no hay backend nativo cargado
-        out = F.linear(x, w_q.to(x.dtype)) * gamma
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # BACKWARD PASS: FP32 - CPU P-Cores (12 Hilos)
-        x, weight, gamma = ctx.saved_tensors
-        grad_x = grad_weight = grad_scale = None
-        
-        if ctx.needs_input_grad[0]:
-            w_q = torch.clamp(torch.round(weight / gamma), -1, 1).to(grad_output.dtype)
-            grad_x = grad_output.matmul(w_q) * gamma
-            
-        if ctx.needs_input_grad[1]:
-            # STE (Straight-Through Estimator): Sincronización FP32 -> INT8 implícita
-            grad_weight = grad_output.transpose(-2, -1).matmul(x) * gamma
-            
-        return grad_x, grad_weight, grad_scale
+def weight_quant(w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Cuantización ternaria {-1, 0, 1} con escala dinámica."""
+    gamma = w.abs().mean().clamp(min=1e-7)
+    w_scaled = w / gamma
+    w_q = torch.clamp(torch.round(w_scaled), -1, 1)
+    return w + (w_q * gamma - w).detach(), gamma
 
 class TernaryLinear(nn.Module):
     def __init__(self, in_features, out_features):
@@ -146,7 +74,11 @@ class TernaryLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gamma = self.weight.abs().mean().clamp(min=1e-7)
         self.scale.copy_(gamma.detach())
-        return TernaryLinearFunction.apply(x, self.weight, self.scale)
+        if VULKAN_AVAILABLE and (not self.training or DEVICE == "cpu"):
+            from training.vulkan_backend import TernaryLinearFunction
+            return TernaryLinearFunction.apply(x, self.weight, self.scale)
+        w_q, _ = weight_quant(self.weight)
+        return F.linear(x, w_q)
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
@@ -293,27 +225,11 @@ class MudModel(nn.Module):
 
 class FastTokenizer:
     def __init__(self, vocab_path: str):
-        # Intentar localizar el vocabulario en múltiples rutas
-        possible_vocabs = [
-            vocab_path,
-            "training/vocab_es_en.txt",
-            "vocab_es_en.txt",
-            "/kaggle/working/vocab_es_en.txt",
-            "/kaggle/input/mud-master-training-data/vocab_es_en.txt"
-        ]
-        
-        actual_path = None
-        for p in possible_vocabs:
-            if os.path.exists(p):
-                actual_path = p
-                break
-                
-        if actual_path:
-            with open(actual_path, "r", encoding="utf-8") as f:
+        if os.path.exists(vocab_path):
+            with open(vocab_path, "r", encoding="utf-8") as f:
                 lines = [l.strip() for l in f if l.strip()]
             self.word_to_id = {w: i for i, w in enumerate(lines)}
             self.id_to_word = {i: w for i, w in enumerate(lines)}
-            print(f"✅ Vocabulario cargado ({len(lines)} tokens) desde: {actual_path}")
         else:
             print("⚠️  Vocabulario no encontrado, usando fallback ASCII.")
             self.word_to_id = {}
@@ -365,19 +281,7 @@ def train():
     model = MudModel(_cfg).to(DEVICE)
     embed = nn.Embedding(9882, HIDDEN).to(DEVICE)
     head = TernaryLinear(HIDDEN, 9882).to(DEVICE)
-    
-    # Separar pesos 2D para Muon (matrices) y 1D/Embeddings para AdamW
-    muon_params = []
-    adam_params = []
-    for p in list(model.parameters()) + list(head.parameters()):
-        if p.ndim == 2:
-            muon_params.append(p)
-        else:
-            adam_params.append(p)
-    adam_params.extend(list(embed.parameters()))
-    
-    opt_muon = MuonCANS(muon_params, lr=LR, momentum=0.95)
-    opt_adam = torch.optim.AdamW(adam_params, lr=LR)
+    optimizer = torch.optim.AdamW(list(model.parameters()) + list(embed.parameters()) + list(head.parameters()), lr=LR)
     
     start_step = 0
     ckpt_path = "models/mud_fast_ckpt.pt"
@@ -388,11 +292,10 @@ def train():
         if 'head' in ckpt: head.load_state_dict(ckpt['head'])
         model.load_state_dict(ckpt['model'], strict=False)
         try:
-            opt_muon.load_state_dict(ckpt['opt_muon'])
-            opt_adam.load_state_dict(ckpt['opt_adam'])
-            print("   ✅ Optimizadores cargados")
+            optimizer.load_state_dict(ckpt['optimizer'])
+            print("   ✅ Optimizador cargado")
         except:
-            print("   ⚠️ Reiniciando optimizadores (AdamW / Muon)")
+            print("   ⚠️ Reiniciando optimizador")
         start_step = ckpt.get('step', 0)
         print(f"   ↳ Continuando desde paso {start_step}")
 
@@ -430,8 +333,7 @@ def train():
     
     for step in pbar:
         ts = time.time()
-        opt_muon.zero_grad(set_to_none=True)
-        opt_adam.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none=True)
         if VULKAN_AVAILABLE: vulkan_backend.clear_caches()
 
         if step > 0 and step % 100 == 0:
@@ -461,26 +363,19 @@ def train():
             
             if torch.isfinite(loss):
                 loss.backward()
-                total_norm = torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(embed.parameters()) + list(head.parameters()), GRAD_CLIP)
-                opt_muon.step()
-                opt_adam.step()
+                torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(embed.parameters()) + list(head.parameters()), GRAD_CLIP)
+                optimizer.step()
         except Exception as e:
             print(f"\n⚠️ Error en paso {step}: {e}")
             continue
 
         if step % 500 == 0:
             torch.save({'model': raw_m.state_dict(), 'embed': embed.state_dict(), 'head': head.state_dict(),
-                       'opt_muon': opt_muon.state_dict(), 'opt_adam': opt_adam.state_dict(), 'step': step}, ckpt_path)
+                       'optimizer': optimizer.state_dict(), 'step': step}, ckpt_path)
 
         step_times.append(time.time() - ts)
         if step % 5 == 0:
-            with torch.no_grad():
-                all_w = torch.cat([p.flatten() for p in raw_m.parameters() if p.dim() > 1])
-                sigma = all_w.std().item()
-                skew = ((all_w - all_w.mean())**3).mean().item() / (sigma**3 + 1e-7)
-                delta = total_norm.item() if 'total_norm' in locals() else 0.0
-            pbar.set_postfix(loss=f"{loss.item():.4f}", it_s=f"{1.0/np.mean(step_times[-50:]):.1f}", 
-                             sigma=f"{sigma:.4f}", desv=f"{skew:.4f}", delta=f"{delta:.4f}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}", it_s=f"{1.0/np.mean(step_times[-50:]):.1f}")
 
     print("🏁 Entrenamiento finalizado.")
 

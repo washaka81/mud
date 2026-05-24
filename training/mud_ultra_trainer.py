@@ -83,7 +83,7 @@ print_config_report(_cfg)
 
 _RAM_MODE = _cfg.get("mode", "medium")
 HIDDEN = _cfg["hidden"]
-FFN_HIDDEN = _cfg.get("ffn_hidden", HIDDEN * 4)
+FFN_HIDDEN = _cfg["ffn_hidden"] if "ffn_hidden" in _cfg else _cfg["hidden"] * 4
 EXPERTS = _cfg["num_experts"]
 NUM_LAYERS = _cfg["num_layers"]
 TOP_K = _cfg["top_k"]
@@ -478,7 +478,7 @@ def train():
         if step % 100 == 0:
             with torch.no_grad():
                 for param in model.parameters():
-                    if param.requires_grad: param.add_(torch.randn_like(param) * 1e-6)
+                    if param.requires_grad: param.add_(torch.randn_like(param) * 1e-5)
 
         try:
             input_ids = next(data_iter).to(device)

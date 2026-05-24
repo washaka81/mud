@@ -731,7 +731,7 @@ fn main() -> anyhow::Result<()> {
         engine.prompt(trimmed, &mut x, &mut conversation_pos);
 
         let t_start = std::time::Instant::now();
-        let response_tokens = engine.generate(&x, 128, trimmed, &mut conversation_pos);
+        let (response_tokens, used_knowledge) = engine.generate(&x, 128, trimmed, &mut conversation_pos);
         let elapsed = t_start.elapsed();
 
         last_tps = if response_tokens.is_empty() { 0.0 }
@@ -765,7 +765,12 @@ fn main() -> anyhow::Result<()> {
         )?;
 
         let rendered = render_rich(&response);
-        type_writer(&rendered, Duration::from_millis(6))?;
+        if used_knowledge {
+            let styled = format!("{}{}{}{}", rgb(190, 150, 255), ITAL_ON, rendered, ANSI_RESET);
+            type_writer(&styled, Duration::from_millis(6))?;
+        } else {
+            type_writer(&rendered, Duration::from_millis(6))?;
+        }
         println!();
 
         sys.refresh_all();

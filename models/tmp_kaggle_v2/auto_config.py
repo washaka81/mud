@@ -6,7 +6,7 @@ Lee el perfil de hardware desde knowledge.db y genera configuraciones
 anteriores y ajusta parámetros progresivamente.
 """
 
-import os, json, math, sqlite3, time, sys
+import os, json, math, sqlite3, time
 from typing import Dict, Optional
 
 DB_PATH = "models/knowledge.db"
@@ -40,68 +40,55 @@ def _estimate_ram_gb() -> float:
 def _fallback_config() -> Dict:
     ram = _estimate_ram_gb()
     effective_ram = ram * 0.85
-    
-    # Detección de entornos de alta performance
-    is_kaggle = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
-    is_colab = "COLAB_GPU" in os.environ or "google.colab" in sys.modules
-    
-    # Kaggle (30GB RAM) / T4 (15GB VRAM)
-    # Ajustamos BIG a valores realistas para entrenamiento en 15GB VRAM
-    if is_kaggle or effective_ram >= 24:
-        return dict(mode="big",    num_experts=64, hidden=384,  ffn_hidden=1536,
+    if effective_ram >= 32:
+        return dict(mode="big",    num_experts=256, hidden=512,  ffn_hidden=2048,
+                    num_layers=4,  top_k=4, batch_size=8,  lr=5e-4, aux_coeff=0.01,  grad_clip=1.0)
+    elif effective_ram >= 14:
+        return dict(mode="medium", num_experts=64,  hidden=384,  ffn_hidden=1536,
                     num_layers=4,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
-    
-    # Google Colab Free (12-13GB RAM) / T4 (15GB VRAM)
-    elif is_colab or (effective_ram >= 10 and effective_ram < 24):
-        return dict(mode="colab",  num_experts=32, hidden=256,  ffn_hidden=1024,
-                    num_layers=3,  top_k=2, batch_size=4,  lr=5e-4, aux_coeff=0.1,   grad_clip=1.0)
-    
-    elif effective_ram >= 7:
-        return dict(mode="medium", num_experts=64,  hidden=256,  ffn_hidden=1024,
-                    num_layers=3,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.1,   grad_clip=1.0)
+    elif effective_ram >= 8:
+        return dict(mode="small",  num_experts=16,  hidden=256,  ffn_hidden=1024,
+                    num_layers=3,  top_k=3, batch_size=4,  lr=5e-4, aux_coeff=0.5,   grad_clip=1.0)
     else:
-        return dict(mode="tiny",   num_experts=16,  hidden=192,  ffn_hidden=768,
+        return dict(mode="tiny",   num_experts=8,   hidden=192,  ffn_hidden=768,
                     num_layers=2,  top_k=2, batch_size=2,  lr=5e-4, aux_coeff=0.5,   grad_clip=1.0)
 
 
 def load_training_config(mode_override: Optional[str] = None) -> Dict:
-    # Empezamos con el fallback que ya detecta Kaggle/Studio Lab
     cfg = _fallback_config()
-    
-    # Si hay un override, usamos ese modo como base
-    target_mode = mode_override if mode_override else cfg["mode"]
-    
     conn = _get_db()
     if conn is None:
         return cfg
-        
     try:
-        # Buscamos la configuración más reciente para el modo objetivo
-        cur = conn.execute(
-            "SELECT * FROM training_config WHERE mode = ? ORDER BY id DESC LIMIT 1",
-            (target_mode,)
-        )
-        row = cur.fetchone()
-        
-        # Si no hay para el modo objetivo y no hay override, 
-        # probamos a ver si hay alguna configuración "big" o "medium" guardada
-        if not row and not mode_override:
+        if mode_override:
+            cur = conn.execute(
+                "SELECT * FROM training_config WHERE mode = ?", (mode_override,)
+            )
+        else:
             cur = conn.execute(
                 "SELECT * FROM training_config ORDER BY id DESC LIMIT 1"
             )
-            row = cur.fetchone()
-
+        row = cur.fetchone()
         if row:
             cfg["mode"]        = row["mode"]
             cfg["num_experts"] = row["num_experts"]
             cfg["hidden"]      = row["hidden"]
-            cfg["ffn_hidden"]  = row["ffn_hidden"] if "ffn_hidden" in row.keys() else row["hidden"] * 4
+            cfg["ffn_hidden"]  = row.get("ffn_hidden") or row["hidden"] * 4
             cfg["num_layers"]  = row["num_layers"]
             cfg["top_k"]       = row["top_k"]
             cfg["batch_size"]  = row["batch_size"]
             cfg["lr"]          = row["lr"]
             cfg["aux_coeff"]   = row["aux_coeff"]
             cfg["grad_clip"]   = row["grad_clip"]
+        else:
+            cur2 = conn.execute(
+                "SELECT * FROM hardware_profile ORDER BY id DESC LIMIT 1"
+            )
+            hw = cur2.fetchone()
+            if hw:
+                cfg["num_experts"] = hw["num_experts_optimal"]
+                cfg["hidden"]      = hw["hidden_optimal"]
+                cfg["layers"]      = hw["layers_optimal"]
     except Exception:
         pass
     finally:

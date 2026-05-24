@@ -18,6 +18,9 @@ NC='\x1b[0m'
 # --- CONFIGURATION ---
 MODEL_PATH="models/core_skills.mud"
 CHECKPOINT_DIR="weights/checkpoints"
+export MUD_USE_VULKAN=1
+export MKL_DEBUG_CPU_TYPE=5  # Enforce AVX2 on Intel CPUs
+
 
 show_help() {
     echo -e "${PURPLE}=== MUD COMMAND CENTER ===${NC}"

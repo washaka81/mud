@@ -45,7 +45,21 @@ Se corrigió la falta de descriptores de arquitectura en los archivos `.mud`.
 
 ---
 
-### Próximos Pasos (Hoja de Ruta)
-1.  **Reanudación V1-MASTER:** Lanzar el entrenamiento masivo con el nuevo DataLoader.
-2.  **Paralelización MoE:** Implementar `rayon` en el motor Rust para ejecutar los 4 expertos seleccionados en paralelo.
-3.  **Auditoría de Veracidad:** Ejecutar `truth_auditor` sobre los hechos con `learning_mark = 1` para validar la calidad de la destilación.
+### 6. Resolución de Inconsistencia en Auto-Config (22 de mayo de 2026)
+Se detectó y corrigió un fallo crítico en la cadena de mando de la configuración.
+*   **Problema:** `auto_config.py` fallaba silenciosamente al intentar acceder a métodos de diccionario en objetos `sqlite3.Row` (`AttributeError`). Esto causaba que los entrenadores usaran una mezcla incoherente de parámetros de base de datos y valores por defecto (ej: 2 capas en lugar de 3), provocando errores de *size mismatch* al reanudar entrenamientos.
+*   **Resolución:** 
+    *   Corrección del acceso a datos en `auto_config.py`.
+    *   Unificación de la lógica de clústeres MoE: `CLUSTER_SIZE = min(16, EXPERTS // 4)`.
+    *   Eliminación de scripts de entrenamiento redundantes (`local_fix.py`) para centralizar todo el flujo en el orquestador `./mud.sh`.
+
+### 7. Refuerzo de Estabilidad (Neural Kick v2)
+*   **Ajuste:** Se incrementó la intensidad del jitter aleatorio de `1e-6` a **`1e-5`**.
+*   **Justificación:** Superar el estancamiento de gradientes observado en entornos bilingües masivos (Paso 442) y asegurar que los pesos ternarios no se bloqueen en estados subóptimos.
+
+---
+
+### Próximos Pasos (Hoja de Ruta Actualizada)
+1.  **Validación de Handoff:** Confirmar que los pesos entrenados en Kaggle se cargan sin errores de dimensión usando la nueva lógica unificada.
+2.  **Paralelización MoE:** Implementar `rayon` en el motor Rust para ejecutar los expertos seleccionados en paralelo.
+3.  **Auditoría de Veracidad:** Ejecutar `truth_auditor` sobre los hechos con `learning_mark = 1`.

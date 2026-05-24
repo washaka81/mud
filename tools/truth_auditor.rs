@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
         let mut x = vec![0.0f32; engine.model.hidden_size];
         let mut conversation_pos = 0;
         engine.prompt(prompt, &mut x, &mut conversation_pos);
-        let response_tokens = engine.generate(&x, 32, prompt, &mut conversation_pos);
+        let (response_tokens, _) = engine.generate(&x, 32, prompt, &mut conversation_pos);
         let response_text = engine.tokenizer.decode(&response_tokens);
         
         println!("Response: {}", response_text);

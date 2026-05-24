@@ -45,16 +45,16 @@ def _fallback_config() -> Dict:
     is_kaggle = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
     is_colab = "COLAB_GPU" in os.environ or "google.colab" in sys.modules
     
-    # Kaggle (30GB RAM) / T4 (15GB VRAM)
-    # Ajustamos BIG a valores realistas para entrenamiento en 15GB VRAM
+    # Kaggle (30GB RAM) soporta el modo BIG completo
     if is_kaggle or effective_ram >= 24:
-        return dict(mode="big",    num_experts=64, hidden=384,  ffn_hidden=1536,
-                    num_layers=4,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
+        return dict(mode="big",    num_experts=256, hidden=512,  ffn_hidden=2048,
+                    num_layers=4,  top_k=4, batch_size=8,  lr=5e-4, aux_coeff=0.01,  grad_clip=1.0)
     
-    # Google Colab Free (12-13GB RAM) / T4 (15GB VRAM)
+    # Google Colab Free (12-13GB RAM) requiere un modo optimizado
     elif is_colab or (effective_ram >= 10 and effective_ram < 24):
-        return dict(mode="colab",  num_experts=32, hidden=256,  ffn_hidden=1024,
-                    num_layers=3,  top_k=2, batch_size=4,  lr=5e-4, aux_coeff=0.1,   grad_clip=1.0)
+        # Bajamos a 128 expertos para asegurar estabilidad con AdamW (que usa 3x RAM)
+        return dict(mode="colab",  num_experts=128, hidden=384,  ffn_hidden=1536,
+                    num_layers=2,  top_k=4, batch_size=4,  lr=5e-4, aux_coeff=0.05,  grad_clip=1.0)
     
     elif effective_ram >= 7:
         return dict(mode="medium", num_experts=64,  hidden=256,  ffn_hidden=1024,

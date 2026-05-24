@@ -287,10 +287,11 @@ impl MudInference {
         }
     }
 
-    pub fn generate(&mut self, x_init: &[f32], max_tokens: usize, context: &str, conversation_pos: &mut usize) -> Vec<u32> {
+    pub fn generate(&mut self, x_init: &[f32], max_tokens: usize, context: &str, conversation_pos: &mut usize) -> (Vec<u32>, bool) {
         let active_skill_indices: Vec<usize> = self.skills.iter().enumerate().filter(|(_, s)| s.should_activate(x_init, context)).map(|(i, _)| i).collect();
         let mut x = x_init.to_vec();
         let mut results = Vec::new();
+        let mut used_knowledge = false;
         
         let temperature = 0.7f32;
         let top_p = 0.9f32;
@@ -322,6 +323,7 @@ impl MudInference {
                     .autonomous_jump_search(&x, &self.store, 1);
                 
                 if !retrieved_facts.is_empty() {
+                    used_knowledge = true;
 
                     for fact in retrieved_facts.iter().take(2) {
                         let fact_tokens = self.tokenizer.encode(fact);
@@ -403,7 +405,7 @@ impl MudInference {
                 }
             }
         }
-        results
+        (results, used_knowledge)
     }
 
     pub fn embed_token(&self, id: u32, x: &mut [f32]) {

@@ -2,7 +2,20 @@ use std::sync::{Arc, Mutex, LazyLock};
 use rayon::prelude::*;
 
 static VK_CTX: LazyLock<Mutex<Option<Arc<crate::vulkan::VulkanContext>>>> =
-    LazyLock::new(|| Mutex::new(crate::vulkan::VulkanContext::new().ok().map(Arc::new)));
+    LazyLock::new(|| Mutex::new(None));
+
+// Global lock for Vulkan submissions to ensure thread safety
+static VK_SUBMIT_LOCK: Mutex<()> = Mutex::new(());
+
+fn lazy_init_vulkan() -> Option<Arc<crate::vulkan::VulkanContext>> {
+    let mut lock = VK_CTX.lock().unwrap();
+    if lock.is_none() {
+        if let Ok(ctx) = crate::vulkan::VulkanContext::new() {
+            *lock = Some(Arc::new(ctx));
+        }
+    }
+    lock.as_ref().cloned()
+}
 
 fn quantize_ternary(w: &[f32]) -> Vec<u32> {
     let gamma = w.iter().copied().map(|x| x.abs() as f64).sum::<f64>() / w.len() as f64;
@@ -115,23 +128,6 @@ unsafe fn gemv_transpose_avx2_row(dy_i: f32, row_blocks: &[u32], dx: &mut [f32],
     }
 }
 
-fn outer_product(dy: &[f32], x: &[f32], dw: &mut [f32], _n_out: usize, n_in: usize) {
-    dw.par_chunks_mut(n_in).enumerate().for_each(|(i, row)| {
-        let dy_i = dy[i];
-        if dy_i == 0.0 { return; }
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx2") && n_in >= 8 {
-                unsafe { outer_product_avx2_row(dy_i, x, row, n_in) }
-                return;
-            }
-        }
-        for j in 0..n_in {
-            row[j] += dy_i * x[j];
-        }
-    });
-}
-
 #[cfg(target_arch = "x86_64")]
 unsafe fn outer_product_avx2_row(dy_i: f32, x: &[f32], row: &mut [f32], n_in: usize) {
     use std::arch::x86_64::*;
@@ -154,6 +150,7 @@ unsafe fn outer_product_avx2_row(dy_i: f32, x: &[f32], row: &mut [f32], n_in: us
 /// `w` must be a valid pointer to at least `w_len` f32 elements.
 /// `out` must be a valid pointer to at least `ceil(w_len / 16)` u32 elements.
 pub unsafe extern "C" fn vb_quantize(w: *const f32, w_len: u32, out: *mut u32) -> i32 {
+    if w.is_null() || out.is_null() { return -1; }
     let w_slice = std::slice::from_raw_parts(w, w_len as usize);
     let packed = quantize_ternary(w_slice);
     let out_slice = std::slice::from_raw_parts_mut(out, packed.len());
@@ -163,72 +160,125 @@ pub unsafe extern "C" fn vb_quantize(w: *const f32, w_len: u32, out: *mut u32) -
 
 #[no_mangle]
 /// # Safety
-/// Pointers must be valid and appropriately sized based on `n_in` and `n_out`.
-pub unsafe extern "C" fn vb_gemv_forward(
+/// Pointers must be valid and appropriately sized:
+/// x: [batch_size, n_in]
+/// w_packed: [n_out, n_in/16]
+/// y: [batch_size, n_out]
+pub unsafe extern "C" fn vb_gemm_forward(
     x: *const f32,
     w_packed: *const u32,
     y: *mut f32,
+    batch_size: u32,
     n_in: u32,
     n_out: u32,
     scale: f32,
     use_vulkan: u8,
 ) -> i32 {
+    if x.is_null() || w_packed.is_null() || y.is_null() { return -1; }
+    let batch_size = batch_size as usize;
     let n_in = n_in as usize;
     let n_out = n_out as usize;
-    let x_slice = std::slice::from_raw_parts(x, n_in);
-    let w_slice = std::slice::from_raw_parts(w_packed, (n_in.div_ceil(16)) * n_out);
-    let y_slice = std::slice::from_raw_parts_mut(y, n_out);
+    if batch_size == 0 || n_in == 0 || n_out == 0 { return 0; }
+    
+    let x_slice = std::slice::from_raw_parts(x, batch_size * n_in);
+    let w_len = (n_in.div_ceil(16)) * n_out;
+    let w_slice = std::slice::from_raw_parts(w_packed, w_len);
+    let y_slice = std::slice::from_raw_parts_mut(y, batch_size * n_out);
 
     if use_vulkan != 0 {
-        if let Some(ctx) = VK_CTX.lock().unwrap().as_ref() {
-            return match ctx.run_ternary_gemv(n_in, n_out, x_slice, w_slice.as_ptr(), scale, y_slice) {
-                Ok(()) => 0,
-                Err(_) => {
-                    gemv_cpu(x_slice, w_slice, y_slice, n_in, n_out, scale);
-                    1
-                }
-            };
+        if let Some(ctx) = lazy_init_vulkan() {
+            let _submit_guard = VK_SUBMIT_LOCK.lock().unwrap();
+            let key = format!("ptr_{:x}", w_packed as usize);
+            if let Ok(()) = ctx.run_ternary_gemm_cached(
+                &key, batch_size, n_in, n_out, 
+                x_slice, w_packed, scale, y_slice
+            ) {
+                return 0;
+            }
         }
     }
-    gemv_cpu(x_slice, w_slice, y_slice, n_in, n_out, scale);
+
+    // CPU Path: Parallelized over batch using Rayon
+    y_slice.par_chunks_mut(n_out).enumerate().for_each(|(b, out_row)| {
+        let x_row = &x_slice[b * n_in .. (b + 1) * n_in];
+        gemv_cpu(x_row, w_slice, out_row, n_in, n_out, scale);
+    });
+
     0
 }
 
 #[no_mangle]
 /// # Safety
-/// Pointers must be valid and appropriately sized based on `n_in` and `n_out`.
-pub unsafe extern "C" fn vb_gemv_backward_input(
+/// Pointers must be valid and appropriately sized.
+pub unsafe extern "C" fn vb_gemm_backward_input(
     dy: *const f32,
     w_packed: *const u32,
     dx: *mut f32,
+    batch_size: u32,
     n_in: u32,
     n_out: u32,
 ) -> i32 {
+    if dy.is_null() || w_packed.is_null() || dx.is_null() { return -1; }
+    let batch_size = batch_size as usize;
     let n_in = n_in as usize;
     let n_out = n_out as usize;
-    let dy_slice = std::slice::from_raw_parts(dy, n_out);
-    let w_slice = std::slice::from_raw_parts(w_packed, (n_in.div_ceil(16)) * n_out);
-    let dx_slice = std::slice::from_raw_parts_mut(dx, n_in);
-    gemv_transpose_cpu(dy_slice, w_slice, dx_slice, n_in, n_out);
+    if batch_size == 0 || n_in == 0 || n_out == 0 { return 0; }
+    
+    let dy_slice = std::slice::from_raw_parts(dy, batch_size * n_out);
+    let w_len = (n_in.div_ceil(16)) * n_out;
+    let w_slice = std::slice::from_raw_parts(w_packed, w_len);
+    let dx_slice = std::slice::from_raw_parts_mut(dx, batch_size * n_in);
+
+    // CPU Path: Parallelized over batch
+    dx_slice.par_chunks_mut(n_in).enumerate().for_each(|(b, dx_row)| {
+        let dy_row = &dy_slice[b * n_out .. (b + 1) * n_out];
+        gemv_transpose_cpu(dy_row, w_slice, dx_row, n_in, n_out);
+    });
+
     0
 }
 
 #[no_mangle]
 /// # Safety
-/// Pointers must be valid and appropriately sized based on `n_in` and `n_out`.
-pub unsafe extern "C" fn vb_outer_product(
+/// Pointers must be valid and appropriately sized.
+pub unsafe extern "C" fn vb_gemm_outer_product(
     dy: *const f32,
     x: *const f32,
     dw: *mut f32,
+    batch_size: u32,
     n_out: u32,
     n_in: u32,
 ) -> i32 {
+    if dy.is_null() || x.is_null() || dw.is_null() { return -1; }
+    let batch_size = batch_size as usize;
     let n_out = n_out as usize;
     let n_in = n_in as usize;
-    let dy_slice = std::slice::from_raw_parts(dy, n_out);
-    let x_slice = std::slice::from_raw_parts(x, n_in);
+    if batch_size == 0 || n_out == 0 || n_in == 0 { return 0; }
+    
+    let dy_slice = std::slice::from_raw_parts(dy, batch_size * n_out);
+    let x_slice = std::slice::from_raw_parts(x, batch_size * n_in);
     let dw_slice = std::slice::from_raw_parts_mut(dw, n_out * n_in);
-    outer_product(dy_slice, x_slice, dw_slice, n_out, n_in);
+
+    // Accumulated outer product over batch
+    dw_slice.par_chunks_mut(n_in).enumerate().for_each(|(i, dw_row)| {
+        for b in 0..batch_size {
+            let dy_val = dy_slice[b * n_out + i];
+            if dy_val == 0.0 { continue; }
+            let x_row = &x_slice[b * n_in .. (b + 1) * n_in];
+            
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") && n_in >= 8 {
+                    unsafe { outer_product_avx2_row(dy_val, x_row, dw_row, n_in) }
+                    continue;
+                }
+            }
+            for j in 0..n_in {
+                dw_row[j] += dy_val * x_row[j];
+            }
+        }
+    });
+
     0
 }
 
@@ -236,13 +286,7 @@ pub unsafe extern "C" fn vb_outer_product(
 /// # Safety
 /// Vulkan initialization is generally safe but relies on system drivers.
 pub unsafe extern "C" fn vb_init_vulkan() -> i32 {
-    match crate::vulkan::VulkanContext::new() {
-        Ok(ctx) => {
-            *VK_CTX.lock().unwrap() = Some(Arc::new(ctx));
-            0
-        }
-        Err(_) => -1,
-    }
+    if lazy_init_vulkan().is_some() { 0 } else { -1 }
 }
 
 #[no_mangle]

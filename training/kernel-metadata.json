@@ -1,6 +1,6 @@
 {
-  "id": "YOUR_KAGGLE_USERNAME/YOUR_KAGGLE_KERNEL_NAME",
-  "title": "YOUR_KAGGLE_KERNEL_NAME",
+  "id": "alejandrofonda/mud-master-trainer-stable",
+  "title": "MUD Master Trainer Stable",
   "code_file": "notebook9dbdee419a.ipynb",
   "language": "python",
   "kernel_type": "notebook",
@@ -9,7 +9,7 @@
   "enable_tpu": "false",
   "enable_internet": "true",
   "dataset_sources": [
-    "YOUR_KAGGLE_USERNAME/YOUR_KAGGLE_DATASET_NAME"
+    "alejandrofonda/mud-master-training-data"
   ],
   "competition_sources": [],
   "kernel_sources": [],

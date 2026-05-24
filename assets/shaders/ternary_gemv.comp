@@ -12,30 +12,31 @@ layout(push_constant) uniform PushConstants {
     uint n_in;
     uint n_out;
     float scale;
+    uint batch_size;
 } pcs;
 
 void main() {
     uint row = gl_WorkGroupID.x;
-    if (row >= pcs.n_out) return;
+    uint batch_idx = gl_WorkGroupID.y;
+    
+    if (row >= pcs.n_out || batch_idx >= pcs.batch_size) return;
 
     uint lane_id = gl_LocalInvocationID.x;
     float local_sum = 0.0;
     
     uint blocks_per_row = pcs.n_in / 16;
     uint row_offset = row * blocks_per_row;
+    uint x_offset = batch_idx * pcs.n_in;
+    uint y_offset = batch_idx * pcs.n_out;
 
     // Process 16 weights per uint, 32 uints per subgroup iteration
-    // Total 512 weights per subgroup loop
     for (uint b = lane_id; b < blocks_per_row; b += 32) {
         uint w_bits = packed_w[row_offset + b];
-        uint x_base = b * 16;
+        uint x_base = x_offset + b * 16;
         
-        // Unroll the loop manually for better performance on Intel iGPU
         #pragma unroll
         for (uint i = 0; i < 16; i++) {
             uint bits = (w_bits >> (i * 2)) & 3u;
-            // Use float cast to avoid branching if possible, but ternary is naturally branched
-            // Optimization: Only add if bits != 0
             if (bits != 0u) {
                 float val = x[x_base + i];
                 local_sum += (bits == 1u) ? val : -val;
@@ -43,10 +44,9 @@ void main() {
         }
     }
     
-    // Final reduction using subgroup primitives
     float total_sum = subgroupAdd(local_sum);
     
     if (lane_id == 0) {
-        y[row] = total_sum * pcs.scale;
+        y[y_offset + row] = total_sum * pcs.scale;
     }
 }

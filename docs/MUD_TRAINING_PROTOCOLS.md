@@ -1,36 +1,38 @@
 # MUD: Cognitive Assimilation Plan (CAP)
 
 ## Goal: Moving from Retrieval (RAG) to Intrinsic Knowledge (Weights)
-Currently, MUD "reads" books via the Knowledge Graph. To make it truly intelligent, it must **assimilate** this information into its ternary weights through a structured training pipeline.
+MUD doesn't just "read" information via the Knowledge Graph; it **assimilates** facts into its ternary weights through a hardware-aware, automated training pipeline.
 
 ---
 
-## Phase 1: Massive Ingestion (The Library)
-- **Status:** In Progress
-- **Action:** Continue using `/ingest tests/data/books/` to build a high-quality SQLite database of Science, Math, Logic, and Programming.
-- **Metric:** Reach > 10,000 knowledge chunks in `knowledge.db`.
+## The Unified Training Lifecycle (Auto-Edit Phase)
+Training is no longer manual. It is governed by a central orchestrator that aligns architecture with hardware capability.
 
-## Phase 2: Synthetic Dreaming (Dataset Generation)
-- **Status:** Planned
-- **Logic:** A script will iterate through the SQLite facts and generate **Chain of Thought (CoT)** training pairs.
-- **Format:**
-  `Q: Explain the concept of [Subject] A: <thinking> [Logic steps derived from fact] </thinking> <answer> [Synthesized conclusion] </answer>`
-- **Tool:** `tools/dreamer.py` (To be implemented).
+### 1. Hardware Profiling & Auto-Config
+- **Tool:** `tools/hardware_profiler.py` & `training/auto_config.py`
+- **Logic:** Upon execution, MUD detects CPU (AVX2/512), RAM, and GPU. It calibrates a "Mode" (Tiny, Small, Medium, Colab, Big) and persists optimal parameters (`hidden`, `num_layers`, `num_experts`) in `models/knowledge.db`.
+- **Source of Truth:** All trainers (`mud_fast_trainer.py`, `mud_ultra_trainer.py`, `kaggle_trainer.py`) MUST inherit their architecture from `load_training_config()`.
 
-## Phase 3: Weight Consolidation (Kaggle Training)
-- **Status:** Running (v32)
-- **Action:**
-  1. Upload the generated synthetic dataset to Kaggle as a private dataset.
-  2. Perform **Knowledge Distillation**: The model trains on its own "digested" version of the books.
-  3. **Specialized Experts:** Lock specific MoE experts to specific domains (Expert 0-2: Logic, Expert 3-5: Code, Expert 6-7: Math).
+### 2. Massive Ingestion & Learning Marks
+- **Status:** Active
+- **Mechanism:** Ingested facts in `knowledge.db` are tagged with `learning_mark`.
+    - **0 (Raw):** Ingested but not yet distilled.
+    - **1 (Learned):** Integrated into weights via training.
+    - **2 (Master):** Critical verified knowledge.
 
-## Phase 4: Autonomous Validation
-- **Status:** Future
-- **Logic:** The model is presented with unseen technical problems from the same books. It must solve them using its internal weights first, then verify via RAG if confidence is low (< 0.7 similarity).
+### 3. Stability & Neural Health (Neural Kick)
+- **Mechanism:** To prevent MoE expert collapse and break gradient plateaus (like the Step 442 bottleneck), a "Neural Kick" (Epsilon Jitter) is applied.
+- **Intensity:** `1e-5` perturbation every 100 steps.
+- **Impact:** Forces expert specialization and prevents weight stagnation in ternary space.
+
+### 4. Weight Consolidation (Local & Cloud)
+- **Local:** `./mud.sh train` launches the fast orchestrator using optimized Rust-compiled binaries and AVX2-accelerated trainers.
+- **Kaggle:** `./mud.sh train --kaggle` dispatches the SAME configuration to the cloud for high-scale training (V1-MASTER).
 
 ---
 
-## Technical Strategy: Index-to-Weight Mapping
-1. **Embedding Alignment:** Ensure the training embedding layer uses the exact same vocabulary IDs as the Rust ingester.
-2. **Loss Weighting:** Facts with high **PageRank** in the Knowledge Graph will have a 2x higher loss weight during training (Importance-based learning).
-3. **BitNet Preservation:** Use Quantization-Aware Training (QAT) to ensure the newly learned facts are stable in a `{-1, 0, 1}` environment.
+## Phase Roadmap
+1. **[DONE]** Automated hardware-to-architecture mapping.
+2. **[DONE]** Fix state_dict size mismatch bugs in auto-config.
+3. **[ACTIVE]** Scaling to 256 MoE experts on high-memory environments.
+4. **[FUTURE]** PageRank-based loss weighting (Facts with higher connectivity get higher priority in weight updates).

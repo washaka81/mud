@@ -22,13 +22,6 @@ mkdir -p "$LOG_DIR" models weights
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 SESSION_LOG="$LOG_DIR/session_${TIMESTAMP}.log"
 
-# MoE config (sincronizado con mud_fast_trainer.py)
-NUM_EXPERTS=256
-CLUSTER_SIZE=16
-NUM_CLUSTERS=16
-TOP_K=4
-TARGET_STEPS=100000
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ARGUMENT PARSING
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,6 +31,21 @@ QUICK_TEST=0
 DRY_RUN=0
 RESUME=""
 STEPS_OVERRIDE=""
+
+# Cargar config recomendada desde auto_config como base
+AUTO_CFG=$(python3 -c "
+import sys; sys.path.insert(0, 'training')
+from auto_config import load_training_config
+cfg = load_training_config()
+print(f'{cfg[\"num_experts\"]}|{cfg[\"hidden\"]}|{cfg[\"num_layers\"]}|{cfg[\"top_k\"]}|{cfg[\"mode\"]}')
+" 2>/dev/null || echo "256|512|4|4|big")
+
+IFS='|' read -r AUTO_EXPERTS AUTO_HIDDEN AUTO_LAYERS AUTO_TOP_K AUTO_MODE <<< "$AUTO_CFG"
+
+# Inicializar con valores auto-detectados
+NUM_EXPERTS=$AUTO_EXPERTS
+TOP_K=$AUTO_TOP_K
+TARGET_STEPS=100000
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -54,6 +62,13 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 STEPS=${STEPS_OVERRIDE:-$TARGET_STEPS}
+
+# Recalcular clústeres si cambiaron los expertos
+CLUSTER_SIZE=$(( NUM_EXPERTS / 4 ))
+if [ "$CLUSTER_SIZE" -lt 1 ]; then CLUSTER_SIZE=1; fi
+NUM_CLUSTERS=$(( NUM_EXPERTS / CLUSTER_SIZE ))
+if [ "$NUM_CLUSTERS" -lt 1 ]; then NUM_CLUSTERS=1; fi
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BANNER
@@ -125,25 +140,6 @@ echo -e "\x1b[1;34m[1/6] Hardware Profiler (auto-detección)...\x1b[0m" | tee -a
 
 python3 tools/hardware_profiler.py 2>&1 | tee -a "$SESSION_LOG"
 
-# Cargar config recomendada desde auto_config
-AUTO_CFG=$(python3 -c "
-import sys; sys.path.insert(0, 'training')
-from auto_config import load_training_config
-cfg = load_training_config()
-print(f'{cfg[\"num_experts\"]}|{cfg[\"hidden\"]}|{cfg[\"num_layers\"]}|{cfg[\"top_k\"]}|{cfg[\"mode\"]}')
-" 2>/dev/null || echo "256|512|4|4|big")
-
-IFS='|' read -r AUTO_EXPERTS AUTO_HIDDEN AUTO_LAYERS AUTO_TOP_K AUTO_MODE <<< "$AUTO_CFG"
-
-# Si no se especificaron expertos manualmente, usar auto-detected
-if [ "$NUM_EXPERTS" -eq 256 ] && [ "$AUTO_EXPERTS" -lt 256 ]; then
-    echo -e "\x1b[1;33m   ↳ Auto-config sugiere modo '$AUTO_MODE' ($AUTO_EXPERTS expertos)\x1b[0m" | tee -a "$SESSION_LOG"
-    NUM_EXPERTS=$AUTO_EXPERTS
-    CLUSTER_SIZE=$(( NUM_EXPERTS / 4 ))
-    NUM_CLUSTERS=$(( NUM_EXPERTS / CLUSTER_SIZE ))
-    TOP_K=$AUTO_TOP_K
-fi
-
 NUM_CORES=$(nproc)
 echo "  ✅ Config: ${NUM_EXPERTS} expertos × ${AUTO_HIDDEN} hidden × ${AUTO_LAYERS} capas (modo $AUTO_MODE)" | tee -a "$SESSION_LOG"
 
@@ -152,6 +148,7 @@ python3 -c "
 import sys; sys.path.insert(0, 'training')
 from auto_config import load_training_config, print_config_report
 cfg = load_training_config('$AUTO_MODE')
+# Asegurar que el reporte refleje lo que realmente se usará (por si hubo overrides)
 cfg['num_experts'] = ${NUM_EXPERTS}
 cfg['hidden'] = ${AUTO_HIDDEN}
 cfg['num_layers'] = ${AUTO_LAYERS}

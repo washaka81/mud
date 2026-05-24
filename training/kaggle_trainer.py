@@ -50,14 +50,14 @@ _cfg = load_training_config()
 print_config_report(_cfg)
 
 HIDDEN       = _cfg["hidden"]
-FFN_HIDDEN   = _cfg.get("ffn_hidden", HIDDEN * 4)
+FFN_HIDDEN   = _cfg["ffn_hidden"] if "ffn_hidden" in _cfg else _cfg["hidden"] * 4
 EXPERTS      = _cfg["num_experts"]
 NUM_LAYERS   = _cfg["num_layers"]
 TOP_K        = _cfg["top_k"]
 LR           = _cfg.get("lr", 3e-4)
 STEPS        = 100000  # Escala de entrenamiento Kaggle v1-Master
 CPU_STEPS    = 5000
-CLUSTER_SIZE = 16
+CLUSTER_SIZE = min(16, EXPERTS // 4) if EXPERTS >= 4 else 1
 NUM_CLUSTERS = max(1, EXPERTS // CLUSTER_SIZE)
 
 KAGGLE = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
@@ -19047,10 +19047,36 @@ def train():
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=STEPS)
 
-    corpus = CORPUS
+    # Cargar corpus externo si existe (para escalado v1-Master)
+    corpus_paths = [
+        "training/massive_knowledge_corpus.txt",
+        "massive_knowledge_corpus.txt",
+        "/kaggle/input/mud-training/massive_knowledge_corpus.txt",
+        "/kaggle/input/massive_knowledge_corpus.txt"
+    ]
+    
+    external_corpus = []
+    for cp in corpus_paths:
+        if os.path.exists(cp):
+            print(f"📦 Cargando corpus masivo desde: {cp}")
+            with open(cp, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "CONTENT:" in line:
+                        text = line.split("CONTENT:", 1)[1].strip()
+                        if len(text) > 10:
+                            external_corpus.append(text)
+            if external_corpus: break
+
+    if external_corpus:
+        print(f"✅ Corpus masivo cargado: {len(external_corpus)} secuencias.")
+        final_corpus = external_corpus
+    else:
+        print("ℹ️  Usando corpus interno (sentimientos/lógica).")
+        final_corpus = CORPUS
+
     encoded_corpus = []
     try:
-        for text in corpus:
+        for text in tqdm(final_corpus, desc="Encoding corpus"):
             ids = [word_to_id.get(w, 0) for w in text.split()]
             if len(ids) >= 2:
                 encoded_corpus.append(torch.tensor(ids, device=DEVICE, dtype=torch.long))
@@ -19096,7 +19122,7 @@ def train():
             with torch.no_grad():
                 for param in model.parameters():
                     if param.requires_grad:
-                        param.add_(torch.randn_like(param) * 1e-6)
+                        param.add_(torch.randn_like(param) * 1e-5)
 
         idx = step % len(encoded_corpus)
         seq = encoded_corpus[idx]

@@ -126,10 +126,11 @@ impl VulkanContext {
         })
     }
 
-    /// Executes a ternary GEMV on the iGPU with buffer caching.
-    pub fn run_ternary_gemv_cached(
+    /// Executes a batched ternary GEMM on the iGPU.
+    pub fn run_ternary_gemm_cached(
         &self,
         key: &str,
+        batch_size: usize,
         n_in: usize,
         n_out: usize,
         x: &[f32],
@@ -141,8 +142,9 @@ impl VulkanContext {
         let buffer_x = {
             let mut cache = self.buffer_x_cache.lock();
             let mut recreate = true;
+            let total_x = batch_size * n_in;
             if let Some(buf) = cache.get(key) {
-                if buf.len() == n_in as u64 {
+                if buf.len() == total_x as u64 {
                     recreate = false;
                 }
             }
@@ -151,7 +153,7 @@ impl VulkanContext {
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
                     AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
-                    n_in as u64,
+                    total_x as u64,
                 )?;
                 let arc_buf = Arc::new(buf);
                 cache.insert(key.to_string(), arc_buf.clone());
@@ -161,20 +163,18 @@ impl VulkanContext {
             }
         };
 
-        // Persistent host write directly into mapped memory buffer
         {
             let mut write_guard = buffer_x.write()?;
             let copy_len = x.len().min(write_guard.len());
             write_guard[..copy_len].copy_from_slice(&x[..copy_len]);
         }
 
-        // Use cached weight buffer if available (zero-copy: skip re-upload on cache hit)
         let buffer_w: Arc<Subbuffer<[u32]>> = {
             let mut cache = self.buffer_cache.lock();
-            let mut init_set = self.buffer_init.lock();
             let mut recreate = true;
+            let w_len = (n_in / 16) * n_out;
             if let Some(buf) = cache.get(key) {
-                if buf.len() == ((n_in / 16) * n_out) as u64 {
+                if buf.len() == w_len as u64 {
                     recreate = false;
                 }
             }
@@ -183,17 +183,15 @@ impl VulkanContext {
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
                     AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
-                    ((n_in / 16) * n_out) as u64,
+                    w_len as u64,
                 )?;
                 let arc_buf = Arc::new(buf);
-                // Write weights only on first allocation
                 {
-                    let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, (n_in / 16) * n_out) };
+                    let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, w_len) };
                     let mut write_guard = arc_buf.write()?;
                     let copy_len = weights_slice.len().min(write_guard.len());
                     write_guard[..copy_len].copy_from_slice(&weights_slice[..copy_len]);
                 }
-                init_set.insert(key.to_string());
                 cache.insert(key.to_string(), arc_buf.clone());
                 arc_buf
             } else {
@@ -201,12 +199,12 @@ impl VulkanContext {
             }
         };
 
-        // Use cached output buffer if available
         let buffer_y = {
             let mut cache = self.buffer_y_cache.lock();
             let mut recreate = true;
+            let total_y = batch_size * n_out;
             if let Some(buf) = cache.get(key) {
-                if buf.len() == n_out as u64 {
+                if buf.len() == total_y as u64 {
                     recreate = false;
                 }
             }
@@ -215,7 +213,7 @@ impl VulkanContext {
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
                     AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
-                    n_out as u64,
+                    total_y as u64,
                 )?;
                 let arc_buf = Arc::new(buf);
                 cache.insert(key.to_string(), arc_buf.clone());
@@ -246,19 +244,34 @@ impl VulkanContext {
         builder
             .bind_pipeline_compute(self.pipeline.clone())?
             .bind_descriptor_sets(PipelineBindPoint::Compute, self.pipeline.layout().clone(), 0, set)?
-            .push_constants(self.pipeline.layout().clone(), 0, cs::PushConstants { n_in: n_in as u32, n_out: n_out as u32, scale })?
-            .dispatch([n_out as u32, 1, 1])?; 
+            .push_constants(self.pipeline.layout().clone(), 0, cs::PushConstants { 
+                n_in: n_in as u32, n_out: n_out as u32, scale, batch_size: batch_size as u32 
+            })?
+            .dispatch([n_out as u32, batch_size as u32, 1])?; 
 
         let command_buffer = builder.build()?;
         sync::now(self.device.clone()).then_execute(self.queue.clone(), command_buffer)?.then_signal_fence_and_flush()?.wait(None)?;
 
-        // Persistent host read directly from mapped memory buffer
         {
             let read_guard = buffer_y.read()?;
             let copy_len = y.len().min(read_guard.len());
             y[..copy_len].copy_from_slice(&read_guard[..copy_len]);
         }
         Ok(())
+    }
+
+    /// Executes a ternary GEMV on the iGPU with buffer caching.
+    pub fn run_ternary_gemv_cached(
+        &self,
+        key: &str,
+        n_in: usize,
+        n_out: usize,
+        x: &[f32],
+        packed_w: *const u32,
+        scale: f32,
+        y: &mut [f32],
+    ) -> anyhow::Result<()> {
+        self.run_ternary_gemm_cached(key, 1, n_in, n_out, x, packed_w, scale, y)
     }
 
     /// Executes a ternary GEMV on the iGPU (deprecated, use run_ternary_gemv_cached).
@@ -272,7 +285,7 @@ impl VulkanContext {
         y: &mut [f32],
     ) -> anyhow::Result<()> {
         let key = format!("ptr_{:x}", packed_w as usize);
-        self.run_ternary_gemv_cached(&key, n_in, n_out, x, packed_w, scale, y)
+        self.run_ternary_gemm_cached(&key, 1, n_in, n_out, x, packed_w, scale, y)
     }
 }
 
@@ -300,4 +313,3 @@ mod cs {
         vulkan_version: "1.1",
     }
 }
-
