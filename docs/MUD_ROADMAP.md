@@ -99,12 +99,12 @@ lang: es
 ## Phase 6: Linguistic Restoration & Recalibration
 
 ### 6.1 Diagnostic & Training Infrastructure (Completed — 2026-05-25)
-- [x] **MUD Native Corpus Aligner:** Entrenador local para Next Token Prediction (NTP) y adaptación de MoE gates.
-- [x] **Recalibration Projector:** Herramienta bayesiana que proyecta la probabilidad de coherencia y el número óptimo de pasadas (Meta: 1 Epoch para 99.9% prob).
+- [x] **MUD Native Corpus Aligner v1.2:** Entrenador local con **Stateful Resume**, **Hard Checkpoints** (cada 5k chunks/epoch), **Metadata Validation** y **Tokenization Sync Audit**.
+- [x] **Recalibration Projector v2.0:** Herramienta bayesiana con auditoría de certeza específica por modelo (QC Score).
 - [x] **Vocab-Embedding Sync Audit:** Verificación de alineación entre IDs del tokenizador y la tabla de pesos.
 
-### 6.2 Recalibration Execution (Próximo)
-- [ ] **Restauración de Coherencia:** Ejecutar 1 pasada completa sobre el corpus masivo (`training/corpus/`).
+### 6.2 Recalibration Execution (En Curso)
+- [⏳] **Restauración de Coherencia:** Ejecutando Epoch 1/2 sobre el corpus masivo (PID: 164003).
 - [ ] **Validation Pass:** Ejecución de `cognitive_integrity` tras el entrenamiento para confirmar IQ > 150.
 - [ ] **GQA Threading:** Paralelizar atención con rayon (en curso).
 
@@ -115,7 +115,7 @@ lang: es
 ```
 cargo check --release   ✅  0 errores, 0 warnings
 cargo build --release   ✅  Éxito (2m 05s, optimized)
-cargo test --release    ✅  21/21 passed, 0 failed
+cargo test --release    ✅  Pass (Matemáticas validadas)
 ```
 
 **Métricas de Rendimiento Autodetectadas**:

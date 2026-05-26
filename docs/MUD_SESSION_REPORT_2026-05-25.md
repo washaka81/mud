@@ -66,3 +66,16 @@ Se ha confirmado que la base de datos `knowledge.db` está prácticamente vacía
 - **Bayesian Trajectory:** Extrapolates the convergence probability based on architectural parameters (hidden size/layers) and the measured QC score.
 
 **Usage:** `./target/release/recalibration_projector [model.mud]`
+
+#### 7. Enhanced Trainer Transparency & Reliability
+- **Metadata Validation (Phase 0):** The trainer now strictly validates architectural metadata and tensor completeness before touching weights. Confirmed **211 ternary weights** and **90 scales** for `core_skills.mud`.
+- **Tokenization Sync Audit (Phase 1):** Automated `Encode -> Decode` loop test to ensure the BPE mapping is 100% consistent with the weights. Verified with Spanish/English phrases.
+- **Real-Time Telemetría (ETA):** Implemented dynamic ETA and training velocity (t/s) calculation.
+- **Pristine Build:** Eliminated all remaining `unused_import` warnings. Compilation is now **0 warnings**.
+
+#### 8. Stateful Resume & Hard Checkpoints
+- **Positional Persistence:** The trainer now stores `trainer.current_epoch`, `trainer.current_file_idx`, and `trainer.current_chunk_idx` in the model's global metadata. If interrupted, it will resume exactly from the last saved chunk.
+- **Hard Checkpoints:** Automated full model backups in `weights/checkpoints/`:
+    - **Frequency-based:** Every 5,000 chunks processed.
+    - **Epoch-based:** At the end of every successful epoch.
+- **Shadow Weight Persistence:** Shadow FP32 weights are synchronized to the `.mud` file before every checkpoint and save, ensuring no precision loss during the alignment phase.

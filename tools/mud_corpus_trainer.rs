@@ -1,7 +1,5 @@
 use forge_llm::mud::corpus_trainer::{MudCorpusTrainer, SHOULD_TERMINATE};
 use std::sync::atomic::Ordering;
-use std::thread;
-use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     let model_path = "models/core_skills.mud";
@@ -11,8 +9,9 @@ fn main() -> anyhow::Result<()> {
     println!(" 🌀 MUD NATIVE CORPUS ALIGNER v1.0");
     println!(" ══════════════════════════════════════════════════════════════════════");
 
-    // Create corpus directory if not exists
+    // Create corpus and checkpoint directories
     std::fs::create_dir_all(corpus_dir)?;
+    std::fs::create_dir_all("weights/checkpoints")?;
 
     let trainer = MudCorpusTrainer::new(model_path.to_string(), corpus_dir.to_string())?;
 
