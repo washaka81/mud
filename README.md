@@ -51,4 +51,5 @@ If you plan to use Kaggle for mass training, ensure you add your Kaggle username
 
 ## 📜 Documentation
 
-See [MUD_ARCHITECTURE.md](docs/MUD_ARCHITECTURE.md) for low-level details on ternary packing and skill modularity.
+- **[MUD_OVERVIEW.md](docs/MUD_OVERVIEW.md):** Visión Estratégica, Doctrina, Objetivos y Análisis FODA.
+- **[MUD_ARCHITECTURE.md](docs/MUD_ARCHITECTURE.md):** Low-level details on ternary packing and skill modularity.

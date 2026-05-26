@@ -1,46 +1,62 @@
 ---
-lang: en
+lang: es
 ---
 
-# ARCHITECTURAL_OVERVIEW: MUD (Modular Understanding Dynamics)
-## Hybrid Ternary AI Architecture (BitNet 1.58b + MoE)
+# MUD (Modular Understanding Dynamics) — Visión Estratégica y Doctrina
 
-MUD is a high-performance infrastructure designed to integrate **Trainable Ternary AI** on consumer hardware (Intel i7 + Iris Xe).
+## 1. ¿Qué es MUD?
 
-### 1. The Ternary Paradigm (BitNet 1.58b)
-Unlike traditional models using 16-bit or 32-bit floating-point weights, MUD utilizes the **BitNet 1.58b** architecture.
-- **Weights in {-1, 0, 1}:** Every parameter is reduced to three possible states.
-- **Multiplication-Free Inference:** This eliminates traditional matrix multiplications, converting them into SIMD additions and subtractions.
-- **Energy Efficiency:** Drastic reduction in power consumption and memory bandwidth, enabling large models to run on integrated iGPUs.
+**MUD (Modular Understanding Dynamics)** es un motor de inferencia y aprendizaje continuo de Inteligencia Artificial, diseñado desde cero en Rust y Ensamblador (ASM). Su arquitectura central se basa en redes neuronales **Ternarias (1.58-bit)** y enjambres de expertos (**Mixture of Experts - MoE**). 
 
-### 2. Sparse Mixture of Experts (MoE)
-MUD implements a dynamic **Expert** system. Instead of processing a word through all parameters, an intelligent **Gate (Router)** routes the signal to only the two experts (Top-2) best suited for the specific task (Logic, Code, Science, etc.).
-- **Scalability:** Allows for models with 30-50M parameters while maintaining the response speed of a 5M parameter model.
+MUD no es solo un modelo de lenguaje; es un ecosistema cognitivo autónomo. Está diseñado para ejecutarse en hardware de consumo (Laptops, CPUs comerciales, iGPUs) con una política estricta de "Cero Asignaciones" (Zero-Allocation) de memoria durante el ciclo de inferencia, alcanzando velocidades de lectura/escritura que desafían los límites teóricos del hardware local.
 
-### 3. Hybrid Orchestration & Subgroups
-The architecture splits the AI workload between two domains:
-- **CPU (AVX2):** Handles sequential logic, expert routing, and post-processing.
-- **iGPU (Vulkan):** Executes **Multi-Head Attention** and MoE blocks using **Subgroup Arithmetic**. GPU threads collaborate directly to minimize dot-product latency.
+## 2. Nuestra Doctrina
 
-### 4. Lifecycle: Assimilation & Dreaming
-MUD is **fully trainable**. It uses a Python-based pipeline (Kaggle) for **Quantization-Aware Training (QAT)**.
-- **Real Ingestion:** Reads books (PDF/TXT) and indexes them into a Knowledge Graph.
-- **Synthetic Dreaming:** Converts this data into reasoning pairs (`<thinking>`) to re-train its own ternary weights, permanently assimilating knowledge.
+La filosofía detrás de MUD se basa en principios de ingeniería de bajo nivel y soberanía computacional:
+
+1.  **Mínima Fricción, Máxima Afinidad:** El software debe ser "físicamente consciente" del hardware sobre el que corre. MUD optimiza dinámicamente sus hilos, pre-fetching y jerarquías de caché (L1/L2/L3) según la topología del procesador anfitrión (ej. P-Cores vs E-Cores).
+2.  **Eficiencia por Compresión (1.58b):** Creemos que la inteligencia real no requiere precisión decimal infinita (FP16/FP32). La arquitectura ternaria de BitNet (-1, 0, 1) preserva el razonamiento mientras reduce drásticamente la latencia y la huella en VRAM/RAM.
+3.  **Soberanía de Datos (Local-First):** El aprendizaje y la inferencia no deben depender de la nube. MUD incluye un `Auto-Trainer` nativo que alinea y recalibra el modelo localmente, garantizando privacidad absoluta y autonomía total.
+4.  **Cero Tolerancia a la Asimetría:** El código debe ser una obra de arte, desde sus kernels en ensamblador hasta sus interfaces en terminal (HD-CLI). La precisión matemática y la belleza estética son inseparables.
+
+## 3. Visión
+
+Convertir a MUD en el **estándar de facto para la Inteligencia Artificial de borde (Edge AI)**. Visualizamos un futuro donde cualquier dispositivo portátil, sin importar sus limitaciones de hardware, pueda ejecutar, entrenar y expandir modelos MoE de alto razonamiento de manera descentralizada y en tiempo real, democratizando el acceso a asistentes cognitivos avanzados.
+
+## 4. Objetivos (Estratégicos)
+
+*   **Independencia Tecnológica:** Proveer una alternativa open-source hiper-optimizada frente a los ecosistemas cerrados y motores dependientes de CUDA/NVIDIA.
+*   **Aprendizaje Continuo:** Evolucionar MUD de un modelo estático a un agente "vivo" que asimila nuevos conocimientos de forma fluida a través de su base de datos SQLite y su entrenador causal integrado.
+*   **Portabilidad Extrema:** Mantener el binario central (Rust) libre de dependencias complejas, asegurando que pueda compilarse y ejecutarse en arquitecturas x86, ARM, WebAssembly y dispositivos móviles a través de Vulkan.
+
+## 5. Metas (Técnicas a Corto y Medio Plazo)
+
+1.  **Recalibración Exitosa (Corto Plazo):** Completar el entrenamiento de alineación actual (2 Epochs) para restaurar una coherencia lingüística del >98.2% con cero pérdida de conocimiento.
+2.  **Soporte Multi-Dispositivo (Medio Plazo):** Consolidar el backend de Vulkan Zero-Copy para garantizar +50 TPS constantes tanto en procesadores Intel (Iris Xe) como AMD y Apple Silicon.
+3.  **Ternarización Total (Medio Plazo):** Completar la Fase 5 del roadmap cuantizando no solo los embeddings y expertos, sino también los mecanismos de atención y proyecciones de salida a 1.58-bit.
+4.  **Enjambre P2P (Largo Plazo):** Desarrollar la capacidad de que múltiples nodos MUD compartan expertos y pesos de forma descentralizada.
 
 ---
 
-## Hardware Compatibility & ISA Requirements
-To achieve target performance, the host system must support the following Instruction Set Architecture (ISA) features:
+## 6. Análisis FODA (SWOT)
 
-### CPU (Minimum: Intel 4th Gen / AMD Zen 1)
-- **AVX2:** 256-bit Vector Extensions (Required for Ternary Kernels).
-- **FMA3:** Fused Multiply-Add (Required for Embeddings and Norm scaling).
-- **BMI1 / BMI2:** Bit Manipulation Instructions (Required for efficient 2-bit weight unpacking).
-- **SSE 4.2:** Required for base memory operations.
-- **AVX-VNNI (Recommended):** Accelerates 8-bit integer operations (Alder Lake and newer).
+### Fortalezas (Strengths)
+*   **Rendimiento Extremo (Zero-Allocation):** Arquitectura sin reservas dinámicas de memoria en el hot-loop, resultando en latencias ultra-bajas y >50 TPS en hardware comercial.
+*   **Afinidad de Hardware (Auto-Detect):** El motor ajusta sus algoritmos de caché y enrutamiento en milisegundos dependiendo del hardware subyacente.
+*   **Ecosistema Unificado en Rust:** Autograd, Inferencia, Tokenización y Entrenamiento centralizados en un único binario seguro frente a fallos de memoria (Memory-Safe).
+*   **Ternarización Nivel Experto:** Conversor universal que preserva la señal matemática mediante auditorías de certeza y escalas dinámicas de amortiguación (QAT).
 
-### iGPU / GPU (Minimum: Vulkan 1.1)
-- **Vulkan 1.1+:** Core runtime requirement.
-- **GL_KHR_shader_subgroup_arithmetic:** Required for extreme iGPU optimization (Subgroup reductions).
-- **Shader Int8 / Float16:** Required for quantized attention paths.
-- **MemoryTypeFilter::PREFER_DEVICE:** Support for Unified Memory Architecture (UMA) for zero-copy transfers.
+### Oportunidades (Opportunities)
+*   **Democratización del Hardware:** El auge de las NPUs y las iGPUs modernas crea un terreno fértil para motores que no dependen de VRAM gigante, un sector que MUD puede dominar.
+*   **Privacidad Local:** Creciente demanda corporativa y de usuarios individuales por IA que no envíe datos a servidores de terceros.
+*   **Edge AI & IoT:** Expansión del motor hacia teléfonos móviles y dispositivos de Internet de las Cosas mediante el backend de Vulkan.
+
+### Debilidades (Weaknesses)
+*   **Dependencia del Ecosistema de Cuantización:** Actualmente, se requiere un modelo maestro original en alta precisión para convertir y destilar hacia el formato `.mud`.
+*   **Curva de Aprendizaje del Código:** El uso de ASM incrustado, punteros `unsafe` y optimizaciones de caché de bajo nivel eleva la barrera de entrada para nuevos contribuidores al proyecto.
+*   **Amnesia Temporal Post-Conversión:** La conversión a formatos ternarios destruye asociaciones posicionales finas, requiriendo un periodo de "recalibración" local para restaurar la fluidez.
+
+### Amenazas (Threats)
+*   **Fragmentación de Formatos:** Formatos de la industria como GGUF/llama.cpp evolucionan rápidamente y tienen un soporte comunitario inmenso, lo que podría relegar al `.mud` a un formato de nicho.
+*   **Evolución del Hardware Específico:** Si los fabricantes optimizan exclusivamente para otros tipos de cuantización (ej. INT4, FP8) a nivel de silicio, la ventaja teórica de la cuantización 1.58b podría diluirse.
+*   **Mantenibilidad de Vulkan:** Diversidad en los drivers de GPUs locales (Intel/AMD/Nvidia/Mali) puede generar bugs de precisión numérica que escapan a los tests de integración en CPU.
