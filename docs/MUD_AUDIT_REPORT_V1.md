@@ -1,3 +1,10 @@
+---
+lang: es
+---
+
+> **[HISTÓRICO — Reemplazado por `MUD_AUDIT_LATEST.md`]**
+> Reporte de estabilización v1.1. Los bugs aquí documentados están resueltos y registrados en la sección "Resolución de Bugs" de `docs/MUD_AUDIT_LATEST.md`.
+
 # MUD System Audit & Stabilization Report (v1.1)
 **Date:** 20 de mayo de 2026
 **Status:** Pipeline Stabilized | Ready for V1-MASTER Training

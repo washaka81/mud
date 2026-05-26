@@ -14,6 +14,8 @@ pub struct Tokenizer {
     pub special_tokens: HashMap<String, u32>,
     /// Mapping of byte values to their Unicode escape representations.
     pub byte_encoder: HashMap<u8, char>,
+    /// Character used as a space prefix in BPE tokenization (e.g. 'Ġ' or ' ')
+    pub space_char: Option<char>,
 }
 
 impl Tokenizer {
@@ -41,12 +43,43 @@ impl Tokenizer {
             }
         }
 
+        let mut special_tokens = HashMap::new();
+        let mut count_gpt_space = 0;
+        let mut count_sp_space = 0;
+
+        for (i, t) in id_to_token.iter().enumerate() {
+            // 1. Detect standard special control marks
+            if (t.starts_with('<') && t.ends_with('>')) || (t.starts_with('[') && t.ends_with(']')) {
+                special_tokens.insert(t.clone(), i as u32);
+            }
+            
+            // 2. Count space prefix representations to determine concordance
+            if t.contains('Ġ') {
+                count_gpt_space += 1;
+            }
+            if t.contains('\u{2581}') { // SentencePiece space prefix (U+2581)
+                count_sp_space += 1;
+            }
+        }
+
+        let space_char = if count_sp_space > count_gpt_space {
+            Some('\u{2581}') // SentencePiece space prefix
+        } else if count_gpt_space > 0 {
+            Some('Ġ') // GPT space prefix
+        } else {
+            None
+        };
+        
+            // Space prefix auto-detected — silenced
+            // Special control marks auto-detected — silenced
+
         Self {
             vocab,
             id_to_token,
             merges,
-            special_tokens: HashMap::new(),
+            special_tokens,
             byte_encoder: bytes_to_unicode(),
+            space_char,
         }
     }
 
@@ -86,12 +119,27 @@ impl Tokenizer {
             }
         }
         
+        let mut count_gpt_space = 0;
+        let mut count_sp_space = 0;
+        for token in &id_to_token {
+            if token.contains('Ġ') { count_gpt_space += 1; }
+            if token.contains('\u{2581}') { count_sp_space += 1; }
+        }
+        let space_char = if count_sp_space > count_gpt_space {
+            Some('\u{2581}')
+        } else if count_gpt_space > 0 {
+            Some('Ġ')
+        } else {
+            None
+        };
+
         Ok(Self { 
             vocab, 
             id_to_token, 
             merges,
             special_tokens,
             byte_encoder: bytes_to_unicode(),
+            space_char,
         })
     }
 
@@ -209,6 +257,13 @@ impl Tokenizer {
             
         let mut decoded_bytes = Vec::new();
         for c in raw_text.chars() {
+            if let Some(sc) = self.space_char {
+                if c == sc {
+                    decoded_bytes.push(b' ');
+                    continue;
+                }
+            }
+            
             if let Some(&b) = byte_decoder.get(&c) {
                 decoded_bytes.push(b);
             } else {

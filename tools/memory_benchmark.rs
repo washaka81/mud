@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     // 1. MEMORY AUDIT
     let start_mem = Instant::now();
     let mud_file = MudFile::load(mud_path)?;
-    let mut engine = MudInference::new(&mud_file, vk)?;
+    let mut engine = MudInference::new(&mud_file, Some(vk))?;
     let load_duration = start_mem.elapsed();
 
     let mmap_size = mud_file.mmap.as_ref().unwrap().len() as f64 / 1024.0 / 1024.0;

@@ -30,26 +30,56 @@ impl MudIngester {
     }
 }
 
-use std::process::Command;
+// use std::process::Command;
+use std::fs::File;
+use std::io::Read;
 
 fn ingest_file(path: &Path, engine: &MudInference) -> anyhow::Result<usize> {
     let filename = path.file_name().unwrap().to_string_lossy();
-    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
     
-    let content = if extension.to_lowercase() == "pdf" {
-        println!("  [Ingester] Extracting text from PDF: {}...", filename);
-        let output = Command::new("pdftotext")
-            .arg("-layout")
-            .arg(path)
-            .arg("-") // output to stdout
-            .output()?;
-        
-        if !output.status.success() {
-            anyhow::bail!("Failed to extract text from PDF: {}", String::from_utf8_lossy(&output.stderr));
+    let content = match extension.as_str() {
+        "pdf" => {
+            println!("  [Ingester] Extracting text natively from PDF: {}...", filename);
+            match pdf_extract::extract_text(path) {
+                Ok(text) => text,
+                Err(e) => anyhow::bail!("Failed to extract text from PDF natively: {}", e),
+            }
         }
-        String::from_utf8_lossy(&output.stdout).to_string()
-    } else {
-        fs::read_to_string(path)?
+        "docx" => {
+            println!("  [Ingester] Extracting text natively from DOCX: {}...", filename);
+            let file = File::open(path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
+            let mut xml_content = String::new();
+            
+            // Extract word/document.xml
+            match archive.by_name("word/document.xml") {
+                Ok(mut doc_file) => {
+                    doc_file.read_to_string(&mut xml_content)?;
+                }
+                Err(e) => anyhow::bail!("Failed to find word/document.xml in DOCX: {}", e),
+            }
+
+            // Parse XML and extract raw text nodes
+            let mut text = String::new();
+            match roxmltree::Document::parse(&xml_content) {
+                Ok(doc) => {
+                    for node in doc.descendants() {
+                        if node.is_text() {
+                            if let Some(t) = node.text() {
+                                text.push_str(t);
+                                text.push(' ');
+                            }
+                        }
+                    }
+                }
+                Err(e) => anyhow::bail!("Failed to parse XML in DOCX: {}", e),
+            }
+            text
+        }
+        _ => {
+            fs::read_to_string(path)?
+        }
     };
 
     println!("  [Ingester] Ingesting {}...", filename);
@@ -90,8 +120,8 @@ fn ingest_file(path: &Path, engine: &MudInference) -> anyhow::Result<usize> {
         }
     }
 
-    // 3. Recalculate PageRank ONCE per file (The Google Algorithm)
-    println!("    [Ingester] Finalizing knowledge bridges (Google Algorithm)...");
+    // 3. Recalculate PageRank ONCE per file (The PageRank Algorithm)
+    println!("    [Ingester] Finalizing knowledge bridges (PageRank Algorithm)...");
     engine.model.knowledge_graph.write().unwrap().recalculate_ranks();
 
     Ok(added)

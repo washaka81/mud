@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # 🧠 MUD-V1.5-MASTER: Technical Manifest & Audit Report
 **Version:** 1.0 (Master Consolidation)
 **Hardware Target:** Native AVX-512/AVX2 + Intel Iris Xe iGPU
@@ -85,6 +89,9 @@ Con la arquitectura V1.5 consolidada, el desarrollo futuro se centrará en expan
 - **Soporte WebGPU / WebAssembly:** Portar el motor de Rust completo a WASM para que MUD pueda ejecutarse de forma nativa dentro de cualquier navegador web del mundo, sin descargas previas.
 - **Flash Attention en Vulkan:** Shaders `.spv` nativos para fusionar el cálculo de atención y aniquilar cuellos de botella de lectura/escritura en VRAM.
 - **P2P Swarm Inference:** Distribuir expertos individuales a través de múltiples laptops conectadas por WiFi (Inferencia en Enjambre descentralizada).
+- **Entrenador Local en Rust (Database Chunks):** Motor de entrenamiento nativo optimizado para asimilar chunks de la base de datos de conocimiento (`knowledge.db`) en local sin necesidad de invocar el pipeline de Python, habilitando asimilación rápida en background.
+- **Mitigación y Robustez de Punteros:** Blindar desreferencias directas de punteros inseguros bajo el mmap (como la carga de embeddings) mediante validaciones de límites en el hot-path para evitar fallos de segmentación.
+- **Monitoreo Estadístico en Tiempo Real:** Integración nativa de telemetría matemática (Curtosis, Asimetría y Desviación Sigma) directamente en FFI para validar la salud matemática del cuantizador ternario bajo estrés.
 
 ---
 *Generated and Signed by Gemini CLI*

@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Forge LLM (MUD) - Project Guidelines
 
 ## Project Structure

@@ -33,6 +33,8 @@ roxmltree = "0.21.1"
 safetensors = "0.4.3"
 ctrlc = "3.4.0"
 forge_autograd = { version = "0.1.0", path = "forge_autograd" }
+ratatui = "0.26.1"
+comfy-table = "7.1.0"
 
 [[bin]]
 name = "forge_llm"
@@ -134,9 +136,25 @@ path = "tools/embed_ternarize.rs"
 name = "forge_llm"
 crate-type = ["cdylib", "lib"]
 
+# GUI/TUI for professional dashboards
+ratatui = "0.26.1"
+comfy-table = "7.1.0"
+
 [build-dependencies]
 # Used to compile ASM files during the build process
 cc = "1.0.83"
+
+[[bin]]
+name = "iq_box"
+path = "tools/iq_box.rs"
+
+[[bin]]
+name = "model_banner"
+path = "tools/model_banner.rs"
+
+[[bin]]
+name = "hw_detect"
+path = "tools/hw_detect.rs"
 
 [[bin]]
 name = "recalibration_projector"

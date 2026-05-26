@@ -25,7 +25,7 @@ impl MudSkill for WebSearchSkill {
     }
 
     fn should_activate(&self, _x: &[f32], context: &str) -> bool {
-        let keywords = ["search", "google", "investiga", "who is", "what is the latest", "http", "www"];
+        let keywords = ["search", "duckduckgo", "web", "investiga", "who is", "what is the latest", "http", "www"];
         keywords.iter().any(|&k| context.to_lowercase().contains(k))
     }
 

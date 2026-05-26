@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # Estudio de Optimización de la Arquitectura MUD
 
 Tras una auditoría profunda de la base de código actual y los registros históricos de rendimiento, se presentan las siguientes posibilidades de optimización estructuradas en tres pilares: **Velocidad de Entrenamiento, Rendimiento de Inferencia y Robustez del Sistema**.

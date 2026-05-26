@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # MUD SLIME ENGINE — Tabla Maestra de 256 Micro-Expertos
 **Arquitectura:** MoE Ternario Hiper-Granular 2026
 **Cuantización:** 1.58 bits / {-1, 0, 1}

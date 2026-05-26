@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Implementation Plan: Core GEMV & Dequantization Kernel
 
 ## 1. Goal: ASM-Level Q4_0 Dequantization + GEMV

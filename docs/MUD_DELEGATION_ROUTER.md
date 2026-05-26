@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # MUD Mathematical Delegation & Tool-Use Architecture
 
 As a ternary-quantized assistant, MUD prioritizes **efficiency in generation** over **symbolic precision**. For exact mathematical and logical results, the engine uses a **Delegation Router**.

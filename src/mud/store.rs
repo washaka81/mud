@@ -33,6 +33,30 @@ impl MudStore {
             [],
         )?;
 
+        // Crear índice invertido FTS5 para RAG ultra rápido
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+                content,
+                content='facts',
+                content_rowid='id'
+            )",
+            [],
+        )?;
+
+        // Triggers para mantener FTS5 sincronizado sin costo extra
+        conn.execute_batch("
+            CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+                INSERT INTO facts_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, content) VALUES('delete', old.id, old.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, content) VALUES('delete', old.id, old.content);
+                INSERT INTO facts_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+        ")?;
+
         // Índices para las consultas más frecuentes del hot-path de inferencia
         conn.execute_batch("
             CREATE INDEX IF NOT EXISTS idx_facts_status     ON facts(status);
@@ -252,5 +276,12 @@ impl MudStore {
             println!("  [TTL Enforcement] Purged {} obsolete facts (older than 1 year).", count);
         }
         Ok(count)
+    }
+
+    /// Performs a WAL checkpoint to transfer log writes to the main DB and free disk space.
+    pub fn checkpoint(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("MudStore: Mutex envenenado"))?;
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", [])?;
+        Ok(())
     }
 }

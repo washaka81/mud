@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # MUD Data Architecture: The Absolute Truth Lifecycle
 
 This document defines the end-to-end flow of knowledge within the MUD (Modular Understanding Dynamics) ecosystem, from raw ingestion to neural assimilation.

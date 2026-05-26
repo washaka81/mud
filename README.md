@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Forge LLM (MUD: Modular Understanding Dynamics)
 
 Ultra-optimized **1.58-bit (Ternary) Mixture of Experts (MoE)** inference and training engine. Specifically designed for hybrid architectures, extracting maximum performance from Intel i7 CPUs (P-Cores) and Intel Iris Xe iGPUs using Vulkan and AVX2.
@@ -11,7 +15,7 @@ Ultra-optimized **1.58-bit (Ternary) Mixture of Experts (MoE)** inference and tr
 - **Sliding Window KV-Cache:** Infinite-loop-safe context management with a 2048-token circular buffer.
 - **Intelligent Sampling:** Advanced Top-K (40), Top-P (0.9), and Temperature (0.7) algorithms for creative and human-like output.
 - **Autonomous RAG & DB Ingestion:** Knowledge retrieval from an SQLite database using model embeddings. The Rust engine automatically switches to a beautiful **purple italic UI** when injecting real-time facts into its generation. Support for `/ingest` of `.txt` and `.pdf`.
-- **Hardware-Agnostic Cloud Sync:** Train your MoE model on Kaggle or Google Colab (using A100/T4 GPUs) and pull the perfectly quantized ternary `.mud` file to run instantly on your local hardware.
+- **Hardware-Agnostic Cloud Sync:** Train your MoE model on Kaggle or Cloud Colab (using A100/T4 GPUs) and pull the perfectly quantized ternary `.mud` file to run instantly on your local hardware.
 
 ## 📂 Project Structure
 
@@ -33,19 +37,15 @@ The project is entirely managed via the **MUD Command Center** (`mud.sh`). This 
 - `./mud.sh train` : Launch or resume local training (utilizing your local CPU/GPU hardware).
 - `./mud.sh step` : Run step-by-step inference analysis (Useful for debugging tokens).
 
-### Weights & Cloud Synchronization (Kaggle/Colab)
-- `./mud.sh pull` : Pull the latest trained weights from your Kaggle notebook directly to your local `models/` directory.
-- `./mud.sh export` : Convert PyTorch checkpoints (`.pt`) to the highly-optimized `.mud` format (Zero-Copy Ternary mapping) for inference.
-- `./mud.sh test-handoff` : Run the asynchronous Kaggle-to-Local synchronization test. Evaluates checkpoint compatibility between environments.
+### 🛠️ Universal Ternary Converter
+MUD ships with a 100% native Rust Universal Converter to map `safetensors` directly into the `.mud` custom format, replacing the legacy Python ecosystem.
+- `./mud.sh convert [INPUT.safetensors] [OUTPUT.mud]` : Convert safetensors to the zero-copy ternary format.
 
 ### Optimization, Profiling & Audit
-- `./mud.sh profile` : Analyze the local hardware (RAM, Threads, CPU support) to suggest optimal training parameters.
+*Note: Some Python-based profiling and orchestration tools have been temporarily disabled pending their native Rust rewrites.*
 - `./mud.sh bench` : Run performance & memory benchmarks.
-- `./mud.sh iq` : Calculate the current Digital IQ Score of the model based on its training metrics (Sigma, Skew, and Steps).
 - `./mud.sh audit` : Run the full cognitive & structural audit suite (Rust-based tests).
-- `./mud.sh clean` : Organize the workspace by clearing temporary logs and moving files to their respective folders.
-
-## ⚙️ Cloud Training Setup (Kaggle)
+- `./mud.sh clean` : Organize the workspace by clearing temporary logs.
 
 If you plan to use Kaggle for mass training, ensure you add your Kaggle username to the `training/dataset-metadata.json` and `training/kernel-metadata.json` files before running the pipeline. The system uses the standard Kaggle API to push/pull models seamlessly.
 

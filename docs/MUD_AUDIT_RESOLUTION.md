@@ -1,3 +1,10 @@
+---
+lang: es
+---
+
+> **[HISTÓRICO — Reemplazado por `MUD_AUDIT_LATEST.md`]**
+> Este log de resoluciones está consolidado en la sección "Resolución de Bugs" de `docs/MUD_AUDIT_LATEST.md`, con 30+ entradas (vs 13 aquí).
+
 # MUD Engine - Audit & Tune-up Resolution Log
 
 Este documento registra todas las correcciones estructurales aplicadas al motor MUD para garantizar estabilidad matemática, rendimiento y robustez.

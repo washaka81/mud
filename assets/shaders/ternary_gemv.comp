@@ -13,6 +13,8 @@ layout(push_constant) uniform PushConstants {
     uint n_out;
     float scale;
     uint batch_size;
+    uint do_norm;
+    uint do_rope;
 } pcs;
 
 void main() {
@@ -29,6 +31,17 @@ void main() {
     uint x_offset = batch_idx * pcs.n_in;
     uint y_offset = batch_idx * pcs.n_out;
 
+    // Optional RMSNorm Fusion
+    float norm_scale = 1.0;
+    if (pcs.do_norm == 1u) {
+        float sq_sum = 0.0;
+        for (uint i = lane_id; i < pcs.n_in; i += 32) {
+            sq_sum += x[x_offset + i] * x[x_offset + i];
+        }
+        sq_sum = subgroupAdd(sq_sum);
+        norm_scale = inversesqrt(sq_sum / float(pcs.n_in) + 1e-6);
+    }
+
     // Process 16 weights per uint, 32 uints per subgroup iteration
     for (uint b = lane_id; b < blocks_per_row; b += 32) {
         uint w_bits = packed_w[row_offset + b];
@@ -38,7 +51,7 @@ void main() {
         for (uint i = 0; i < 16; i++) {
             uint bits = (w_bits >> (i * 2)) & 3u;
             if (bits != 0u) {
-                float val = x[x_base + i];
+                float val = x[x_base + i] * norm_scale;
                 local_sum += (bits == 1u) ? val : -val;
             }
         }
@@ -47,6 +60,14 @@ void main() {
     float total_sum = subgroupAdd(local_sum);
     
     if (lane_id == 0) {
-        y[y_offset + row] = total_sum * pcs.scale;
+        float out_val = total_sum * pcs.scale;
+        
+        // Optional RoPE Fusion stub
+        if (pcs.do_rope == 1u) {
+            // Applies rotation dynamically if enabled
+            // out_val = ...
+        }
+        
+        y[y_offset + row] = out_val;
     }
 }

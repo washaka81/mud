@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # ARCHITECTURAL_OVERVIEW: MUD (Modular Understanding Dynamics)
 ## Hybrid Ternary AI Architecture (BitNet 1.58b + MoE)
 

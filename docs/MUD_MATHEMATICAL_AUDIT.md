@@ -1,3 +1,10 @@
+---
+lang: es
+---
+
+> **[HISTÓRICO — Reemplazado por `MUD_AUDIT_LATEST.md`]**
+> Las métricas de monitoreo matemático (momentos estadísticos, autocorrelación, trazas de confianza) están consolidadas en la sección 7 de `docs/MUD_AUDIT_LATEST.md`.
+
 # MUD Mathematical Audit (v1.0)
 
 Este documento centraliza el análisis de las propiedades estadísticas y matemáticas del motor MUD, garantizando que el modelo mantenga un comportamiento dinámico y saludable a nivel numérico durante el entrenamiento.

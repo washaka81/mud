@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # MUD Optimization Log & Performance Roadmap
 ## Last Updated: 22 de mayo de 2026
 

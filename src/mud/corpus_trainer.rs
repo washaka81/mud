@@ -9,8 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub static SHOULD_TERMINATE: AtomicBool = AtomicBool::new(false);
 
 /// Implements a high-performance local corpus trainer for MUD.
-/// Aligns the model with linguistic "peers" using Next Token Prediction (NTP)
-/// and adapts MoE gates using auxiliary balance losses.
 pub struct MudCorpusTrainer {
     pub model_path: String,
     pub corpus_dir: String,
@@ -21,8 +19,6 @@ pub struct MudCorpusTrainer {
 impl MudCorpusTrainer {
     pub fn new(model_path: String, corpus_dir: String) -> anyhow::Result<Self> {
         let mud = MudFile::load(&model_path)?;
-        
-        // 0. Metadata Integrity Validation
         Self::validate_metadata(&mud)?;
 
         let tokens_str = mud.global_metadata.get("tokenizer.tokens").ok_or_else(|| anyhow::anyhow!("No tokens"))?;
@@ -31,10 +27,7 @@ impl MudCorpusTrainer {
         let hw = HardwareProfile::detect();
 
         let trainer = Self { model_path, corpus_dir, tokenizer, hw };
-        
-        // 1. Tokenization Audit
         trainer.audit_tokenization();
-
         Ok(trainer)
     }
 
@@ -46,8 +39,6 @@ impl MudCorpusTrainer {
                 anyhow::bail!("CRITICAL: Missing essential metadata key: '{}'", key);
             }
         }
-        
-        // Audit tensors
         if let Some(core) = mud.skills.get("core") {
             let mut ternary_count = 0;
             let mut scale_count = 0;
@@ -57,36 +48,25 @@ impl MudCorpusTrainer {
             }
             println!("   - Tensors: Found {} ternary weights and {} scales.", ternary_count, scale_count);
         }
-        
         println!("   ✅ Metadata validated successfully.");
         Ok(())
     }
 
     fn audit_tokenization(&self) {
         println!("📊 Phase 1: Tokenization Sync Audit...");
-        let test_phrases = [
-            "MUD is a highly optimized engine.",
-            "La inteligencia artificial es el futuro.",
-            "Testing BPE merge logic: Hello World!"
-        ];
-        
+        let test_phrases = ["MUD engine optimized.", "Inteligencia artificial.", "BPE Hello World!"];
         for phrase in test_phrases {
             let ids = self.tokenizer.encode(phrase);
             let decoded = self.tokenizer.decode(&ids);
-            let status = if phrase == decoded.trim_end() || phrase == decoded.trim() { "PASS" } else { "FAIL" };
-            println!("   - [{}] Original: \"{}\" | Decoded: \"{}\"", status, phrase, decoded.trim());
+            println!("   - Original: \"{}\" | Decoded: \"{}\"", phrase, decoded.trim());
         }
         println!("   ✅ Tokenization audit complete.");
     }
 
     pub fn run_alignment_session(&self, batch_size: usize, epochs: usize) -> anyhow::Result<()> {
         println!("🚀 Starting MUD Corpus Alignment Session...");
-        println!("   - Hardware: {} ({} P-cores)", self.hw.cpu_brand.trim(), self.hw.p_cores / 2);
-        
         let mut mud = MudFile::load(&self.model_path)?;
         
-        // --- 1. Load Shadow Embedding ---
-        let hidden_size = mud.global_metadata.get("hidden_size").and_then(|v| v.parse::<usize>().ok()).unwrap_or(512);
         let mut shadow_emb = {
             let core = mud.skills.get("core").ok_or_else(|| anyhow::anyhow!("No core skill"))?;
             let emb_tensor = core.tensors.get("token_embd.weight").ok_or_else(|| anyhow::anyhow!("No embedding"))?;
@@ -110,50 +90,29 @@ impl MudCorpusTrainer {
                 }
             }
         }
+        if text_files.is_empty() { anyhow::bail!("No .txt files in {}", self.corpus_dir); }
 
-        if text_files.is_empty() {
-            return Err(anyhow::anyhow!("No .txt files found in corpus directory: {}", self.corpus_dir));
-        }
-
-        // --- Resume State Detection ---
         let resume_epoch = mud.global_metadata.get("trainer.current_epoch").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1);
         let resume_file_idx = mud.global_metadata.get("trainer.current_file_idx").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
         let resume_chunk_idx = mud.global_metadata.get("trainer.current_chunk_idx").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
-        
-        if resume_epoch > 1 || resume_file_idx > 0 || resume_chunk_idx > 0 {
-            println!("   🔄 Resuming from Epoch {}, File {}, Chunk {}.", resume_epoch, resume_file_idx, resume_chunk_idx);
-        }
 
-        // --- 2. Workload Pre-calculation for Accurate ETA ---
-        let mut total_chars = 0u64;
-        for path in &text_files {
-            total_chars += fs::metadata(path)?.len();
-        }
+        let mut _total_chars = 0u64;
+        for path in &text_files { _total_chars += fs::metadata(path)?.len(); }
         let chunk_size = 50000;
         let chunks_per_file: Vec<usize> = text_files.iter().map(|p| (fs::metadata(p).unwrap().len() as usize).div_ceil(chunk_size)).collect();
         let total_chunks_per_epoch: usize = chunks_per_file.iter().sum();
         let total_chunks_all_epochs = total_chunks_per_epoch * epochs;
 
-        println!("   - Corpus: {} files, {:.2} MB total.", text_files.len(), total_chars as f64 / 1024.0 / 1024.0);
-        println!("   - Workload: {} total chunks to process.", total_chunks_all_epochs);
-
         let start_time = Instant::now();
         let mut global_chunks_processed = 0usize;
-        let mut total_tokens_processed = 0usize;
 
         for epoch in 1..=epochs {
             if SHOULD_TERMINATE.load(Ordering::SeqCst) { break; }
-            if epoch < resume_epoch {
-                global_chunks_processed += total_chunks_per_epoch;
-                continue; 
-            }
+            if epoch < resume_epoch { global_chunks_processed += total_chunks_per_epoch; continue; }
             
             for (f_idx, file_path) in text_files.iter().enumerate() {
                 if SHOULD_TERMINATE.load(Ordering::SeqCst) { break; }
-                if epoch == resume_epoch && f_idx < resume_file_idx {
-                    global_chunks_processed += chunks_per_file[f_idx];
-                    continue; 
-                }
+                if epoch == resume_epoch && f_idx < resume_file_idx { global_chunks_processed += chunks_per_file[f_idx]; continue; }
                 
                 let content = fs::read_to_string(file_path)?;
                 let chars: Vec<char> = content.chars().collect();
@@ -161,125 +120,83 @@ impl MudCorpusTrainer {
 
                 for (c_idx, chunk) in chars.chunks(chunk_size).enumerate() {
                     if SHOULD_TERMINATE.load(Ordering::SeqCst) { break; }
-                    if epoch == resume_epoch && f_idx == resume_file_idx && c_idx < resume_chunk_idx {
-                        global_chunks_processed += 1;
-                        continue; 
-                    }
+                    if epoch == resume_epoch && f_idx == resume_file_idx && c_idx < resume_chunk_idx { global_chunks_processed += 1; continue; }
                     
                     let chunk_str: String = chunk.iter().collect();
                     let tokens = self.tokenizer.encode(&chunk_str);
                     if tokens.len() < 2 { continue; }
-                    
                     global_chunks_processed += 1;
                     
-                    // --- Professional Status Board ---
                     let elapsed = start_time.elapsed();
                     let progress = (global_chunks_processed as f32 / total_chunks_all_epochs as f32) * 100.0;
                     let chunks_per_sec = global_chunks_processed as f32 / elapsed.as_secs_f32();
                     let remaining_chunks = total_chunks_all_epochs.saturating_sub(global_chunks_processed);
                     let eta = if chunks_per_sec > 0.0 { Duration::from_secs_f32(remaining_chunks as f32 / chunks_per_sec) } else { Duration::ZERO };
 
-                    print!("\x1B[2J\x1B[H"); // Clear screen and home cursor
+                    print!("\x1B[2J\x1B[H");
                     println!("╔══════════════════════════════════════════════════════════════════════╗");
                     println!("║  🌀 MUD LINGUISTIC RECALIBRATION MONITOR                             ║");
                     println!("╠══════════════════════════════════════════════════════════════════════╣");
-                    println!("║  PROGRESS: [{:<20}] {:>5.1}% | EPOCH: {}/{}             ║", 
-                             "█".repeat((progress / 5.0) as usize) + &"░".repeat(20usize.saturating_sub((progress / 5.0) as usize)),
-                             progress, epoch, epochs);
+                    println!("║  PROGRESS: [{:<20}] {:>5.1}% | EPOCH: {}/{}             ║", "█".repeat((progress / 5.0) as usize) + &"░".repeat(20usize.saturating_sub((progress / 5.0) as usize)), progress, epoch, epochs);
                     println!("║  CURRENT : {:<57} ║", file_path.file_name().unwrap().to_string_lossy());
-                    println!("║  CHUNK   : {:>5}/{} in file | GLOBAL: {:>6}/{}            ║", 
-                             c_idx + 1, file_chunks, global_chunks_processed, total_chunks_all_epochs);
+                    println!("║  CHUNK   : {:>5}/{} in file | GLOBAL: {:>6}/{}            ║", c_idx + 1, file_chunks, global_chunks_processed, total_chunks_all_epochs);
                     println!("╠══════════════════════════════════════════════════════════════════════╣");
                     println!("║  VELOCITY: {:>10.1} chunks/hr | ELAPSED: {:>10.1?}      ║", chunks_per_sec * 3600.0, elapsed);
                     println!("║  TOTAL ETA: \x1B[1;32m{:>21.1?}\x1B[0m | BATCH: {:>12}      ║", eta, batch_size);
                     println!("╚══════════════════════════════════════════════════════════════════════╝");
-                    std::io::Write::flush(&mut std::io::stdout())?;
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
 
-                    self.train_on_sequence(&mut mud, &mut shadow_emb, &tokens, batch_size, start_time, &mut total_tokens_processed)?;
+                    self.train_on_sequence(&mut mud, &mut shadow_emb, &tokens, batch_size)?;
 
-                    // Hard Checkpoint (every 5000 global chunks)
                     if global_chunks_processed > 0 && global_chunks_processed % 5000 == 0 {
                         self.save_checkpoint(&mut mud, &shadow_emb, format!("chunk_{}", global_chunks_processed))?;
                     }
                 }
-                
-                // Persistence (Update Resume State)
                 mud.global_metadata.insert("trainer.current_epoch".to_string(), epoch.to_string());
                 mud.global_metadata.insert("trainer.current_file_idx".to_string(), f_idx.to_string());
-                mud.global_metadata.insert("trainer.current_chunk_idx".to_string(), file_chunks.to_string()); // End of file
-                
-                {
-                    let core = mud.skills.get_mut("core").unwrap();
-                    let emb_tensor = core.tensors.get_mut("token_embd.weight").unwrap();
-                    emb_tensor.t_type = MudTensorType::Float32;
-                    let bytes = unsafe { std::slice::from_raw_parts(shadow_emb.as_ptr() as *const u8, shadow_emb.len() * 4) }.to_vec();
-                    emb_tensor.owned_data = Some(bytes);
-                }
+                mud.global_metadata.insert("trainer.current_chunk_idx".to_string(), file_chunks.to_string());
+                self.sync_shadow_to_mud(&mut mud, &shadow_emb);
                 mud.save(&self.model_path)?;
             }
-            
-            // Hard Checkpoint (End of Epoch)
             if !SHOULD_TERMINATE.load(Ordering::SeqCst) {
                 self.save_checkpoint(&mut mud, &shadow_emb, format!("epoch_{}", epoch))?;
             }
         }
-
-        let elapsed = start_time.elapsed();
-        println!("\n✅ Alignment session completed in {:.2?}.", elapsed);
+        println!("\n✅ Alignment session completed.");
         Ok(())
+    }
+
+    fn sync_shadow_to_mud(&self, mud: &mut MudFile, shadow_emb: &[f32]) {
+        let core = mud.skills.get_mut("core").unwrap();
+        let emb_tensor = core.tensors.get_mut("token_embd.weight").unwrap();
+        emb_tensor.t_type = MudTensorType::Float32;
+        let bytes = unsafe { std::slice::from_raw_parts(shadow_emb.as_ptr() as *const u8, shadow_emb.len() * 4) }.to_vec();
+        emb_tensor.owned_data = Some(bytes);
     }
 
     fn save_checkpoint(&self, mud: &mut MudFile, shadow_emb: &[f32], suffix: String) -> anyhow::Result<()> {
         let checkpoint_name = format!("weights/checkpoints/core_skills_{}.mud", suffix);
-        println!("\n   💾 Creating Hard Checkpoint: {}...", checkpoint_name);
-        
-        // Sync shadow weights to MudFile before copying
-        {
-            let core = mud.skills.get_mut("core").unwrap();
-            let emb_tensor = core.tensors.get_mut("token_embd.weight").unwrap();
-            emb_tensor.t_type = MudTensorType::Float32;
-            let bytes = unsafe { std::slice::from_raw_parts(shadow_emb.as_ptr() as *const u8, shadow_emb.len() * 4) }.to_vec();
-            emb_tensor.owned_data = Some(bytes);
-        }
-        
+        self.sync_shadow_to_mud(mud, shadow_emb);
         mud.save(&checkpoint_name)?;
         Ok(())
     }
 
-    fn train_on_sequence(&self, mud: &mut MudFile, shadow_emb: &mut [f32], tokens: &[u32], batch_size: usize, _start_time: Instant, _total_tokens: &mut usize) -> anyhow::Result<()> {
+    fn train_on_sequence(&self, mud: &mut MudFile, shadow_emb: &mut [f32], tokens: &[u32], batch_size: usize) -> anyhow::Result<()> {
         let lr = 0.001; 
-        let mut total_loss_val = 0.0;
-        let mut steps = 0;
-
         let hidden_size = mud.global_metadata.get("hidden_size").and_then(|v| v.parse::<usize>().ok()).unwrap_or(512);
         let vocab_size = shadow_emb.len() / hidden_size;
-
         for i in (0..tokens.len() - 1).step_by(8).take(batch_size) {
             if SHOULD_TERMINATE.load(Ordering::SeqCst) { break; }
-            
             let input_id = tokens[i] as usize;
             if input_id >= vocab_size { continue; }
-
             let mut tape = Tape::new();
             let x_data = shadow_emb[input_id * hidden_size .. (input_id + 1) * hidden_size].to_vec();
             let x_node = tape.push_leaf(x_data, vec![1, hidden_size]);
-            
             let loss_node = tape.cross_entropy(x_node, 0); 
-            let loss_val = tape.nodes[loss_node.0].data[0];
-            
-            if loss_val.is_nan() || loss_val.is_infinite() { continue; }
-            total_loss_val += loss_val;
-            
             tape.backward(loss_node);
-            
             let x_grad = &tape.nodes[x_node.0].grad;
-            for j in 0..hidden_size {
-                shadow_emb[input_id * hidden_size + j] -= lr * x_grad[j];
-            }
-
-            steps += 1;
+            for j in 0..hidden_size { shadow_emb[input_id * hidden_size + j] -= lr * x_grad[j]; }
         }
-
         Ok(())
     }
 }

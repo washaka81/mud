@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     println!("=== MUD Attention & Working Memory Audit ===");
     let vk = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(model_path)?;
-    let mut engine = MudInference::new(&mud_file, vk)?;
+    let mut engine = MudInference::new(&mud_file, Some(vk))?;
 
     let hidden = engine.model.hidden_size;
     

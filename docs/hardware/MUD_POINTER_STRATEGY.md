@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # Zero-Copy & Pointer Strategy
 
 Para evitar el colapso del procesador y maximizar la eficiencia en el i7-1260p, hemos implementado las siguientes técnicas de "Punteros Inteligentes":

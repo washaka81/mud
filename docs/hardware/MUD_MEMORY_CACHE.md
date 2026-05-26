@@ -1,7 +1,11 @@
+---
+lang: en
+---
+
 # MUD Technical Spec: Ternary KV Cache (Working Memory)
 
 ## 1. Overview
-The **Ternary KV Cache** is MUD's short-term "working memory." It allows the model to maintain context across a long sequence of tokens (up to 2048) by storing the Key (K) and Value (V) vectors of every processed token.
+The **Ternary KV Cache** is MUD's short-term "working memory." It allows the model to maintain context across a long sequence of tokens (up to 4096) by storing the Key (K) and Value (V) vectors of every processed token.
 
 ## 2. Architecture
 Unlike standard engines that use FP16 or FP32 for the KV Cache, MUD utilizes a **Hybrid Cache**:
@@ -21,6 +25,6 @@ Without this cache, MUD has "amnesia" and repeats itself. With the KV Cache:
 - **Bilingual Flow:** Maintains the chosen language's structure by referencing previous tokens.
 
 ## 5. Memory Footprint (MUD 512 Hidden Size)
-- **K-Cache:** 1 layer * 512 dim * 2048 tokens * 4 bytes ≈ 4 MB.
-- **V-Cache:** 1 layer * 512 dim * 2048 tokens * 4 bytes ≈ 4 MB.
+- **K-Cache:** 1 layer * 512 dim * 4096 tokens * 4 bytes ≈ 8 MB.
+- **V-Cache:** 1 layer * 512 dim * 4096 tokens * 4 bytes ≈ 8 MB.
 - **Total:** ~8 MB per layer. Extremely efficient on the Intel i7-1260p.

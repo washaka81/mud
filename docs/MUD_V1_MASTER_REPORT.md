@@ -1,3 +1,7 @@
+---
+lang: es
+---
+
 # MUD V1-MASTER: Reporte de Consolidación Técnica
 ## Fecha: 20 de mayo de 2026
 

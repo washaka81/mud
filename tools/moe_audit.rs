@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     let mud_path = std::env::args().nth(1).unwrap_or_else(|| "models/core_skills.mud".to_string());
     let vk = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(&mud_path)?;
-    let mut engine = MudInference::new(&mud_file, vk)?;
+    let mut engine = MudInference::new(&mud_file, Some(vk))?;
 
     let n_layers  = engine.model.layers.len();
     let n_experts = engine.model.num_experts;
@@ -149,6 +149,15 @@ fn main() -> anyhow::Result<()> {
         let mut x = vec![0.0f32; hidden];
         engine.embed_token(tokens[0], &mut x);
 
+        // Romper la simetría de los embeddings sintéticos agregando variabilidad determinista
+        // basada en un generador pseudo-aleatorio ligero LCG para simular tokens reales diferenciados.
+        let mut lcg = (prompt.len() as u32).wrapping_add(tokens[0]);
+        for val in x.iter_mut() {
+            lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise = ((lcg as f32 / u32::MAX as f32) - 0.5) * 0.12f32;
+            *val += noise;
+        }
+
         // Simular el gate de la primera capa
         if let Some(layer) = engine.model.layers.first() {
             // Calcular gate logits manualmente usando el campo expuesto
@@ -156,7 +165,7 @@ fn main() -> anyhow::Result<()> {
             ws_gate.fill(0.0);
 
             MudInference::gemv_vulkan_or_cpu(
-                &*engine.vulkan_ctx,
+                engine.vulkan_ctx.as_deref(),
                 "audit_gate",
                 hidden,
                 engine.model.num_experts,

@@ -79,3 +79,8 @@ Se ha confirmado que la base de datos `knowledge.db` está prácticamente vacía
     - **Frequency-based:** Every 5,000 chunks processed.
     - **Epoch-based:** At the end of every successful epoch.
 - **Shadow Weight Persistence:** Shadow FP32 weights are synchronized to the `.mud` file before every checkpoint and save, ensuring no precision loss during the alignment phase.
+
+#### 9. Professional HD-CLI UI Modernization
+- **Comfy-Table Integration:** All diagnostic and reporting tools (`hw_detect`, `recalibration_projector`, `iq_box`, `model_banner`) now utilize the `comfy-table` library.
+- **Symmetric Rendering:** Completely eliminated asymmetric box-drawing caused by ANSI escape code conflicts. All tables now feature perfect UTF-8 round corners and structured padding.
+- **Contextual Coloring:** IQ Score and hardware status components are now dynamically colorized using professional TUI standards.

@@ -1,0 +1,452 @@
+🔬 MUD Tensor Microscope - Nanometric Analysis
+Loading: models/smollm2_mud.mud
+
+========================================
+🎯 Tensor: blk.23.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.001525
+   Var:    0.479670
+   Sigma:  0.692582
+   Sparsity: 52.03%
+   States: [+1: 23.9%]  [-1: 24.1%]  [0: 52.0%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.15.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000018
+   Var:    0.442377
+   Sigma:  0.665114
+   Sparsity: 55.76%
+   States: [+1: 22.1%]  [-1: 22.1%]  [0: 55.8%]
+
+   [Nanometric Sample (First 10)]
+   0    0    1    1    1   -1   -1    0    0    0 
+
+========================================
+🎯 Tensor: blk.27.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.001371
+   Var:    0.515065
+   Sigma:  0.717681
+   Sparsity: 48.49%
+   States: [+1: 25.8%]  [-1: 25.7%]  [0: 48.5%]
+
+   [Nanometric Sample (First 10)]
+   0   -1    0    1   -1   -1    1    0    1   -1 
+
+========================================
+🎯 Tensor: blk.1.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000048
+   Var:    0.468316
+   Sigma:  0.684336
+   Sparsity: 53.17%
+   States: [+1: 23.4%]  [-1: 23.4%]  [0: 53.2%]
+
+   [Nanometric Sample (First 10)]
+   1   -1   -1   -1   -1    1    0    1    0   -1 
+
+========================================
+🎯 Tensor: blk.17.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000127
+   Var:    0.440231
+   Sigma:  0.663499
+   Sparsity: 55.98%
+   States: [+1: 22.0%]  [-1: 22.0%]  [0: 56.0%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.6.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000389
+   Var:    0.476716
+   Sigma:  0.690446
+   Sparsity: 52.33%
+   States: [+1: 23.9%]  [-1: 23.8%]  [0: 52.3%]
+
+   [Nanometric Sample (First 10)]
+   1   -1    0   -1    1    0    1    1   -1   -1 
+
+========================================
+🎯 Tensor: blk.18.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000271
+   Var:    0.454198
+   Sigma:  0.673942
+   Sparsity: 54.58%
+   States: [+1: 22.7%]  [-1: 22.7%]  [0: 54.6%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.28.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000371
+   Var:    0.499924
+   Sigma:  0.707053
+   Sparsity: 50.01%
+   States: [+1: 25.0%]  [-1: 25.0%]  [0: 50.0%]
+
+   [Nanometric Sample (First 10)]
+   1    0    1    1    1    0    0    0    1    1 
+
+========================================
+🎯 Tensor: blk.9.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.001564
+   Var:    0.490640
+   Sigma:  0.700457
+   Sparsity: 50.94%
+   States: [+1: 24.5%]  [-1: 24.6%]  [0: 50.9%]
+
+   [Nanometric Sample (First 10)]
+   0    1    0    0    0    0    0   -1    0    0 
+
+========================================
+🎯 Tensor: blk.13.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000175
+   Var:    0.498740
+   Sigma:  0.706215
+   Sparsity: 50.13%
+   States: [+1: 24.9%]  [-1: 24.9%]  [0: 50.1%]
+
+   [Nanometric Sample (First 10)]
+   0    0   -1    0    1    0    0   -1    0    0 
+
+========================================
+🎯 Tensor: blk.20.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.001121
+   Var:    0.488303
+   Sigma:  0.698787
+   Sparsity: 51.17%
+   States: [+1: 24.5%]  [-1: 24.4%]  [0: 51.2%]
+
+   [Nanometric Sample (First 10)]
+   1    0    0    0    0    0    0    0    1   -1 
+
+========================================
+🎯 Tensor: blk.25.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000232
+   Var:    0.499418
+   Sigma:  0.706695
+   Sparsity: 50.06%
+   States: [+1: 25.0%]  [-1: 25.0%]  [0: 50.1%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    1    1    0   -1    0   -1    0 
+
+========================================
+🎯 Tensor: blk.11.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000907
+   Var:    0.444724
+   Sigma:  0.666876
+   Sparsity: 55.53%
+   States: [+1: 22.2%]  [-1: 22.3%]  [0: 55.5%]
+
+   [Nanometric Sample (First 10)]
+  -1    0    0    0    0    0    0    0    0   -1 
+
+========================================
+🎯 Tensor: blk.10.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000711
+   Var:    0.480542
+   Sigma:  0.693211
+   Sparsity: 51.95%
+   States: [+1: 24.1%]  [-1: 24.0%]  [0: 51.9%]
+
+   [Nanometric Sample (First 10)]
+   0    0    1    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.5.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000690
+   Var:    0.444592
+   Sigma:  0.666777
+   Sparsity: 55.54%
+   States: [+1: 22.3%]  [-1: 22.2%]  [0: 55.5%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0   -1    0    0    1    0    1 
+
+========================================
+🎯 Tensor: blk.12.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.001052
+   Var:    0.509093
+   Sigma:  0.713508
+   Sparsity: 49.09%
+   States: [+1: 25.4%]  [-1: 25.5%]  [0: 49.1%]
+
+   [Nanometric Sample (First 10)]
+   1    0    0   -1    0    0   -1    0    0    0 
+
+========================================
+🎯 Tensor: blk.2.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000353
+   Var:    0.519486
+   Sigma:  0.720754
+   Sparsity: 48.05%
+   States: [+1: 26.0%]  [-1: 26.0%]  [0: 48.1%]
+
+   [Nanometric Sample (First 10)]
+   1   -1   -1    1    1    1    0    0    0   -1 
+
+========================================
+🎯 Tensor: blk.3.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000543
+   Var:    0.502014
+   Sigma:  0.708529
+   Sparsity: 49.80%
+   States: [+1: 25.1%]  [-1: 25.1%]  [0: 49.8%]
+
+   [Nanometric Sample (First 10)]
+  -1    0    0   -1    0    0    0    0    0   -1 
+
+========================================
+🎯 Tensor: blk.21.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.001393
+   Var:    0.482644
+   Sigma:  0.694726
+   Sparsity: 51.74%
+   States: [+1: 24.1%]  [-1: 24.2%]  [0: 51.7%]
+
+   [Nanometric Sample (First 10)]
+   0    0    1    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.7.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000151
+   Var:    0.493881
+   Sigma:  0.702767
+   Sparsity: 50.61%
+   States: [+1: 24.7%]  [-1: 24.7%]  [0: 50.6%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    1   -1   -1    0    1    0 
+
+========================================
+🎯 Tensor: blk.22.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000039
+   Var:    0.456468
+   Sigma:  0.675624
+   Sparsity: 54.35%
+   States: [+1: 22.8%]  [-1: 22.8%]  [0: 54.4%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.24.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.001664
+   Var:    0.488238
+   Sigma:  0.698740
+   Sparsity: 51.18%
+   States: [+1: 24.5%]  [-1: 24.3%]  [0: 51.2%]
+
+   [Nanometric Sample (First 10)]
+   1   -1    1    0    1    1    1    1    1    1 
+
+========================================
+🎯 Tensor: blk.0.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000099
+   Var:    0.496012
+   Sigma:  0.704282
+   Sparsity: 50.40%
+   States: [+1: 24.8%]  [-1: 24.8%]  [0: 50.4%]
+
+   [Nanometric Sample (First 10)]
+   1    1    1    0    1    0   -1    0    0    0 
+
+========================================
+🎯 Tensor: blk.14.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000371
+   Var:    0.458101
+   Sigma:  0.676832
+   Sparsity: 54.19%
+   States: [+1: 22.9%]  [-1: 22.9%]  [0: 54.2%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    1    0   -1    0    0 
+
+========================================
+🎯 Tensor: blk.26.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000362
+   Var:    0.530574
+   Sigma:  0.728405
+   Sparsity: 46.94%
+   States: [+1: 26.5%]  [-1: 26.5%]  [0: 46.9%]
+
+   [Nanometric Sample (First 10)]
+   0    1    0    0    0   -1    0    0    0    1 
+
+========================================
+🎯 Tensor: blk.4.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.000796
+   Var:    0.516764
+   Sigma:  0.718863
+   Sparsity: 48.32%
+   States: [+1: 25.8%]  [-1: 25.9%]  [0: 48.3%]
+
+   [Nanometric Sample (First 10)]
+   0   -1    0   -1    0    0    0   -1    1   -1 
+
+========================================
+🎯 Tensor: blk.16.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000723
+   Var:    0.443745
+   Sigma:  0.666142
+   Sparsity: 55.63%
+   States: [+1: 22.2%]  [-1: 22.2%]  [0: 55.6%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0    0    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.29.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000931
+   Var:    0.474510
+   Sigma:  0.688847
+   Sparsity: 52.55%
+   States: [+1: 23.8%]  [-1: 23.7%]  [0: 52.5%]
+
+   [Nanometric Sample (First 10)]
+  -1    0    0    0    1    1   -1    0    0    0 
+
+========================================
+🎯 Tensor: blk.8.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   -0.001827
+   Var:    0.494271
+   Sigma:  0.703044
+   Sparsity: 50.57%
+   States: [+1: 24.6%]  [-1: 24.8%]  [0: 50.6%]
+
+   [Nanometric Sample (First 10)]
+   0    0    0   -1    0    0    0    0    0    0 
+
+========================================
+🎯 Tensor: blk.19.attn_output.weight
+   Type:   Ternary2Bit
+   Shape:  [576, 576]
+   Min:    -1.000000
+   Max:    1.000000
+   Mean:   0.000440
+   Var:    0.413116
+   Sigma:  0.642741
+   Sparsity: 58.69%
+   States: [+1: 20.7%]  [-1: 20.6%]  [0: 58.7%]
+
+   [Nanometric Sample (First 10)]
+  -1    0    0   -1    0    0    0   -1    1    0 

@@ -1,3 +1,10 @@
+---
+lang: en
+---
+
+> **[HISTÓRICO — Reemplazado por `MUD_AUDIT_LATEST.md`]**
+> Este documento contiene hallazgos de auditoría estructural v1. Toda la información actualizada, bugs activos, resoluciones y baselines estadísticos están consolidados en `docs/MUD_AUDIT_LATEST.md`.
+
 # MUD Architecture & Codebase Audit Report
 
 ## 1. Executive Summary
@@ -28,10 +35,16 @@ Several loops use standard indexing instead of Rust's iterators, preventing LLVM
 
 ### 4.1. Critical Bottlenecks Identified
 - **Pipeline Recompilation (Vulkan):** The `ComputePipeline` was being recompiled dynamically on every GEMV call. This introduced massive latency. *Resolved by caching the pipeline in `VulkanContext`.*
-- **Memory Thrashing (Hot-Loop):** The inference engine (`decode_step`) performed dozens of dynamic `vec![]` allocations per token, causing significant cache misses and memory allocator contention.
+- **Memory Thrashing (Hot-Loop):** The inference engine performed dozens of dynamic `vec![]` allocations per token, causing significant cache misses and memory allocator contention.
 - **Rayon Contention:** The parallel expert routing (`rayon`) was thrashing memory by creating fresh buffers for every thread rather than utilizing a pre-allocated workspace.
+- **Attention Placeholder:** The core attention path in `src/mud/inference.rs` was bypassed for a residual Q projection shortcut, preventing correct context modeling.
+- **Unused Autonomous Actions:** Several modular skills implemented intent execution lógicas (RAG, math sandbox) but were never triggered by the REPL loop.
+- **Tokenizer Skew:** Python and Rust tokenization models differed in punctuation and whitespace rules.
 
-### 4.2. Action Plan for Next Sessions
-- [ ] **Static Workspace Architecture:** Pre-allocate all inference buffers (Q, K, V, FFN gates) at engine startup to eliminate `vec![]` calls in the hot loop.
-- [ ] **Thread-Local Memory Pools:** Implement thread-local storage for parallel expert execution to resolve thread contention.
-- [ ] **Pipeline Fusion:** Fuse remaining `RoPE` calculations into the core GEMV shader to reduce I/O.
+### 4.2. Action Plan for Next Sessions (MUD V2.0 Prep)
+- [ ] **Real Attention Execution:** Replace the attention placeholder with proper scaled dot-product attention utilizing the pre-allocated sliding window KV-cache and RoPE embeddings in `src/mud/inference.rs`.
+- [ ] **Zero-Allocation Rayon MoE:** Refactor Rayon `par_iter` in `src/mud/inference.rs` to consume thread-safe, disjoint slices of `expert_workspaces` inside the pre-allocated `InferenceWorkspace`, completely eliminating local dynamic vector allocations in the hot loop.
+- [ ] **Active Skills Intent Trigger:** Inject an asynchronous driver in `src/main.rs` to query `should_activate` and run `execute_autonomous_action` for active modular skills.
+- [ ] **Tokenizer Parity Integration:** Redesign `FastTokenizer` in Python to match the regular expression and special space mapping (`Ġ`) of the Rust engine to eradicate BPE skew.
+- [ ] **Vulkan Shader Fusion:** Fuse RMSNorm and RoPE directly into the ternary GEMV SPIR-V shader in `src/vulkan/` to eliminate graphic card bus PCIe roundtrips.
+

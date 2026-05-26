@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # MUD: Cognitive Assimilation Plan (CAP)
 
 ## Goal: Moving from Retrieval (RAG) to Intrinsic Knowledge (Weights)
@@ -36,3 +40,4 @@ Training is no longer manual. It is governed by a central orchestrator that alig
 2. **[DONE]** Fix state_dict size mismatch bugs in auto-config.
 3. **[ACTIVE]** Scaling to 256 MoE experts on high-memory environments.
 4. **[FUTURE]** PageRank-based loss weighting (Facts with higher connectivity get higher priority in weight updates).
+5. **[FUTURE]** Local Trainer in Rust (Entrenador nativo en Rust para procesar chunks de la base de datos de conocimiento y asimilar información localmente sin depender de Python).

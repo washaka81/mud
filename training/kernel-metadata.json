@@ -1,23 +1,21 @@
 {
-  "id": "alejandrofonda/mud-master-trainer-stable",
-  "title": "MUD Master Trainer Stable",
+  "id": "alejandrofonda/notebook9dbdee419a",
+  "id_no": 120242417,
+  "title": "notebook9dbdee419a",
   "code_file": "notebook9dbdee419a.ipynb",
   "language": "python",
   "kernel_type": "notebook",
-  "is_private": "true",
-  "enable_gpu": "true",
-  "enable_tpu": "false",
-  "enable_internet": "true",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
   "dataset_sources": [
     "alejandrofonda/mud-master-training-data"
   ],
-  "competition_sources": [],
   "kernel_sources": [],
+  "competition_sources": [],
   "model_sources": [],
-  "environment_variables": {
-    "NUM_EXPERTS": "256",
-    "CLUSTER_SIZE": "16",
-    "TOP_K": "4",
-    "STEPS": "100000"
-  }
+  "docker_image": "",
+  "machine_shape": "NvidiaTeslaT4"
 }

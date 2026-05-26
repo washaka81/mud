@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
     let mud_path = "models/core_skills.mud";
     let vk = Arc::new(VulkanContext::new().unwrap());
     let mud_file = MudFile::load(mud_path)?;
-    let mut engine = MudInference::new(&mud_file, vk)?;
+    let mut engine = MudInference::new(&mud_file, Some(vk))?;
 
     let tests = vec![
         ("Hola, ¿cómo estás?", "es", "Spanish-LATAM"),

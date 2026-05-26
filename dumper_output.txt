@@ -1,0 +1,2 @@
+Dumping MUD model metadata and skill info from: models/smollm2_mud.mud
+Disassembly completed. See mud_disassembly.txt

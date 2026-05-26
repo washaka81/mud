@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Transformer Orchestration: MUD MoE
 
 ## 1. Sparse Mixture of Experts (MoE) Flow
@@ -13,7 +17,7 @@ MUD implements a **Sparse MoE** architecture. Instead of processing every token 
     - **Output Projection:** Multi-head results are fused and projected back to `hidden_size`.
 4. **MoE Block:**
     - **Gate Projection:** A ternary layer (`gate_w`) predicts which experts are best suited for the current token.
-    - **Routing:** A Top-2 selection mechanism (Softmax + Top-K) selects the experts.
+    - **Routing:** A dynamic Top-K selection mechanism (Softmax + Top-K, configurable via model metadata, default 2) selects the experts.
     - **Expert Execution:** Selected experts execute their internal SwiGLU blocks (`w1`, `w2`, `w3`) on the iGPU.
     - **Weighted Sum:** The outputs of the selected experts are multiplied by their routing probabilities and summed.
 5. **Residual Connection:** The MoE output is added back to the original input (damped by `1/sqrt(num_layers)`).

@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
     
     let vk_ctx = Arc::new(VulkanContext::new()?);
     let mud_file = MudFile::load(model_path)?;
-    let mut engine = MudInference::new(&mud_file, vk_ctx)?;
+    let mut engine = MudInference::new(&mud_file, Some(vk_ctx))?;
     
     // Execute a series of "Ground Truth" prompts
     let tests = vec![

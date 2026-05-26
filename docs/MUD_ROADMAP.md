@@ -123,9 +123,10 @@ cargo test --release    ✅  Pass (Matemáticas validadas)
 - **Throughput**: ~57.0 t/s (CPU-Optimized), ~20.0 t/s (iGPU Zero-Copy)
 - **Probabilidad de Coherencia**: 8.8% (Actual) -> **99.9%** (Proyectada tras 1 Epoch)
 
-**Nuevas Herramientas**:
+**Nuevas Herramientas & UI**:
 - `recalibration_projector`: Proyección estadística de convergencia.
 - `mud_corpus_trainer`: Alineación lingüística local.
 - `vocab_check`: Auditoría de integridad del vocabulario.
+- **HD-CLI UI:** Migración completa de todas las interfaces a `comfy-table` para cuadros simétricos y responsivos.
 
-*Última actualización: 2026-05-25 — Arquitectura auto-optimizable y ruta de recalibración establecida.*
+*Última actualización: 2026-05-25 — Interfaz HD-CLI implementada y recalibración en curso (24.8%).*

@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # MUD Ternary Logic ISA & Computation Standards
 
 This document defines the fundamental ternary operations that the MUD (Modular Understanding Dynamics) engine must implement or simulate for its 1.58-bit Ternary MoE architecture.

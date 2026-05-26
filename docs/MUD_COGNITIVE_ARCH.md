@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # MUD Cognitive Architecture: v39 Master Specification
 
 ## 1. Deep Reasoner Depth (The 2-Layer Constraint)

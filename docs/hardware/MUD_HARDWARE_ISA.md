@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Hardware Specification: Intel Core i7-1260p (Alder Lake) & Iris Xe
 
 ## CPU Architecture: Alder Lake-P (Hybrid)

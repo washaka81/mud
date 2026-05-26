@@ -72,3 +72,4 @@ Thumbs.db
 kaggle_push/
 kernel-metadata.json
 /vocab_es_en.txt
+training/corpus/*.txt

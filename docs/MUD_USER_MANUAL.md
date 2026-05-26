@@ -1,3 +1,7 @@
+---
+lang: en
+---
+
 # Extended User Manual: Forge LLM (MUD) Engine
 
 Welcome to the MUD operating console. This manual details how to operate, train, and expand the system's knowledge base.
@@ -6,13 +10,13 @@ Welcome to the MUD operating console. This manual details how to operate, train,
 
 ## 1. Console Commands (REPL)
 
-Run `cargo run --release` to enter the interactive MUD interface.
+Run `./mud.sh chat` to enter the interactive MUD interface.
 
 ### `/ingest <path>`
 The most important command for AI expansion.
 - **Usage:** `/ingest tests/data/books/`
 - **Function:** Scans the folder, reads `.txt` and `.pdf` files (via `pdftotext`), chunks them, and saves them to the knowledge database (`knowledge.db`).
-- **Algorithm:** Applies **PageRank (Google)** to rank fact importance and manage RAM residency.
+- **Algorithm:** Applies **PageRank** to rank fact importance and manage RAM residency.
 
 ### `/exit` or `Ctrl+Q`
 - Safely exits the inference session and restores terminal settings.
@@ -38,9 +42,10 @@ The system automatically manages hardware resources:
 MUD can be re-trained to absorb new books into its weights:
 
 1.  **Ingestion:** Use `/ingest` to populate your local `knowledge.db`.
-2.  **Dreaming:** Run `python3 tools/dreamer.py`. This generates `training/synthetic_knowledge.txt` containing thousands of reasoning pairs based on your library.
-3.  **Syncing:** Run `bash training/push_to_kaggle.sh` to upload the new dataset to the cloud.
-4.  **Retrieval:** Once Kaggle finishes training, use `./training/pull_from_kaggle.sh` to fetch your upgraded, more intelligent AI.
+2.  **Syncing:** Run `bash training/push_to_kaggle.sh` to upload the new dataset to the cloud.
+3.  **Retrieval:** Once Kaggle finishes training, use `./training/pull_from_kaggle.sh` to fetch your upgraded, more intelligent AI.
+
+For local training, use `./mud.sh train` to launch the native Rust auto-trainer (`MudAutoTrainer`), which processes knowledge database chunks directly without Python dependencies.
 
 ---
 

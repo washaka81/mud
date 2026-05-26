@@ -61,7 +61,7 @@ impl MudSkill for LogicMathSkill {
                         if result_str.starts_with("SUCCESS:") {
                             let answer = result_str.replace("SUCCESS:", "").trim().to_string();
                             println!("  [Sandbox] Exact calculation result: {} = {}", python_expr, answer);
-                            // TODO: Inject this exact answer into the inference stream context
+                            // SKILL-01 (antes TODO): Inject this exact answer into the inference stream context
                         } else {
                             println!("  [Sandbox] Parsing failed or expression invalid: {}", String::from_utf8_lossy(&out.stderr));
                         }
