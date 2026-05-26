@@ -15,33 +15,29 @@ use vulkano::VulkanLibrary;
 use vulkano::device::physical::PhysicalDeviceType;
 use vulkano::sync::{self, GpuFuture};
 
-/// Manages the Vulkan compute environment for iGPU offloading.
-/// Specifically tuned for Intel Iris Xe (ADL GT2) hardware.
 pub struct VulkanContext {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub memory_allocator: Arc<StandardMemoryAllocator>,
     pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    /// Persistent cache for weight buffers to avoid re-allocation.
-    pub buffer_cache: Mutex<HashMap<String, Arc<Subbuffer<[u32]>>>>,
-    /// Tracks which weight buffers have been initialized (data written) to skip re-upload.
+    pub buffer_cache: Mutex<HashMap<String, Subbuffer<[u32]>>>,
     pub buffer_init: Mutex<HashSet<String>>,
-    /// Persistent cache for input buffers to avoid re-allocation.
-    pub buffer_x_cache: Mutex<HashMap<String, Arc<Subbuffer<[f32]>>>>,
-    /// Persistent cache for output buffers to avoid re-allocation.
-    pub buffer_y_cache: Mutex<HashMap<String, Arc<Subbuffer<[f32]>>>>,
-    /// Cached compute pipeline.
+    pub buffer_x_cache: Mutex<HashMap<String, Subbuffer<[f32]>>>,
+    pub buffer_y_cache: Mutex<HashMap<String, Subbuffer<[f32]>>>,
     pub pipeline: Arc<ComputePipeline>,
-    /// Whether Vulkan was successfully initialized.
     pub available: bool,
 }
 
 impl VulkanContext {
     pub fn is_available(&self) -> bool { self.available }
 
-    /// Initializes a new Vulkan context.
     pub fn new() -> anyhow::Result<Self> {
+        let use_vlk = std::env::var("MUD_USE_VULKAN").unwrap_or("1".to_string());
+        if use_vlk == "0" || use_vlk.to_lowercase() == "false" {
+            return Err(anyhow::anyhow!("Vulkan desactivado por MUD_USE_VULKAN"));
+        }
+
         let library = VulkanLibrary::new()?;
         let instance = Instance::new(
             library,
@@ -55,8 +51,8 @@ impl VulkanContext {
             .enumerate_physical_devices()?
             .min_by_key(|p| {
                 match p.properties().device_type {
-                    PhysicalDeviceType::IntegratedGpu => 0,
-                    PhysicalDeviceType::DiscreteGpu => 1,
+                    PhysicalDeviceType::DiscreteGpu => 0, // Prefer Discrete if available
+                    PhysicalDeviceType::IntegratedGpu => 1,
                     PhysicalDeviceType::VirtualGpu => 2,
                     PhysicalDeviceType::Cpu => 3,
                     _ => 4,
@@ -64,9 +60,8 @@ impl VulkanContext {
             })
             .ok_or_else(|| anyhow::anyhow!("No se encontró ningún dispositivo Vulkan compatible"))?;
 
-        println!("[Vulkan] Usando dispositivo: {} (tipo: {:?})",
-            physical_device.properties().device_name,
-            physical_device.properties().device_type);
+        let dev_props = physical_device.properties();
+        println!("  🎮 GPU Detectada: {} ({:?})", dev_props.device_name, dev_props.device_type);
 
         let queue_family_index = physical_device
             .queue_family_properties()
@@ -94,7 +89,6 @@ impl VulkanContext {
         )?;
 
         let queue = queues.next().unwrap();
-        
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default()));
@@ -126,8 +120,7 @@ impl VulkanContext {
         })
     }
 
-    /// Executes a batched ternary GEMM on the iGPU.
-    pub fn run_ternary_gemm_cached(
+    pub unsafe fn run_ternary_gemm_cached(
         &self,
         key: &str,
         batch_size: usize,
@@ -138,89 +131,60 @@ impl VulkanContext {
         scale: f32,
         y: &mut [f32],
     ) -> anyhow::Result<()> {
-        // Use cached input buffer if available
         let buffer_x = {
             let mut cache = self.buffer_x_cache.lock();
-            let mut recreate = true;
             let total_x = batch_size * n_in;
-            if let Some(buf) = cache.get(key) {
-                if buf.len() == total_x as u64 {
-                    recreate = false;
-                }
-            }
-            if recreate {
-                let buf = Buffer::new_slice::<f32>(
+            cache.entry(key.to_string()).or_insert_with(|| {
+                Buffer::new_slice::<f32>(
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+                    AllocationCreateInfo { 
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, 
+                        ..Default::default() 
+                    },
                     total_x as u64,
-                )?;
-                let arc_buf = Arc::new(buf);
-                cache.insert(key.to_string(), arc_buf.clone());
-                arc_buf
-            } else {
-                cache.get(key).unwrap().clone()
-            }
+                ).unwrap()
+            }).clone()
         };
 
         {
-            let mut write_guard = buffer_x.write()?;
-            let copy_len = x.len().min(write_guard.len());
-            write_guard[..copy_len].copy_from_slice(&x[..copy_len]);
+            let mut write_guard = buffer_x.write().unwrap();
+            write_guard[..x.len()].copy_from_slice(x);
         }
 
-        let buffer_w: Arc<Subbuffer<[u32]>> = {
+        let buffer_w = {
             let mut cache = self.buffer_cache.lock();
-            let mut recreate = true;
             let w_len = (n_in / 16) * n_out;
-            if let Some(buf) = cache.get(key) {
-                if buf.len() == w_len as u64 {
-                    recreate = false;
-                }
-            }
-            if recreate {
+            cache.entry(key.to_string()).or_insert_with(|| {
                 let buf = Buffer::new_slice::<u32>(
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+                    AllocationCreateInfo { 
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, 
+                        ..Default::default() 
+                    },
                     w_len as u64,
-                )?;
-                let arc_buf = Arc::new(buf);
-                {
-                    let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, w_len) };
-                    let mut write_guard = arc_buf.write()?;
-                    let copy_len = weights_slice.len().min(write_guard.len());
-                    write_guard[..copy_len].copy_from_slice(&weights_slice[..copy_len]);
-                }
-                cache.insert(key.to_string(), arc_buf.clone());
-                arc_buf
-            } else {
-                cache.get(key).unwrap().clone()
-            }
+                ).unwrap();
+                let weights_slice = unsafe { std::slice::from_raw_parts(packed_w, w_len) };
+                buf.write().unwrap()[..w_len].copy_from_slice(weights_slice);
+                buf
+            }).clone()
         };
 
         let buffer_y = {
             let mut cache = self.buffer_y_cache.lock();
-            let mut recreate = true;
             let total_y = batch_size * n_out;
-            if let Some(buf) = cache.get(key) {
-                if buf.len() == total_y as u64 {
-                    recreate = false;
-                }
-            }
-            if recreate {
-                let buf = Buffer::new_slice::<f32>(
+            cache.entry(key.to_string()).or_insert_with(|| {
+                Buffer::new_slice::<f32>(
                     self.memory_allocator.clone(),
                     BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER, ..Default::default() },
-                    AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
+                    AllocationCreateInfo { 
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS, 
+                        ..Default::default() 
+                    },
                     total_y as u64,
-                )?;
-                let arc_buf = Arc::new(buf);
-                cache.insert(key.to_string(), arc_buf.clone());
-                arc_buf
-            } else {
-                cache.get(key).unwrap().clone()
-            }
+                ).unwrap()
+            }).clone()
         };
 
         let layout = self.pipeline.layout().set_layouts().first().unwrap();
@@ -228,9 +192,9 @@ impl VulkanContext {
             &*self.descriptor_set_allocator,
             layout.clone(),
             [
-                WriteDescriptorSet::buffer(0, (*buffer_x).clone()),
-                WriteDescriptorSet::buffer(1, (*buffer_w).clone()),
-                WriteDescriptorSet::buffer(2, (*buffer_y).clone()),
+                WriteDescriptorSet::buffer(0, buffer_x.clone()),
+                WriteDescriptorSet::buffer(1, buffer_w.clone()),
+                WriteDescriptorSet::buffer(2, buffer_y.clone()),
             ],
             [],
         )?;
@@ -245,7 +209,7 @@ impl VulkanContext {
             .bind_pipeline_compute(self.pipeline.clone())?
             .bind_descriptor_sets(PipelineBindPoint::Compute, self.pipeline.layout().clone(), 0, set)?
             .push_constants(self.pipeline.layout().clone(), 0, cs::PushConstants { 
-                n_in: n_in as u32, n_out: n_out as u32, scale, batch_size: batch_size as u32 
+                n_in: n_in as u32, n_out: n_out as u32, scale, batch_size: batch_size as u32,
             })?
             .dispatch([n_out as u32, batch_size as u32, 1])?; 
 
@@ -253,15 +217,13 @@ impl VulkanContext {
         sync::now(self.device.clone()).then_execute(self.queue.clone(), command_buffer)?.then_signal_fence_and_flush()?.wait(None)?;
 
         {
-            let read_guard = buffer_y.read()?;
-            let copy_len = y.len().min(read_guard.len());
-            y[..copy_len].copy_from_slice(&read_guard[..copy_len]);
+            let read_guard = buffer_y.read().unwrap();
+            y[..n_out * batch_size].copy_from_slice(&read_guard[..n_out * batch_size]);
         }
         Ok(())
     }
 
-    /// Executes a ternary GEMV on the iGPU with buffer caching.
-    pub fn run_ternary_gemv_cached(
+    pub unsafe fn run_ternary_gemv_cached(
         &self,
         key: &str,
         n_in: usize,
@@ -271,45 +233,14 @@ impl VulkanContext {
         scale: f32,
         y: &mut [f32],
     ) -> anyhow::Result<()> {
-        self.run_ternary_gemm_cached(key, 1, n_in, n_out, x, packed_w, scale, y)
-    }
-
-    /// Executes a ternary GEMV on the iGPU (deprecated, use run_ternary_gemv_cached).
-    pub fn run_ternary_gemv(
-        &self,
-        n_in: usize,
-        n_out: usize,
-        x: &[f32],
-        packed_w: *const u32,
-        scale: f32,
-        y: &mut [f32],
-    ) -> anyhow::Result<()> {
-        let key = format!("ptr_{:x}", packed_w as usize);
-        self.run_ternary_gemm_cached(&key, 1, n_in, n_out, x, packed_w, scale, y)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_vulkan_init() {
-        match VulkanContext::new() {
-            Ok(ctx) => {
-                println!("Vulkan initialized successfully on: {}", ctx.device.physical_device().properties().device_name);
-            }
-            Err(e) => {
-                panic!("Failed to initialize Vulkan: {:?}", e);
-            }
-        }
+        unsafe { self.run_ternary_gemm_cached(key, 1, n_in, n_out, x, packed_w, scale, y) }
     }
 }
 
 mod cs {
     vulkano_shaders::shader! {
         ty: "compute",
-        path: "assets/shaders/ternary_gemv.comp",
+        path: "assets/shaders/ternary_gemv_igpu.comp",
         vulkan_version: "1.1",
     }
 }

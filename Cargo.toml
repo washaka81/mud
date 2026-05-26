@@ -27,6 +27,12 @@ serde_json = "1.0.149"
 byteorder = "1.5.0"
 parking_lot = "0.12.5"
 rayon = "1.12.0"
+zip = "8.6.0"
+pdf-extract = "0.10.0"
+roxmltree = "0.21.1"
+safetensors = "0.4.3"
+ctrlc = "3.4.0"
+forge_autograd = { version = "0.1.0", path = "forge_autograd" }
 
 [[bin]]
 name = "forge_llm"
@@ -43,10 +49,6 @@ path = "tools/tokenizer_audit.rs"
 [[bin]]
 name = "expert_anatomy"
 path = "tools/expert_anatomy.rs"
-
-[[bin]]
-name = "neural_autopsy"
-path = "tools/neural_autopsy.rs"
 
 [[bin]]
 name = "step_inference"
@@ -96,6 +98,38 @@ path = "tools/ptr_audit.rs"
 name = "moe_audit"
 path = "tools/moe_audit.rs"
 
+[[bin]]
+name = "tensor_microscope"
+path = "tools/tensor_microscope.rs"
+
+[[bin]]
+name = "mud_calibrator"
+path = "tools/mud_calibrator.rs"
+
+[[bin]]
+name = "universal_converter"
+path = "tools/universal_converter/main.rs"
+
+[[bin]]
+name = "interactive_validator"
+path = "tools/interactive_validator.rs"
+
+[[bin]]
+name = "mud_autotrainer"
+path = "tools/mud_autotrainer.rs"
+
+[[bin]]
+name = "cognitive_integrity"
+path = "tools/cognitive_integrity.rs"
+
+[[bin]]
+name = "embed_audit"
+path = "tools/embed_audit.rs"
+
+[[bin]]
+name = "embed_ternarize"
+path = "tools/embed_ternarize.rs"
+
 [lib]
 name = "forge_llm"
 crate-type = ["cdylib", "lib"]
@@ -103,6 +137,18 @@ crate-type = ["cdylib", "lib"]
 [build-dependencies]
 # Used to compile ASM files during the build process
 cc = "1.0.83"
+
+[[bin]]
+name = "recalibration_projector"
+path = "tools/recalibration_projector.rs"
+
+[[bin]]
+name = "mud_corpus_trainer"
+path = "tools/mud_corpus_trainer.rs"
+
+[[bin]]
+name = "vocab_check"
+path = "tools/vocab_check.rs"
 
 [profile.release]
 opt-level = 3

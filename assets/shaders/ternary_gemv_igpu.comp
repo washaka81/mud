@@ -1,0 +1,57 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// Hybrid Zero-Copy iGPU Kernel (ADL GT2)
+// Aligned to 512-bit cache lines to maximize L1/L2 hits
+
+layout(local_size_x = 32) in; 
+
+layout(std430, set = 0, binding = 0) buffer InputX { float x[]; };
+layout(std430, set = 0, binding = 1) buffer Weights { uint packed_w[]; };
+layout(std430, set = 0, binding = 2) buffer OutputY { float y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;
+    uint n_out;
+    float scale;
+    uint batch_size;
+} pcs;
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint batch_idx = gl_WorkGroupID.y;
+    
+    if (row >= pcs.n_out || batch_idx >= pcs.batch_size) return;
+
+    uint lane_id = gl_LocalInvocationID.x;
+    float local_sum = 0.0;
+    
+    uint blocks_per_row = pcs.n_in / 16;
+    uint row_offset = row * blocks_per_row;
+    uint x_offset = batch_idx * pcs.n_in;
+    uint y_offset = batch_idx * pcs.n_out;
+
+    // Cache line prefetching (L2 -> L1)
+    // 32 threads process 32*16 = 512 weights per inner loop iteration
+    for (uint b = lane_id; b < blocks_per_row; b += 32) {
+        uint w_bits = packed_w[row_offset + b];
+        uint x_base = x_offset + b * 16;
+        
+        // Manual unroll to ensure compiler doesn't break the load dependency chain
+        #pragma unroll
+        for (uint i = 0; i < 16; i++) {
+            uint bits = (w_bits >> (i * 2)) & 3u;
+            if (bits != 0u) {
+                float val = x[x_base + i];
+                local_sum += (bits == 1u) ? val : -val;
+            }
+        }
+    }
+    
+    // Low-latency subgroup reduction
+    float total_sum = subgroupAdd(local_sum);
+    
+    if (lane_id == 0) {
+        y[y_offset + row] = total_sum * pcs.scale;
+    }
+}

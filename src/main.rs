@@ -6,6 +6,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use std::thread;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+// MAIN-01: Sin handler SIGINT → SHOULD_TERMINATE nunca se activa en Ctrl+C.
+//            Pesos NO se guardan al salir. Agregar ctrlc::set_handler().
+static SHOULD_TERMINATE_CHAT: AtomicBool = AtomicBool::new(false);
+static IS_TYPING: AtomicBool = AtomicBool::new(false);
+static FRAME_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static LIVE_IQ_AVG: AtomicUsize = AtomicUsize::new(8870);
+static LAST_TPS: AtomicUsize = AtomicUsize::new(0);
 use std::io::{self, Write};
 use crossterm::{
     execute,
@@ -559,21 +568,33 @@ fn decode_tokens(tokenizer: &forge_llm::model::tokenizer::Tokenizer, ids: &[u32]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
+    // HW-AUTO: Dynamic hardware detection and optimization tuning
+    let hw_profile = forge_llm::hardware::HardwareProfile::detect();
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(hw_profile.preferred_threads).build_global();
+
     let mut sys = System::new_all();
     let mut stdout = io::stdout();
 
     execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
     print_banner(&mut stdout)?;
+    
+    println!("  🔍 Hardware Detectado: {} ({} núcleos)", hw_profile.cpu_brand.trim(), hw_profile.total_cores);
+    if hw_profile.is_intel_hybrid {
+        println!("     🚀 Arquitectura Híbrida: {} P-cores, {} E-cores | Hilos óptimos: {}", 
+                 hw_profile.p_cores / 2, hw_profile.e_cores, hw_profile.preferred_threads);
+    }
+    println!("     ⚡ SIMD: AVX2: {}, AVX-512: {}", hw_profile.has_avx2, hw_profile.has_avx512);
 
-    let mud_path = "models/core_skills.mud";
-    let vk = Arc::new(VulkanContext::new().unwrap_or_else(|e| {
-        eprintln!("  ⚠️  Error al inicializar Vulkan: {}. Usando fallback CPU.", e);
-        // We still need a VulkanContext for the types, but we can make a "dummy" one if needed.
-        // For now, if we can't initialize it, we might still fail later if MudInference requires it.
-        // Actually, VulkanContext::new() is currently required by the MudInference constructor.
-        // Let's assume for now that if it fails, we want to know why but we might need a better fallback.
-        VulkanContext::new().expect("Fallo crítico: No se pudo inicializar ni siquiera el fallback de Vulkan")
-    }));
+    let args: Vec<String> = std::env::args().collect();
+    let mud_path = args.get(1).map(|s| s.as_str()).unwrap_or("models/core_skills.mud");
+    
+    let vk = VulkanContext::new().map(Arc::new).ok();
+    if vk.is_none() {
+        let use_vlk = std::env::var("MUD_USE_VULKAN").unwrap_or("1".to_string());
+        if use_vlk != "0" && use_vlk.to_lowercase() != "false" {
+            execute!(stdout, SetForegroundColor(C_WARN), Print("  ⚠️  Vulkan falló o no está disponible. Usando fallback CPU.\n"), ResetColor)?;
+        }
+    }
 
     if !Path::new(mud_path).exists() {
         execute!(
@@ -587,6 +608,15 @@ fn main() -> anyhow::Result<()> {
 
     let mud_file = MudFile::load(mud_path)?;
     let mut engine = MudInference::new(&mud_file, vk)?;
+
+    let auto_trainer = std::sync::Arc::new(forge_llm::mud::auto_trainer::MudAutoTrainer::new("models/knowledge.db".to_string(), 1, mud_path.to_string()));
+    auto_trainer.start_background_monitor();
+
+    // MAIN-01: Implement SIGINT handler to ensure graceful shutdown and weight saving
+    ctrlc::set_handler(move || {
+        SHOULD_TERMINATE_CHAT.store(true, Ordering::SeqCst);
+        forge_llm::mud::auto_trainer::SHOULD_TERMINATE.store(true, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
 
     // ── IQ metadata ──────────────────────────────────────────────────────────
     let model_iq: f32 = mud_file.global_metadata.get("iq.score")
@@ -608,15 +638,40 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or(def)
         };
         let mut m = HashMap::new();
-        m.insert("linguistics", parse("iq.linguistics", 100.0));
-        m.insert("logic",       parse("iq.logic",       100.0));
-        m.insert("code",        parse("iq.code",        100.0));
-        m.insert("general",     parse("iq.general",     100.0));
-        m.insert("system",      parse("iq.system",      100.0));
+        m.insert("linguistics", parse("iq.linguistics", model_iq));
+        m.insert("logic",       parse("iq.logic",       model_iq));
+        m.insert("code",        parse("iq.code",        model_iq));
+        m.insert("general",     parse("iq.general",     model_iq));
+        m.insert("system",      parse("iq.system",      model_iq));
         m
     };
 
+    let avg_iq: f32 = live_iq.values().sum::<f32>() / live_iq.len() as f32;
+    LIVE_IQ_AVG.store((avg_iq * 100.0) as usize, Ordering::Relaxed);
+    LAST_TPS.store(0, Ordering::Relaxed);
+
+    let now_init_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as usize;
+    forge_llm::mud::auto_trainer::LAST_ACTIVITY.store(now_init_ms, Ordering::Relaxed);
+
+    // Spawn background status bar refresher thread (refreshes animation frames every 200ms)
+    let active_exp_ref = engine.active_experts.clone();
+    let total_exp = engine.model.num_experts;
+    let vlk_available = engine.vulkan_ctx.is_some();
+    
+    std::thread::spawn(move || {
+        let mut sys = System::new_all();
+        while !SHOULD_TERMINATE_CHAT.load(Ordering::Relaxed) {
+            if !IS_TYPING.load(Ordering::Relaxed) {
+                let mut stdout = io::stdout();
+                let active_exp = active_exp_ref.load(Ordering::Relaxed);
+                let _ = update_status_bar(&mut stdout, active_exp, total_exp, vlk_available, &mut sys);
+            }
+            std::thread::sleep(Duration::from_millis(2500));
+        }
+    });
+
     let mut conversation_pos = 0usize;
+    #[allow(unused_assignments)]
     let mut last_tps = 0.0f64;
 
     // ── Set scroll region (last row = status bar) ────────────────────────────
@@ -659,7 +714,8 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     sys.refresh_all();
-    update_status_bar(&mut stdout, &engine, &live_iq, last_tps, &mut sys)?;
+    let active_exp = engine.active_experts.load(Ordering::Relaxed);
+    update_status_bar(&mut stdout, active_exp, engine.model.num_experts, engine.vulkan_ctx.is_some(), &mut sys)?;
     stdout.flush()?;
 
     let mut input = String::new();
@@ -675,6 +731,10 @@ fn main() -> anyhow::Result<()> {
 
         input.clear();
         if io::stdin().read_line(&mut input)? == 0 { break; }
+        
+        let now_act_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as usize;
+        forge_llm::mud::auto_trainer::LAST_ACTIVITY.store(now_act_ms, Ordering::Relaxed);
+
         let trimmed = input.trim();
 
         if trimmed.is_empty() { continue; }
@@ -687,7 +747,8 @@ fn main() -> anyhow::Result<()> {
             print_banner(&mut stdout)?;
             let (_, r) = terminal::size().unwrap_or((80, 24));
             execute!(stdout, Print(format!("\x1B[1;{}r", r - 1)))?;
-            update_status_bar(&mut stdout, &engine, &live_iq, last_tps, &mut sys)?;
+            let active_exp = engine.active_experts.load(Ordering::Relaxed);
+            update_status_bar(&mut stdout, active_exp, engine.model.num_experts, engine.vulkan_ctx.is_some(), &mut sys)?;
             continue;
         }
         if trimmed == "/stats" {
@@ -700,6 +761,35 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         if trimmed == "/knowledge" { print_knowledge_mesh(&mut stdout, &engine)?; continue; }
+        if trimmed == "/train" {
+            execute!(stdout,
+                SetForegroundColor(Color::Rgb { r: 80, g: 180, b: 255 }), SetAttribute(Attribute::Bold),
+                Print("  ⏳  Iniciando ciclo de entrenamiento ternario nativo en caliente...\n"),
+                ResetColor, SetAttribute(Attribute::Reset))?;
+            stdout.flush()?;
+            
+            match auto_trainer.run_training_cycle() {
+                Ok(0) => {
+                    execute!(stdout,
+                        SetForegroundColor(C_WARN), SetAttribute(Attribute::Bold),
+                        Print("  ⚠  No hay nuevos chunks/hechos sin asimilar en la base de conocimientos. ¡Usa /ingest primero!\n\n"),
+                        ResetColor, SetAttribute(Attribute::Reset))?;
+                }
+                Ok(n) => {
+                    execute!(stdout,
+                        SetForegroundColor(Color::Rgb { r: 80, g: 220, b: 80 }), SetAttribute(Attribute::Bold),
+                        Print(format!("  ✅  Entrenamiento completado. Se han asimilado {} hechos en los pesos del modelo.\n\n", n)),
+                        ResetColor, SetAttribute(Attribute::Reset))?;
+                }
+                Err(e) => {
+                    execute!(stdout,
+                        SetForegroundColor(C_WARN), SetAttribute(Attribute::Bold),
+                        Print(format!("  ❌  Fallo en el ciclo de entrenamiento: {}\n\n", e)),
+                        ResetColor, SetAttribute(Attribute::Reset))?;
+                }
+            }
+            continue;
+        }
         if let Some(path) = trimmed.strip_prefix("/ingest ") {
             match forge_llm::mud::ingester::MudIngester::ingest(path, &engine) {
                 Ok(n) => execute!(stdout,
@@ -773,10 +863,30 @@ fn main() -> anyhow::Result<()> {
         }
         println!();
 
+        // ── Autonomous Actions ────────────────────────────────────────────────
+        let skills = std::mem::take(&mut engine.skills);
+        std::thread::scope(|s| {
+            for skill in &skills {
+                if skill.should_activate(&x, trimmed) {
+                    let eng_ref = &engine;
+                    s.spawn(move || {
+                        skill.execute_autonomous_action(trimmed, eng_ref);
+                    });
+                }
+            }
+        });
+        engine.skills = skills;
+
+        let avg_iq: f32 = live_iq.values().sum::<f32>() / live_iq.len() as f32;
+        LIVE_IQ_AVG.store((avg_iq * 100.0) as usize, Ordering::Relaxed);
+        LAST_TPS.store((last_tps * 100.0) as usize, Ordering::Relaxed);
+
         sys.refresh_all();
-        update_status_bar(&mut stdout, &engine, &live_iq, last_tps, &mut sys)?;
+        let active_exp = engine.active_experts.load(Ordering::Relaxed);
+        update_status_bar(&mut stdout, active_exp, engine.model.num_experts, engine.vulkan_ctx.is_some(), &mut sys)?;
     }
 
+    SHOULD_TERMINATE_CHAT.store(true, Ordering::Relaxed);
     execute!(stdout, Print("\x1B[r"))?;
     execute!(stdout,
         SetForegroundColor(C_DIM),
@@ -823,6 +933,7 @@ fn show_thinking(stdout: &mut io::Stdout, active: bool) -> io::Result<()> {
 
 // ─── Typewriter (ANSI + XML tag aware) ───────────────────────────────────────
 fn type_writer(text: &str, delay: Duration) -> io::Result<()> {
+    IS_TYPING.store(true, Ordering::SeqCst);
     let mut in_ansi = false;
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -840,26 +951,48 @@ fn type_writer(text: &str, delay: Duration) -> io::Result<()> {
         i += 1;
     }
     execute!(io::stdout(), ResetColor, SetAttribute(Attribute::Reset))?;
+    IS_TYPING.store(false, Ordering::SeqCst);
     Ok(())
 }
 
 // ─── Status bar ───────────────────────────────────────────────────────────────
 fn update_status_bar(
     stdout: &mut io::Stdout,
-    engine: &MudInference,
-    live_iq: &HashMap<&str, f32>,
-    last_tps: f64,
+    active_exp: usize,
+    total_exp: usize,
+    vlk_available: bool,
     sys: &mut System,
 ) -> io::Result<()> {
     sys.refresh_memory();
     let mem_used  = sys.used_memory()  as f64 / 1_073_741_824.0;
     let mem_total = sys.total_memory() as f64 / 1_073_741_824.0;
-    let active_exp = *engine.active_experts.read().unwrap();
-    let total_exp  = engine.model.num_experts;
-    let vlk        = if engine.vulkan_ctx.is_available() { "VLK ✓" } else { "CPU  " };
-    let avg_iq: f32 = live_iq.values().sum::<f32>() / live_iq.len() as f32;
+    let vlk        = if vlk_available { "VLK ✓" } else { "CPU  " };
+    
+    let avg_iq = LIVE_IQ_AVG.load(Ordering::Relaxed) as f32 / 100.0;
+    let last_tps = LAST_TPS.load(Ordering::Relaxed) as f64 / 100.0;
+    
     let (_, rows)  = terminal::size().unwrap_or((80, 24));
     let tps_s = if last_tps > 0.0 { format!("{:.1} t/s", last_tps) } else { "─── t/s".to_string() };
+
+    // Obtener estado dinámico del auto-trainer
+    let is_training = forge_llm::mud::auto_trainer::IS_TRAINING.load(Ordering::Relaxed);
+    let current_train = forge_llm::mud::auto_trainer::TRAINING_CURRENT.load(Ordering::Relaxed);
+    let total_train = forge_llm::mud::auto_trainer::TRAINING_TOTAL.load(Ordering::Relaxed);
+
+    let mut train_segment = "TRAIN idle".to_string();
+    let mut train_color = C_STATUS;
+    if is_training {
+        let last_act_ms = forge_llm::mud::auto_trainer::LAST_ACTIVITY.load(Ordering::Relaxed) as u64;
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let is_accelerated = last_act_ms > 0 && now_ms.saturating_sub(last_act_ms) > 60_000;
+        let acc_suffix = if is_accelerated { " ⚡" } else { "" };
+
+        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let frame_idx = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed) % frames.len();
+        let frame = frames[frame_idx];
+        train_segment = format!("AUTO-TRAIN {} {}/{}{}", frame, current_train, total_train, acc_suffix);
+        train_color = Color::Rgb { r: 255, g: 180, b: 0 }; // Naranja brillante
+    }
 
     execute!(stdout,
         cursor::SavePosition,
@@ -875,6 +1008,8 @@ fn update_status_bar(
         SetForegroundColor(C_STATUS), Print(format!("Mem {:.1}/{:.1}G", mem_used, mem_total)),
         SetForegroundColor(C_BORDER), Print(" │ "),
         SetForegroundColor(C_STATUS), Print(vlk),
+        SetForegroundColor(C_BORDER), Print(" │ "),
+        SetForegroundColor(train_color), Print(train_segment),
         SetForegroundColor(C_BORDER), Print(" │ "),
         SetForegroundColor(Color::Rgb { r: 220, g: 220, b: 80 }),
         Print(format!("IQ {:.1}", avg_iq)),

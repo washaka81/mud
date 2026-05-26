@@ -10,7 +10,6 @@ pub struct BlockQ4_0 {
 extern "C" {
     pub fn q4_0_gemv_asm(n: usize, x: *const f32, weights: *const BlockQ4_0, out: *mut f32);
     pub fn rms_norm_scale_asm(n: usize, x: *const f32, eps: f32) -> f32;
-    /// New optimized Ternary AVX2 kernel (Additions/Subtractions only)
     pub fn ternary_gemv_avx2(n: usize, x: *const f32, weights: *const u32, out: *mut f32, scale: f32);
     pub fn ternary_gemv_4rows_avx2(n: usize, x: *const f32, weights: *const u32, out: *mut f32, scale: f32, stride: usize);
     pub fn dot_product_avx2(n: usize, a: *const f32, b: *const f32) -> f32;

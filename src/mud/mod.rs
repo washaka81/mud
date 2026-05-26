@@ -9,6 +9,7 @@ pub mod ingester;
 pub mod store;
 pub mod graph;
 pub mod auto_trainer;
+pub mod corpus_trainer;
 
 /// MUD: Modular Understanding Dynamics
 /// File version 1.0
@@ -191,7 +192,7 @@ impl MudFile {
     }
 }
 
-pub fn dequantize_ternary_row(packed: *const u32, out: &mut [f32], n: usize) {
+pub unsafe fn dequantize_ternary_row(packed: *const u32, out: &mut [f32], n: usize) {
     // Guarda: out debe tener al menos n elementos
     debug_assert!(out.len() >= n, "dequantize_ternary_row: out.len()={} < n={}", out.len(), n);
     let u32_count = n / 16;        // bloques completos
