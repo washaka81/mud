@@ -1,25 +1,40 @@
----
-lang: en
----
-
-# MUD Architecture - Static Workspace & MoE Robustness
+# MUD Architecture - High-Fidelity Hybrid Engine
 
 ## Overview
-The MUD (Modular Understanding Dynamics) engine has been refactored to achieve >100 TPS by eliminating dynamic memory allocations in the inference hot loop. This ensures consistent execution time, critical for high-latency tasks like complex reasoning.
+The MUD (Modular Understanding Dynamics) engine is a hardware-aware, zero-allocation inference system optimized for ternary (1.58-bit) weights. It is natively designed to run **Jamba Hybrid Architectures**, combining the infinite context scaling of Selective State Space Models (Mamba) with the relational logic of Transformer MoEs.
 
-## Core Design Principles
-1. **Zero-Allocation Hot-Loop:** The inference engine follows a "Zero-Allocation" policy. All operational buffers (Q/K/V, attention scores, logits, gate states) are pre-allocated within the `InferenceWorkspace` at startup. This eliminates memory fragmentation and kernel-mode overhead during token generation, achieving >50 TPS on mobile-grade CPUs.
-2. **Split RoPE Implementation:** To maintain compatibility with LLaMA and SmolLM2 architectures, MUD uses a "Split" Rotary Position Embedding strategy. Rotations are applied across halves of the head dimension, ensuring accurate positional encoding and preventing linguistic incoherence.
-3. **Hardware-Agnostic Acceleration:** The engine supports optional Vulkan acceleration for large models, with a high-performance AVX2/ASM CPU fallback for smaller, latency-sensitive deployments.
-4. **MoE Stability:** Expert gating uses a stabilized Top-K selection with temperature-adjusted softmax. Models with a single expert bypass the router entirely to minimize latency.
-5. **Skill-Aware Routing:** Each MUD skill module is dynamically routed through the MoE gate, ensuring compute resources are prioritized for the requested domain.
-6. **Resilient Tokenization:** The tokenizer uses a validated, zero-copy byte mapping strategy with automatic GPT/SentencePiece space concordance detection.
+## 1. Jamba Hybrid Design
+MUD interweaves sequence and relational processing to maximize efficiency:
+- **Transformer Layers ($O(N^2)$):** Sparse attention blocks equipped with Mixture of Experts (MoE). Responsible for logical leaps and deep relational understanding.
+- **Mamba Layers ($O(N)$):** Fast, recurrent State Space Models. Responsible for sequence scanning and memorization with an $O(1)$ memory footprint, eliminating KV-cache explosion.
 
-## Roadmap (Post-Refactor)
-- [x] Static Workspace implementation.
-- [ ] MoE Gating refinement for high-IQ reasoning.
-- [ ] Skill module integration optimization.
-- [ ] Multi-thread contention resolution (Rayon pool tuning).
-- [ ] Local Trainer in Rust (Native training engine optimized for database chunks).
-- [ ] Embedding Pointer Validation (Bounds-checking raw pointer offsets to prevent segmentation faults).
-- [ ] Dynamic Attention Integration (Replace causal attention projection placeholder with full scaled dot-product and pos pos cache).
+## 2. Static Workspace (Zero-Allocation)
+To achieve extreme performance (>160 TPS on CPU), MUD pre-allocates all necessary memory buffers upon model loading.
+- **InferenceWorkspace:** A monolithic structure containing all intermediate tensors, Attention KV-cache, and Mamba SSM recurrent states.
+- **Static Pointers:** All weight access is done via raw pointers to mmap'ed memory, eliminating lookup overhead.
+
+## 3. High-Fidelity Quantization (PRQ)
+The core innovation of version 1.5 is **Per-Row Quantization (PRQ)**.
+- **Problem:** Global scaling causes SNR collapse across deep layers.
+- **Solution:** Every output dimension (row) of every matrix (Attention, FFN, Mamba Projections) has a dedicated 32-bit float scale.
+- **Format:** `.mud` files store packed u32 weights and a separate f32 scale vector for each tensor.
+
+## 4. Hardware Acceleration Layers
+MUD dynamically selects the best execution path:
+- **AVX2 ASM (CPU):** Hand-written assembly for ternary GEMV, RMSNorm, SiLU, and the **Mamba Parallel Scan** algorithm.
+- **Vulkan (iGPU) & Asynchronous Heartbeat:** Zero-copy compute shaders for parallelized batch processing. Uses an async heartbeat mechanism to keep the GPU active on output projections without blocking the CPU's sequence loop.
+- **Rayon:** Multi-threaded expert execution for MoE layers.
+
+## 5. Linguistic Restoration Pipeline
+Since ternary weights are discrete, they require "seating" after conversion:
+- **Align:** Maps weights to the bilingual MUD vocabulary.
+- **Project:** Bayesian recalibration of scales via activation analysis.
+- **Train:** Live Hot Ternary SGD to minimize quantization drift across both Attention and Mamba layers.
+
+## 6. Safety & Integrity
+- **Pointer Alignment:** Strict adherence to `(n + 15) / 16` block alignment.
+- **Sanitization:** Auto-detection and neutralization of NaNs/Infs in the hidden state.
+- **Diagnostic CHI:** Continuous monitoring of the Cognitive Health Index during inference.
+
+---
+*Architecture is the foundation of intelligence.*

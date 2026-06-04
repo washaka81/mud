@@ -8,7 +8,7 @@ lang: es
 > `MUD_AUDIT.md`, `MUD_AUDIT_REPORT_V1.md`, `MUD_AUDIT_RESOLUTION.md`,
 > `MUD_CONVERSION_AUDIT.md`, `MUD_STATISTICAL_AUDIT.md`, `MUD_MATHEMATICAL_AUDIT.md`
 
-**Última actualización:** 2026-05-25 (Fixes: INF-02, AT series, BUG-5; Embed ternarization integrado en converter; Qwen conversion; Auto-Trainer rewrite EN REVISIÓN)
+**Última actualización:** 2026-05-30 (Nueva Auditoría V5: 23 Issues en el pipeline de entrenamiento identificados. Ver archivo maestro `mud_training_audit_v5.md` en artifacts para la corrección del pipeline de entrenamiento).
 
 ---
 

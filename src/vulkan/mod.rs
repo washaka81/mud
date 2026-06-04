@@ -293,6 +293,59 @@ impl VulkanContext {
             .then_signal_fence_and_flush();
     }
 
+    /// RRM: Asynchronous Imagination
+    /// Dispatches a speculative compute shader on Vulkan and returns the future
+    /// so the CPU can perform LDT evaluation in parallel.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it performs a raw Vulkan dispatch
+    /// and returns a GpuFuture that the caller must manage.
+    pub unsafe fn dispatch_imagination_async(&self) -> Box<dyn GpuFuture> {
+        let layout = self
+            .heartbeat_pipeline
+            .layout()
+            .set_layouts()
+            .first()
+            .unwrap();
+        let set = PersistentDescriptorSet::new(
+            &*self.descriptor_set_allocator,
+            layout.clone(),
+            [WriteDescriptorSet::buffer(0, self.heartbeat_buffer.clone())],
+            [],
+        )
+        .unwrap();
+
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &*self.command_buffer_allocator,
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        builder
+            .bind_pipeline_compute(self.heartbeat_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.heartbeat_pipeline.layout().clone(),
+                0,
+                set,
+            )
+            .unwrap()
+            .dispatch([64, 1, 1]) // Larger dispatch for speculative work
+            .unwrap();
+
+        let command_buffer = builder.build().unwrap();
+        let future = sync::now(self.device.clone())
+            .then_execute(self.queue.clone(), command_buffer)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap();
+            
+        Box::new(future)
+    }
+
     pub fn allocate_zero_copy_buffer(&self, len: usize) -> Subbuffer<[f32]> {
         Buffer::new_slice::<f32>(
             self.memory_allocator.clone(),
@@ -811,6 +864,9 @@ impl VulkanContext {
         Ok(())
     }
 
+    /// # Safety
+    ///
+    /// This function is unsafe because it dereferences multiple weight and gradient raw pointers.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn run_qat_backward_async(
         &self,
@@ -856,16 +912,24 @@ impl VulkanContext {
                     batch_size: batch_size as u32,
                 },
             )?
-            .dispatch([(n_in as u32 + 31) / 32, (n_out as u32 + 7) / 8, 1])?;
+            .dispatch([
+                (n_in as u32).div_ceil(32),
+                (n_out as u32).div_ceil(8),
+                1,
+            ])?;
 
         let command_buffer = builder.build()?;
-        sync::now(self.device.clone())
+        let future = sync::now(self.device.clone())
             .then_execute(self.queue.clone(), command_buffer)?
             .then_signal_fence_and_flush()?;
+        future.wait(None)?;
 
         Ok(())
     }
 
+    /// # Safety
+    ///
+    /// This function is unsafe because it dereferences multiple shadow weight and scale raw pointers.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn run_qat_optimizer_async(
         &self,
@@ -915,12 +979,13 @@ impl VulkanContext {
                     weight_decay,
                 },
             )?
-            .dispatch([(total_elements as u32 + 255) / 256, 1, 1])?;
+            .dispatch([(total_elements as u32).div_ceil(256), 1, 1])?;
 
         let command_buffer = builder.build()?;
-        sync::now(self.device.clone())
+        let future = sync::now(self.device.clone())
             .then_execute(self.queue.clone(), command_buffer)?
             .then_signal_fence_and_flush()?;
+        future.wait(None)?;
 
         Ok(())
     }

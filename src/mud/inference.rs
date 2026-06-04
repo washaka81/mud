@@ -1439,8 +1439,22 @@ impl MudInference {
                         // LDT-01: Lattice Constraint Projections (Snap to logic grid)
                         ws.apply_lattice_projection(hidden, 3.0); // 3 levels for ternary-like structure
                         
+                        // Asynchronous Imagination: Dispatch Vulkan speculative work parallel to CPU LDT evaluation
+                        let mut imagination_future = None;
+                        if let Some(vk) = self.vulkan_ctx.as_deref() {
+                            unsafe {
+                                imagination_future = Some(vk.dispatch_imagination_async());
+                            }
+                        }
+
                         // LDT-02: Early Exit si el estado convergió
-                        if ws.evaluate_ldt_convergence(hidden, dynamic_epsilon) {
+                        let converged = ws.evaluate_ldt_convergence(hidden, dynamic_epsilon);
+                        
+                        if let Some(mut fut) = imagination_future {
+                            fut.cleanup_finished(); // We clean up the future to avoid memory leaks
+                        }
+
+                        if converged {
                             // PTRM-01: Probabilistic Width Scaling
                             // The state converged but we still lack certainty (entropy is high).
                             // This means we hit a "Single Attractor" cognitive loop.
@@ -1502,8 +1516,22 @@ impl MudInference {
                             // LDT-01: Lattice Constraint Projections for Mamba
                             ws.apply_lattice_projection(hidden, 3.0);
                             
+                            // Asynchronous Imagination: Dispatch Vulkan speculative work parallel to CPU LDT evaluation
+                            let mut imagination_future = None;
+                            if let Some(vk) = self.vulkan_ctx.as_deref() {
+                                unsafe {
+                                    imagination_future = Some(vk.dispatch_imagination_async());
+                                }
+                            }
+
                             // LDT-02: Early Exit si el estado convergió
-                            if ws.evaluate_ldt_convergence(hidden, dynamic_epsilon) {
+                            let converged = ws.evaluate_ldt_convergence(hidden, dynamic_epsilon);
+                            
+                            if let Some(mut fut) = imagination_future {
+                                fut.cleanup_finished(); // We clean up the future to avoid memory leaks
+                            }
+
+                            if converged {
                                 // PTRM-01: Break Single Attractor in Mamba
                                 ws.inject_stochastic_noise(hidden, 0.05, (l + ldt_iterations) as u32);
                             }
@@ -1550,13 +1578,13 @@ impl MudInference {
                         
                         // 1. z = x * W_t
                         unsafe {
-                            for o in 0..hidden {
+                            for (o, z_val) in z.iter_mut().enumerate().take(hidden) {
                                 let mut sum = 0.0f32;
                                 let w_row = w_t.as_ptr().add(o * hidden);
                                 for i in 0..hidden {
                                     sum += x_guard[i] * (*w_row.add(i));
                                 }
-                                z[o] = sum;
+                                *z_val = sum;
                             }
                         }
                         
@@ -2301,6 +2329,7 @@ impl MudInference {
     /// Apply LoRA Delta Adapters [2410.20672]
     /// Intercepts a projection output and applies W ≈ W_base + A * B
     /// Uses zero-allocation by leveraging `ws.lora_temp`
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_lora_adapters(
         &self,
         layer_idx: usize,

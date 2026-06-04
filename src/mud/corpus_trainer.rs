@@ -265,7 +265,7 @@ impl MudCorpusTrainer {
                 // 1. Dequantize to FP32 shadow weights
                 let mut w_fp32 = vec![0.0f32; elements];
                 let mut use_vulkan = false;
-                if let Some(vk) = &self.vk {
+                if let Some(_vk) = &self.vk {
                     use_vulkan = true;
                     // TODO: Dispatch to Vulkan QAT here
                     // let shadow_w = vk.allocate_zero_copy_buffer(elements);

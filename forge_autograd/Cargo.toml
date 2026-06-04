@@ -1,6 +1,10 @@
 [package]
 name = "forge_autograd"
 version = "0.1.0"
-edition = "2024"
-
+edition = "2021"
+authors = ["Alejandro Fonda <alejandro.fonda@gmail.com>"]
+description = "Autograd mathematical engine for MUD"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/washaka81/mud"
 [dependencies]
+rayon = "1.8"

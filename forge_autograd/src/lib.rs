@@ -21,7 +21,7 @@ pub enum Op {
 
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub data: Vec<f32>,
+    pub data: std::sync::Arc<Vec<f32>>,
     pub grad: Vec<f32>,
     pub shape: Vec<usize>,
     pub op: Op,
@@ -45,8 +45,21 @@ impl Tape {
         }
     }
 
+    /// Limpia la cinta para reusar memoria en el siguiente token
+    pub fn reset(&mut self) {
+        self.nodes.clear();
+    }
+
     /// Empuja un tensor de pesos o entrada (Hoja)
     pub fn push_leaf(&mut self, data: Vec<f32>, shape: Vec<usize>) -> NodeId {
+        let len = data.len();
+        let id = NodeId(self.nodes.len());
+        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape, op: Op::Leaf });
+        id
+    }
+
+    /// Empuja una hoja compartiendo el array de datos (Zero-Allocation)
+    pub fn push_leaf_arc(&mut self, data: std::sync::Arc<Vec<f32>>, shape: Vec<usize>) -> NodeId {
         let len = data.len();
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node { data, grad: vec![0.0; len], shape, op: Op::Leaf });
@@ -67,7 +80,7 @@ impl Tape {
         }
 
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data, grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Add(lhs, rhs) });
+        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Add(lhs, rhs) });
         id
     }
 
@@ -83,7 +96,7 @@ impl Tape {
         }
 
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data, grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Mul(lhs, rhs) });
+        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Mul(lhs, rhs) });
         id
     }
 
@@ -100,20 +113,22 @@ impl Tape {
 
         let mut z_data = vec![0.0; m * n];
 
-        // Z = X * W^T usando AVX2 dot_product
-        unsafe {
-            for i in 0..m {
+        // Z = X * W^T usando AVX2 dot_product + Rayon
+        use rayon::prelude::*;
+        
+        z_data.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
+            unsafe {
                 for j in 0..n {
                     let x_row = &x_node.data[i * k .. (i + 1) * k];
                     let w_row = &w_node.data[j * k .. (j + 1) * k];
-                    z_data[i * n + j] = avx_math::dot_product_avx2(x_row, w_row);
+                    row[j] = avx_math::dot_product_avx2(x_row, w_row);
                 }
             }
-        }
+        });
 
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node { 
-            data: z_data, 
+            data: std::sync::Arc::new(z_data), 
             grad: vec![0.0; m * n], 
             shape: vec![m, n], 
             op: Op::MatMul(x_id, w_id) 
@@ -134,7 +149,7 @@ impl Tape {
 
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
-            data: z_data,
+            data: std::sync::Arc::new(z_data),
             grad: vec![0.0; x_node.data.len()],
             shape: x_node.shape.clone(),
             op: Op::SiLU(x_id),
@@ -161,7 +176,7 @@ impl Tape {
 
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
-            data: vec![loss],
+            data: std::sync::Arc::new(vec![loss]),
             grad: vec![0.0],
             shape: vec![1],
             op: Op::CrossEntropy(logits_id, target),
@@ -210,30 +225,29 @@ impl Tape {
                     let n = z.shape[1];
                     let k = x_node.shape[1];
 
-                    unsafe {
-                        // 1. dX = dZ * W
-                        for i_m in 0..m {
-                            for j_n in 0..n {
-                                let dz_val = z.grad[i_m * n + j_n];
-                                if dz_val == 0.0 { continue; }
-                                // dX[i_m, :] += dz_val * W[j_n, :]
-                                let x_grad_row = &mut x_node.grad[i_m * k .. (i_m + 1) * k];
-                                let w_data_row = &w_node.data[j_n * k .. (j_n + 1) * k];
-                                avx_math::axpy_avx2(x_grad_row, dz_val, w_data_row);
-                            }
-                        }
+                    use rayon::prelude::*;
 
-                        // 2. dW = dZ^T * X  =>  dW[j_n, :] += dZ[i_m, j_n] * X[i_m, :]
-                        for i_m in 0..m {
-                            for j_n in 0..n {
-                                let dz_val = z.grad[i_m * n + j_n];
-                                if dz_val == 0.0 { continue; }
-                                let w_grad_row = &mut w_node.grad[j_n * k .. (j_n + 1) * k];
-                                let x_data_row = &x_node.data[i_m * k .. (i_m + 1) * k];
-                                avx_math::axpy_avx2(w_grad_row, dz_val, x_data_row);
+                    // 1. dX = dZ * W
+                    x_node.grad.par_chunks_mut(k).enumerate().for_each(|(i_m, x_grad_row)| {
+                        for j_n in 0..n {
+                            let dz_val = z.grad[i_m * n + j_n];
+                            if dz_val != 0.0 {
+                                let w_data_row = &w_node.data[j_n * k .. (j_n + 1) * k];
+                                unsafe { avx_math::axpy_avx2(x_grad_row, dz_val, w_data_row); }
                             }
                         }
-                    }
+                    });
+
+                    // 2. dW = dZ^T * X
+                    w_node.grad.par_chunks_mut(k).enumerate().for_each(|(j_n, w_grad_row)| {
+                        for i_m in 0..m {
+                            let dz_val = z.grad[i_m * n + j_n];
+                            if dz_val != 0.0 {
+                                let x_data_row = &x_node.data[i_m * k .. (i_m + 1) * k];
+                                unsafe { avx_math::axpy_avx2(w_grad_row, dz_val, x_data_row); }
+                            }
+                        }
+                    });
                 }
                 Op::SiLU(x_id) => {
                     let z = self.nodes[i].clone();

@@ -5,8 +5,7 @@ lang: es
 # MUD (Modular Understanding Dynamics) — Visión Estratégica y Doctrina
 
 > **Documento vivo.** Este archivo es la fuente de verdad estratégica del proyecto `forge_llm`.
-> Toda decisión de arquitectura, roadmap y doctrina debe ser consistente con lo aquí definido.
-> Última actualización: **2026-05-26**.
+> Última actualización: **2026-05-31 (Audit V6)**.
 
 ---
 
@@ -115,11 +114,14 @@ una optimización posterior. El ecosistema completo está diseñado para operar 
 MUD es **Local-First** por diseño. Cada componente del pipeline de conocimiento existe en el
 dispositivo del usuario:
 
-- **Auto-Trainer daemon** (`src/mud/auto_trainer.rs`): Entrena continuamente sobre conversaciones
-  con ExpertShadow cache FP32 en RAM, gradientes acumulados y flush al disco. SGD con
-  `lr=0.002`, clipping L2 (norma máx 1.0), weight decay `wd=0.01`.
-- **Corpus Aligner** (`tools/mud_corpus_trainer.rs`): Alineación lingüística local con
-  Stateful Resume (persiste epoch/file/chunk en metadata) y Hard Checkpoints cada 5k chunks.
+- **Auto-Trainer daemon** (`src/mud/auto_trainer.rs`): Entrena continuamente sobre hechos de
+  `knowledge.db` con ExpertShadow/MambaShadow cache FP32 en RAM, gradientes acumulados (8 pasos)
+  y flush con gradient clamping per-element `[-1.0, 1.0]`. Utiliza **Quantization-Aware Training (QAT)** 
+  con un optimizador tipo SGD (`lr=0.002`) y cálculo dinámico de Lambda (Weight Decay).
+  ✅ Los issues de la Auditoría V5 han sido resueltos.
+- **Corpus Aligner** (`tools/mud_corpus_trainer.rs`): Alineación con **Straight-Through Estimator (STE)** 
+  para sanar el "Ternary Shock". LR=0.001, contrastivo con 7 negativos. Stateful Resume + Hard Checkpoints cada 5k chunks.
+  ✅ Los issues altos (TRAIN-07/08/21/23) fueron resueltos en Audit V5/V6.
 - **Knowledge DB** (`models/knowledge.db`): 74,489 hechos en SQLite con WAL mode,
   busy_timeout 5000ms y LIMIT en queries para prevenir scans infinitos.
 - **RAG Semántico** (`src/mud/ingester.rs`): Ingesta `.txt` y `.pdf` usando embeddings del
@@ -250,11 +252,13 @@ Completar la **Fase 5 del roadmap** cuantizando la totalidad de los tensores del
 | Matrices de atención (Q/K/V) | ✅ Completado |
 | Proyecciones de salida | ✅ Completado |
 | Embeddings de tokens | ✅ Completado (`embed_ternarize.rs` — 15.9× compresión) |
-| Mecanismos de gate MoE | 🔄 Trainable en memoria, persistencia pendiente revisión |
+| Mecanismos de gate MoE | ❌ Gate training es dead code (TRAIN-15). Gate persistence destruye pesos (TRAIN-23). |
 
-**Bloqueante activo:** El Auto-Trainer rewrite (`BUG-6`) está en revisión — la función
-`save_shadows_to_mud()` con requantización Ternary2Bit + grid-search de escalas necesita
-validación para no corromper el `.mud` existente.
+**Bloqueantes activos (Audit V5):**
+- **TRAIN-01:** Las escalas PRQ se ignoran al cargar shadows de expertos → gradientes incorrectos.
+- **TRAIN-02:** El backward de capas Mamba es un dead-end → 50% de Mamba no se entrena.
+- **TRAIN-08:** El corpus trainer guarda embeddings como Float32, rompiendo el formato ternario.
+- **BUG-6:** Weight decay puede colapsar pesos ternarios a cero (sin verificar).
 
 ### 5.4 Enjambre P2P *(Largo Plazo)*
 
@@ -300,7 +304,7 @@ Un token puede atravesar expertos en múltiples dispositivos antes de producir o
 
 | Debilidad | Detalle | Mitigación planificada |
 |-----------|---------|----------------------|
-| **Amnesia Post-Conversión** | La cuantización PTQ directa destruye asociaciones posicionales finas (word salad). Requiere recalibración con corpus masivo. | QAT con KL-Divergence loss (`tools/universal_converter/calibration.rs` — pendiente). |
+| **Amnesia Post-Conversión** | La cuantización PTQ directa destruye asociaciones posicionales finas (word salad / Ternary Shock). | Mitigado vía QAT con Straight-Through Estimator (STE) en el native corpus trainer, curando las fronteras ternarias de forma nativa. |
 | **Dependencia del Modelo Maestro** | Se requiere un modelo en alta precisión (FP16/BF16) para convertir a `.mud`. MUD no puede "nacer" sin un maestro FP32. | Pipeline Kaggle/Cloud para entrenamiento inicial en GPU, con pull local del `.mud`. |
 | **Curva de Aprendizaje del Código** | ASM incrustado, `unsafe` Rust, punteros crudos sobre mmap y optimizaciones de caché de bajo nivel elevan la barrera de entrada. Los 40 bugs documentados ilustran la complejidad. | Suites de auditoría automáticas (`cargo test --release`) y documentación técnica en `docs/hardware/`. |
 | **BPE Tokenizer O(n²)** | El tokenizador actual es cuadrático en longitud de entrada (`PERF-05`). Impacto visible en prompts largos. | Migración a priority queue O(n log n) — pendiente. |
@@ -334,4 +338,4 @@ cargo test --release    ✅  21/21 passed, 0 failed
 ---
 
 *Documento generado y mantenido como parte del proceso de auditoría continua del proyecto.*
-*Consistente con el estado del código fuente a fecha 2026-05-26.*
+*Consistente con el estado del código fuente a fecha 2026-05-30.*

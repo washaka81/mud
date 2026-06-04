@@ -1,7 +1,6 @@
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 use std::time::Instant;
-use forge_llm::asm::ternary_gemm_batch4_avx2; // If we want to test AVX2 explicitly
 use forge_llm::asm::ternary_gemv_avx2;
 
 fn main() -> anyhow::Result<()> {
@@ -11,7 +10,7 @@ fn main() -> anyhow::Result<()> {
     println!("============================================================\n");
 
     let vk_context_result = VulkanContext::new();
-    let vk = match vk_context_result {
+    let _vk = match vk_context_result {
         Ok(v) => Arc::new(v),
         Err(e) => {
             println!("❌ Falló la inicialización de Vulkan: {}", e);
@@ -30,13 +29,11 @@ fn main() -> anyhow::Result<()> {
     
     println!("\n📊 Reservando Memoria...");
     let mut weights = vec![0u32; ternary_weights_count];
-    let mut x_cpu = vec![1.0f32; in_dim];
+    let x_cpu = vec![1.0f32; in_dim];
     let mut out_cpu = vec![0.0f32; out_dim];
     
     // Simulate some weights
-    for i in 0..weights.len() {
-        weights[i] = 0xAAAAAAAA; // Pattern
-    }
+    weights.fill(0xAAAAAAAA); // Pattern
 
     println!("   - Matriz de Pesos: {:.2} MB", (weights.len() * 4) as f64 / 1_048_576.0);
     

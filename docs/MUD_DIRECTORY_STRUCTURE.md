@@ -57,13 +57,16 @@ Este es el árbol de directorios oficial del proyecto Forge LLM (MUD). Todos los
 │   └── ...
 │
 ├── docs/                 # Documentación (31+ archivos)
-│   ├── MUD_OVERVIEW.md, MUD_ARCHITECTURE.md, MUD_ROADMAP.md
+│   ├── MUD_OVERVIEW.md, MUD_ARCHITECTURE.md, MUD_ROADMAP.md, MUD_ROADMAP_v4.md
 │   ├── MUD_USER_MANUAL.md, MUD_GUIDELINES.md, MUD_MASTER_MANIFESTO.md
 │   ├── MUD_MOE_EXPERTS.md, MUD_COGNITIVE_ARCH.md, MUD_DATA_ARCHITECTURE.md
 │   ├── MUD_ORCHESTRATION.md, MUD_TRAINING_PROTOCOLS.md, MUD_DELEGATION_ROUTER.md
 │   ├── MUD_SYSTEM_UPGRADE_V1.5.md, MUD_V1_MASTER_REPORT.md
 │   ├── MUD_OPTIMIZATION_ANALYSIS.md, MUD_OPTIMIZATION_LOG.md
 │   ├── MUD_AUDIT_LATEST.md  # Audit consolidado vivo (reemplaza 6 docs históricos)
+│   ├── GITHUB_RUST_PAPERS.md, RESEARCH_PAPERS.md (Índice unificado de 53 papers)
+│   ├── MUD_COMPREHENSIVE_RESEARCH.md (Síntesis de viabilidad de 6 subagentes)
+│   ├── MUD_VS_OXILLAMA.md, RUST_LLM_TERNARY_ECOSYSTEM.md
 │   ├── MUD_AUDIT.md (HISTÓRICO), MUD_AUDIT_REPORT_V1.md (HISTÓRICO)
 │   ├── MUD_AUDIT_RESOLUTION.md (HISTÓRICO), MUD_CONVERSION_AUDIT.md (HISTÓRICO)
 │   ├── MUD_STATISTICAL_AUDIT.md (HISTÓRICO), MUD_MATHEMATICAL_AUDIT.md (HISTÓRICO)
