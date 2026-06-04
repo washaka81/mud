@@ -12,6 +12,7 @@ __pycache__/
 *.pyd
 
 # --- MUD MODELS & DATA (Large Binaries) ---
+models/
 models/*.mud
 models/*.db
 models/*.package
@@ -43,6 +44,8 @@ tests/data/books/
 # --- LOGS & DEBUGGING ---
 logs/
 *.log
+chat_out.txt
+traces.jsonl
 /debug/
 *.disassembly
 mud_disassembly.txt
@@ -73,3 +76,5 @@ kaggle_push/
 kernel-metadata.json
 /vocab_es_en.txt
 training/corpus/*.txt
+training/corpus_backup/
+forge_autograd/target/
