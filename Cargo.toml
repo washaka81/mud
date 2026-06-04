@@ -49,6 +49,7 @@ ratatui = "0.26.1"
 comfy-table = "7.1.0"
 gguf = "0.1.2"
 candle-core = "0.10.2"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [[bin]]
 name = "forge_llm"

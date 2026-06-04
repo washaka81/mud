@@ -22,7 +22,7 @@ The ultimate evolution where MUD ceases to be an application and becomes a found
 ### 1. Fast-Track Intelligence Recovery (Speech Core)
 - [ ] **AWAKE-01: Universal Self-Adjusting Aligner:** Restore speech through iterative passes where MUD **autonomously calculates** its own alignment parameters, precision floors, and convergence targets. No hardcoded constants allowed.
 - [x] **AWAKE-02: Dynamic Autonomy & Telemetry:** Replace the fixed TPS divisor and repetition penalties with values derived from the model's manifold energy and hardware bus capacity.
-- [ ] **AWAKE-03: Real-Time Wave Coherence:** Achieve coherent speech in Spanish and English by aligning the Ternary Student with the Master's logic via dynamic wave synchrony.
+- [x] **AWAKE-03: Real-Time Wave Coherence:** Achieve coherent speech in Spanish and English by aligning the Ternary Student with the Master's logic via dynamic wave synchrony.
 
 ### 2. Validation of the Living Model
 - [ ] **VERIFY-01:** Assert the model speaks with logic and pragmatism in the interactive terminal.
@@ -58,11 +58,11 @@ Implementing next-gen algorithms from ICLR 2026 and major research repositories 
 - [x] **MATH-04: SSM Context Consolidation:** Implement "Context Folding" into persistent fast-weights, eliminating quadratic KV-cache overhead.
 
 ### 2. Declarative Runtime (DSPy-Rust)
-- [ ] **DECL-01: Rust-Native DSPy Runtime:** Transition from raw prompting to **Declarative Signatures**. Define tasks as Rust structs; engine autonomously selects experts and optimizes weights.
+- [x] **DECL-01: Rust-Native DSPy Runtime:** Transition from raw prompting to **Declarative Signatures**. Define tasks as Rust structs; engine autonomously selects experts and optimizes weights.
 - [x] **DECL-02: ALiBi Extrapolation:** Implement **Attention with Linear Biases (ALiBi)** for 256k+ context windows where RoPE may decay on CPUs.
 
 ### 3. Real-Time Adaptation
-- [ ] **ALIGN-02: TTT (Test-Time Training) Layers:** Implement small "on-the-fly" neural networks within hidden states that update during inference.
+- [x] **ALIGN-02: TTT (Test-Time Training) Layers:** Implement small "on-the-fly" neural networks within hidden states that update during inference.
 
 ---
 

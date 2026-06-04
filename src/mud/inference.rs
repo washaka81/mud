@@ -139,6 +139,7 @@ pub struct InferenceWorkspace {
     pub mamba_a_bar: UnifiedBuffer,
     pub mamba_b_bar: UnifiedBuffer,
     pub ttt_states: Vec<UnifiedBuffer>,
+    pub ttt_z: UnifiedBuffer,
     pub ldt_base_state: UnifiedBuffer,
     pub lora_temp: UnifiedBuffer,
     pub routing_indexed: parking_lot::RwLock<Vec<(usize, f32)>>,
@@ -441,6 +442,7 @@ impl InferenceWorkspace {
             mamba_a_bar: init_buf(hidden * d_state),
             mamba_b_bar: init_buf(hidden * d_state),
             ttt_states: (0..num_layers).map(|_| init_buf(hidden * hidden)).collect(),
+            ttt_z: init_buf(hidden),
             ldt_base_state: init_buf(hidden),
             lora_temp: init_buf(256), // Max LoRA rank = 256 for Zero-Allocation
             routing_indexed: parking_lot::RwLock::new(Vec::with_capacity(num_experts)),
@@ -1583,11 +1585,12 @@ impl MudInference {
                             }
                         }
 
-                        let mut z = vec![0.0f32; hidden]; // Small local array, okay for scalar TTT
+                        let mut z_guard = ws.ttt_z.write();
+                        z_guard.fill(0.0);
                         
                         // 1. z = x * W_t
                         unsafe {
-                            for (o, z_val) in z.iter_mut().enumerate().take(hidden) {
+                            for (o, z_val) in z_guard.iter_mut().enumerate().take(hidden) {
                                 let mut sum = 0.0f32;
                                 let w_row = w_t.as_ptr().add(o * hidden);
                                 for i in 0..hidden {
@@ -1600,7 +1603,7 @@ impl MudInference {
                         // 2. Gradient Step: L = ||z - x||^2 -> dL/dW = (z - x) * x^T
                         unsafe {
                             for o in 0..hidden {
-                                let err = z[o] - x_guard[o];
+                                let err = z_guard[o] - x_guard[o];
                                 let w_row = w_t.as_mut_ptr().add(o * hidden);
                                 for i in 0..hidden {
                                     *w_row.add(i) -= layer.eta * err * x_guard[i];
@@ -1610,7 +1613,7 @@ impl MudInference {
                         
                         // 3. Apply Residual
                         for i in 0..hidden {
-                            x_guard[i] += z[i];
+                            x_guard[i] += z_guard[i];
                         }
                     }
                 }
@@ -1914,6 +1917,50 @@ impl MudInference {
         self.embed_token(*tokens.last().unwrap(), x);
     }
 
+    /// DECL-01: DSPy-Rust Runtime Evaluation
+    /// Autonomously selects experts and optimizes generation according to Declarative Signatures
+    pub fn evaluate_signature<T: crate::mud::dspy::DeclarativeSignature>(
+        &mut self,
+        sig: &T,
+        x: &mut [f32],
+        conversation_pos: &mut usize,
+        max_tokens: usize,
+    ) -> Option<T> {
+        // Activate expert if signature requires one
+        let active_skill_indices = if let Some(expert) = T::required_expert() {
+            let mut indices = Vec::new();
+            for (i, skill) in self.skills.iter().enumerate() {
+                if skill.name() == expert {
+                    indices.push(i);
+                }
+            }
+            indices
+        } else {
+            Vec::new()
+        };
+
+        let prompt_text = sig.to_prompt();
+        
+        let tokens = self.tokenizer.encode(&prompt_text);
+        if tokens.is_empty() { return None; }
+        
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..tokens.len() - 1 {
+            self.shift_kv_cache(conversation_pos);
+            self.embed_token(tokens[i], x);
+            self.step(x, &prompt_text, &active_skill_indices, *conversation_pos);
+            *conversation_pos += 1;
+        }
+        self.embed_token(*tokens.last().unwrap(), x);
+        
+        let mut response_str = String::new();
+        self.generate(x, max_tokens, &prompt_text, conversation_pos, 0, |_, text| {
+            response_str.push_str(text);
+        });
+        
+        T::parse_response(&response_str)
+    }
+
     // Sampling hyperparámetros — ajustar aquí afecta toda la generación
     const TEMPERATURE: f32 = 0.7;
     const TOP_P: f32 = 0.9;
@@ -2078,8 +2125,14 @@ impl MudInference {
                         .sum::<f32>() / count as f32;
                     
                     let energy = variance.sqrt(); // Sigma
+                    
+                    // AWAKE-03: Real-Time Wave Coherence
+                    // Inject an organic oscillator into the logic to synchronize ternary boundaries
+                    let wave_phase = (*conversation_pos as f32 * 0.1).sin();
+                    let coherence_mod = 1.0 + (wave_phase * 0.15); 
+                    
                     // Low energy -> High Ambiguity -> High Temp & Penalty to break loop
-                    let temp = (1.5 - (energy / 5.0)).clamp(0.2, 1.2);
+                    let temp = (1.5 - (energy / 5.0)).clamp(0.2, 1.2) * coherence_mod;
                     let rep_pen = (3.5 - (energy / 3.0)).clamp(1.0, 4.0);
                     (temp, rep_pen, energy)
                 } else {

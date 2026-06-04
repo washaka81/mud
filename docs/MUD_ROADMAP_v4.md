@@ -221,8 +221,8 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 - 🖥️ **PC Modesto:** ✅ — Zero heap allocation, `vfmadd231ps` AVX2
 - **Paper:** ALiBi [arXiv:2108.12409](https://arxiv.org/abs/2108.12409)
 
-### ALIGN-02: TTT Layers
-- ⚡ **Factibilidad:** 🔴 Difícil (~20 días)
+### ALIGN-02: TTT Layers (Test-Time Training)
+- ⚡ **Factibilidad:** ✅ COMPLETADO
 - 📊 **Benchmark:** TTT supera Mamba-2 en long-context. Costo: +0.5 GB RAM por capa.
 - 🖥️ **PC Modesto:** ⚠️ — Solo factible para 1-2 capas (no todas las 30). TTT-Linear > TTT-MLP.
 - **Paper:** TTT [arXiv:2407.04620](https://arxiv.org/abs/2407.04620)

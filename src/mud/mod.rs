@@ -2,6 +2,7 @@ use memmap2::Mmap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod dspy;
 pub mod corpus_trainer;
 pub mod inference;
 pub mod routing;
