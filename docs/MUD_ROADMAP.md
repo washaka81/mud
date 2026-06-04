@@ -21,7 +21,7 @@ The ultimate evolution where MUD ceases to be an application and becomes a found
 
 ### 1. Fast-Track Intelligence Recovery (Speech Core)
 - [ ] **AWAKE-01: Universal Self-Adjusting Aligner:** Restore speech through iterative passes where MUD **autonomously calculates** its own alignment parameters, precision floors, and convergence targets. No hardcoded constants allowed.
-- [ ] **AWAKE-02: Dynamic Autonomy & Telemetry:** Replace the fixed TPS divisor and repetition penalties with values derived from the model's manifold energy and hardware bus capacity.
+- [x] **AWAKE-02: Dynamic Autonomy & Telemetry:** Replace the fixed TPS divisor and repetition penalties with values derived from the model's manifold energy and hardware bus capacity.
 - [ ] **AWAKE-03: Real-Time Wave Coherence:** Achieve coherent speech in Spanish and English by aligning the Ternary Student with the Master's logic via dynamic wave synchrony.
 
 ### 2. Validation of the Living Model
@@ -35,7 +35,7 @@ Integrating SOTA 2025-2026 implementations (TRM, GRAM, LDT, BitNet) to decouple 
 
 ### 1. Recursive Latent Feedback (TRM)
 - [x] **RRM-01: Zero-Allocation Feedback Loop:** Modify `InferenceWorkspace` to support cyclical execution. Feed the output latent vector back into `x_moe_norm` or `mamba_conv_state` for $N$ iterations within a single token generation step.
-- [ ] **RRM-02: Latent Imagination (Asynchronous):** Dispatch speculative trajectories to Vulkan Compute Shaders while the CPU maintains the primary deterministic state, implementing multi-threaded reasoning. (**IMPLEMENTADO - POR REVISAR**)
+- [x] **RRM-02: Latent Imagination (Asynchronous):** Dispatch speculative trajectories to Vulkan Compute Shaders while the CPU maintains the primary deterministic state, implementing multi-threaded reasoning.
 
 ### 2. Neuro-Symbolic Logic & Early Exits (LDT)
 - [x] **LDT-01: Lattice Constraint Projections:** Inject validation layers at the end of the TRM loop. Force continuous activations to project onto discrete constraint matrices (logical lattices) to prevent hallucinations.

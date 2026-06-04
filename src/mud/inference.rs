@@ -2026,13 +2026,46 @@ impl MudInference {
                 }
             }
 
+            // AWAKE-02: Dynamic Autonomy & Telemetry
+            let (dynamic_temp, dynamic_rep_penalty, _manifold_energy) = {
+                let logits_guard = ws.logits.read();
+                let mut sum = 0.0;
+                let mut count = 0;
+                let mut max_val = f32::NEG_INFINITY;
+                
+                // Sample a subset to calculate manifold energy efficiently
+                for (_, &l) in logits_guard.iter().enumerate().take(4096) {
+                    if l.is_finite() {
+                        sum += l;
+                        count += 1;
+                        if l > max_val { max_val = l; }
+                    }
+                }
+                
+                if count > 0 {
+                    let mean = sum / count as f32;
+                    let variance = logits_guard.iter().take(4096)
+                        .filter(|&&v| v.is_finite())
+                        .map(|&v| (v - mean).powi(2))
+                        .sum::<f32>() / count as f32;
+                    
+                    let energy = variance.sqrt(); // Sigma
+                    // Low energy -> High Ambiguity -> High Temp & Penalty to break loop
+                    let temp = (1.5 - (energy / 5.0)).clamp(0.2, 1.2);
+                    let rep_pen = (3.5 - (energy / 3.0)).clamp(1.0, 4.0);
+                    (temp, rep_pen, energy)
+                } else {
+                    (Self::TEMPERATURE, 2.0, 0.0)
+                }
+            };
+
             // 2. Cognitive Filtering (Top-K + Strong Repetition)
             {
                 let mut logits_guard = ws.logits.write();
                 for (dist, &prev_id) in results.iter().rev().take(128).enumerate() {
                     let idx = prev_id as usize;
                     if let Some(logit) = logits_guard.get_mut(idx) {
-                        *logit -= 2.0 / (dist as f32 + 1.0).sqrt();
+                        *logit -= dynamic_rep_penalty / (dist as f32 + 1.0).sqrt();
                     }
                 }
                 
@@ -2054,7 +2087,7 @@ impl MudInference {
             {
                 let mut logits_guard = ws.logits.write();
                 for l in &mut *logits_guard {
-                    *l /= Self::TEMPERATURE.max(1e-5);
+                    *l /= dynamic_temp.max(1e-5);
                 }
             }
 
