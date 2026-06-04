@@ -1501,7 +1501,7 @@ impl MudInference {
                     let dynamic_epsilon = self.model.rms_norm_eps * (hidden as f32).sqrt();
 
                     while !ldt_certainty && ldt_iterations < max_ldt_iterations {
-                        self.mamba_step(layer, l, ws);
+                        self.mamba_step(layer, l, ws, _pos);
                         
                         ldt_iterations += 1;
 
@@ -1665,7 +1665,7 @@ impl MudInference {
     }
 
     // INF-04: Added sliding window reset for conversation_pos to prevent OOB when exceeding KV limits.
-    pub fn mamba_step(&self, layer: &MudMambaLayer, l: usize, ws: &InferenceWorkspace) {
+    pub fn mamba_step(&self, layer: &MudMambaLayer, l: usize, ws: &InferenceWorkspace, conversation_pos: usize) {
         let hidden = self.model.hidden_size;
         let d_state = self.model.d_state;
 
@@ -1839,6 +1839,34 @@ impl MudInference {
                 state_ptr,
                 out_ptr,
             );
+        }
+
+        // MATH-03: Complex-valued States (RoPE equivalent directly in SSM continuous space)
+        // Applies a phase rotation to the recurrent state of the SSM embedding position perfectly
+        {
+            let mut cos_table = vec![0.0f32; d_state / 2];
+            let mut sin_table = vec![0.0f32; d_state / 2];
+            let pos = conversation_pos as f32;
+            let base = 10000.0f32;
+            for i in 0..(d_state / 2) {
+                let freq = 1.0 / base.powf((2 * i) as f32 / d_state as f32);
+                let theta = pos * freq;
+                cos_table[i] = theta.cos();
+                sin_table[i] = theta.sin();
+            }
+            
+            unsafe {
+                let mut state_guard = ws.ssm_states[l].write();
+                let state_ptr = state_guard.as_mut_ptr();
+                for i in 0..hidden {
+                    crate::asm::apply_rope_asm(
+                        d_state,
+                        state_ptr.add(i * d_state),
+                        cos_table.as_ptr(),
+                        sin_table.as_ptr(),
+                    );
+                }
+            }
         }
 
         // 6. Gating and Out Projection

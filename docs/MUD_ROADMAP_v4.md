@@ -206,9 +206,9 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 - 🖥️ **PC Modesto:** ✅ — MIMO reduce memoria de estado, no la aumenta
 - **Paper:** Mamba-3 [arXiv:2603.15569](https://arxiv.org/abs/2603.15569)
 - **Sub-tareas:**
-  - **Trapezoidal Discretization** (~3 días): Reemplazar Euler en `mamba_conv_state`
-  - **MIMO SSMs** (~5 días): Vectores completos en lugar de canales escalares
-  - **Complex-valued States** (~4 días): Rotaciones en espacio complejo (equivalente RoPE free)
+  - ✅ **Trapezoidal Discretization** (~3 días): Reemplazar Euler en `mamba_conv_state`
+  - ✅ **MIMO SSMs** (~5 días): Vectores completos en lugar de canales escalares
+  - ✅ **Complex-valued States** (~4 días): Rotaciones en espacio complejo (equivalente RoPE free)
 
 ### MATH-04: SSM Context Consolidation (Context Folding)
 - ⚡ **Factibilidad:** ⚫ Investigación (~30 días)
@@ -216,7 +216,7 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 - 🖥️ **PC Modesto:** ✅ IDEAL — Elimina la mayor fuente de crecimiento de RAM
 
 ### DECL-02: ALiBi Extrapolation
-- ⚡ **Factibilidad:** 🟢 Fácil (~4 días)
+- ⚡ **Factibilidad:** ✅ COMPLETADO
 - 📊 **Benchmark:** ALiBi: contextos 256k+ sin degradación posicional. Costo: 1 multiply-add por celda.
 - 🖥️ **PC Modesto:** ✅ — Zero heap allocation, `vfmadd231ps` AVX2
 - **Paper:** ALiBi [arXiv:2108.12409](https://arxiv.org/abs/2108.12409)
@@ -233,19 +233,19 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 ## 🟢 PHASE EDGE: PC ULTRA-MODESTOS (PRIORIDAD ALTA)
 
 ### EDGE-01: Attention Sinks — Fix KV Cache Reset 🔥
-- ⚡ **Factibilidad:** 🟢 Fácil (~2 días)
+- ⚡ **Factibilidad:** ✅ COMPLETADO
 - 📊 **Benchmark:** Elimina break de coherencia semántica en posición 4000. Costo: 0 RAM.
 - 🖥️ **PC Modesto:** ✅ IDEAL
 - **Paper:** StreamingLLM [arXiv:2309.17453](https://arxiv.org/abs/2309.17453)
 - **Acción:** Retener los primeros **4 sink tokens** permanentemente en posiciones 0-3 del KV cache circular en lugar del hard-reset actual.
 
 ### EDGE-02: Embedding K-Quants (INT4) 🔥
-- ⚡ **Factibilidad:** 🟢 Fácil (~3 días)
+- ⚡ **Factibilidad:** ✅ COMPLETADO
 - 📊 **Benchmark:** 2.18 GB → 0.27 GB (-87%). La compresión más impactante por ratio esfuerzo/resultado.
 - 🖥️ **PC Modesto:** ✅ CRÍTICO — Libera 2 GB, permite cargar modelos en 8 GB RAM
 
 ### EDGE-03: z-loss Router Stability 🔥
-- ⚡ **Factibilidad:** 🟢 Fácil (~1 día) — Una línea en el router forward pass
+- ⚡ **Factibilidad:** ✅ COMPLETADO
 - 📊 **Benchmark:** ST-MoE: mejora de estabilidad más accionable para prevenir logit explosion durante QAT/STE
 - 🖥️ **PC Modesto:** ✅ — Costo: 0 RAM, 1 operación escalar por batch
 - **Paper:** ST-MoE [arXiv:2202.08906](https://arxiv.org/abs/2202.08906)
