@@ -51,15 +51,15 @@ Integrating SOTA 2025-2026 implementations (TRM, GRAM, LDT, BitNet) to decouple 
 Implementing next-gen algorithms from ICLR 2026 and major research repositories (dair-ai, mcd-unison) to maximize reasoning on modest hardware.
 
 ### 1. Mamba-3 & Linear-Recurrent Mastery
-- [ ] **MATH-03: Mamba-3 Integration (ICLR 2026 Breakthrough):**
+- [x] **MATH-03: Mamba-3 Integration (ICLR 2026 Breakthrough):**
     - **Exponential-Trapezoidal Discretization:** Replace Euler discretization to significantly improve continuous dynamics approximation.
     - **MIMO (Multi-Input Multi-Output) SSMs:** Apply recurrence to vector inputs instead of scalars to increase arithmetic intensity on P-cores.
     - **Complex-Valued Dynamics:** Implement RoPE-like rotations within the Mamba state to unlock superior long-context tracking.
-- [ ] **MATH-04: SSM Context Consolidation:** Implement "Context Folding" into persistent fast-weights, eliminating quadratic KV-cache overhead.
+- [x] **MATH-04: SSM Context Consolidation:** Implement "Context Folding" into persistent fast-weights, eliminating quadratic KV-cache overhead.
 
 ### 2. Declarative Runtime (DSPy-Rust)
 - [ ] **DECL-01: Rust-Native DSPy Runtime:** Transition from raw prompting to **Declarative Signatures**. Define tasks as Rust structs; engine autonomously selects experts and optimizes weights.
-- [ ] **DECL-02: ALiBi Extrapolation:** Implement **Attention with Linear Biases (ALiBi)** for 256k+ context windows where RoPE may decay on CPUs.
+- [x] **DECL-02: ALiBi Extrapolation:** Implement **Attention with Linear Biases (ALiBi)** for 256k+ context windows where RoPE may decay on CPUs.
 
 ### 3. Real-Time Adaptation
 - [ ] **ALIGN-02: TTT (Test-Time Training) Layers:** Implement small "on-the-fly" neural networks within hidden states that update during inference.
@@ -92,8 +92,8 @@ Refactored engine for pure, high-fidelity model inference.
 ## 🟢 MODEST HARDWARE (PC-LOCAL) OPTIMIZATION PARADIGMS (2025-2026 STANDARD)
 - [x] **Multiplication-Free GEMM:** AVX2 Add/Sub for Ternary weights.
 - [x] **Hybrid SSM (Mamba):** Constant memory context scaling.
-- [ ] **Attention Sinks:** Permanent pinning of the first 4 tokens for softmax stability.
-- [ ] **Embedding K-Quants:** Quantize 152k vocab table from FP32 (2.18GB) to INT4 (0.27GB).
+- [x] **Attention Sinks:** Permanent pinning of the first 4 tokens for softmax stability.
+- [x] **Embedding K-Quants:** Quantize 152k vocab table from FP32 (2.18GB) to INT4 (0.27GB).
 - [ ] **MUD-Executable (Llamafile Style):** Single-file portability, zero dependencies.
 - [ ] **Local "Hub & Spoke" API:** Serve model to local devices via WiFi mesh.
 
