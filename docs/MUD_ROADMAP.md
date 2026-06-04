@@ -43,7 +43,7 @@ Integrating SOTA 2025-2026 implementations (TRM, GRAM, LDT, BitNet) to decouple 
 
 ### 3. BitNet ($1.58\text{-bit}$) Extreme SIMD Validation
 - [x] **BIT-01: Ultimate Bit-Packing:** Audit the current BMI2 `pack_ternary_row` kernel against the official BitNet/llama.cpp implementations. Ensure memory layout achieves the absolute maximum density for AVX2 cache lines.
-- [ ] **BIT-02: Q-Head Routing (GRAM):** Implement Stochastic Q-heads within the MoE gating mechanism to explore probabilistic paths when exact LDT rules aren't strictly required. (**PRÓXIMO PASO**)
+- [x] **BIT-02: Q-Head Routing (GRAM):** Implement Stochastic Q-heads within the MoE gating mechanism to explore probabilistic paths when exact LDT rules aren't strictly required.
 
 ---
 

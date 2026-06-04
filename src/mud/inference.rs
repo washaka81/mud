@@ -1324,7 +1324,16 @@ impl MudInference {
                                 let gate_logits_guard = ws.gate_logits.read();
                                 let mut indexed = ws.routing_indexed.write();
                                 let mut results = ws.routing_results.write();
-                                let z_loss = layer.router.route_in_place(&gate_logits_guard, &mut indexed, &mut results);
+                                
+                                let z_loss = if ldt_iterations > 0 {
+                                    // BIT-02: Q-Head Routing (GRAM)
+                                    // Inject stochastic noise when LDT certainty is low, breaking deterministic loops
+                                    let seed = (l as u32).wrapping_add(ldt_iterations as u32).wrapping_mul(1013904223);
+                                    layer.router.route_by_q_head(&gate_logits_guard, 0.05, seed, &mut indexed, &mut results)
+                                } else {
+                                    layer.router.route_in_place(&gate_logits_guard, &mut indexed, &mut results)
+                                };
+                                
                                 *ws.routing_z_loss.lock() += z_loss;
                                 layer.router.evaluate_ldt_certainty(&results)
                             };
