@@ -1,0 +1,8 @@
+#!/usr/bin/expect -f
+set timeout 10
+spawn ./mud.sh chat models/core_skills.mud --cpu
+expect "YOU ❯"
+send "hola\r"
+expect "YOU ❯"
+send "/exit\r"
+expect eof
