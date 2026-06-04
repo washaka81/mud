@@ -59,6 +59,10 @@ name = "model_dumper"
 path = "tools/model_dumper.rs"
 
 [[bin]]
+name = "phase14_audit"
+path = "tools/phase14_audit.rs"
+
+[[bin]]
 name = "tokenizer_audit"
 path = "tools/tokenizer_audit.rs"
 
