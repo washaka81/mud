@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::gguf::{GGUFModel, MetadataValue};
+use std::collections::HashMap;
 
 /// Implementation of a BPE (Byte Pair Encoding) tokenizer.
 /// Compatible with Transformer-Base, Code, and Core style tokenization.
@@ -23,20 +23,24 @@ impl Tokenizer {
     pub fn from_mud_metadata(tokens_str: &str, merges_str: &str) -> Self {
         let mut id_to_token = Vec::new();
         let mut vocab = HashMap::new();
-        
+
         // Autodetect separator: prefer \n, fallback to ,
         let sep = if tokens_str.contains('\n') { '\n' } else { ',' };
-        
+
         for (i, t) in tokens_str.split(sep).enumerate() {
             let clean_t = t.trim();
-            if clean_t.is_empty() && i > 0 { continue; }
+            if clean_t.is_empty() && i > 0 {
+                continue;
+            }
             id_to_token.push(clean_t.to_string());
             vocab.insert(clean_t.to_string(), i as u32);
         }
 
         let mut merges = HashMap::new();
         for (rank, m) in merges_str.split('\n').enumerate() {
-            if m.is_empty() { continue; }
+            if m.is_empty() {
+                continue;
+            }
             let parts: Vec<&str> = m.split(' ').collect();
             if parts.len() == 2 {
                 merges.insert((parts[0].to_string(), parts[1].to_string()), rank as u32);
@@ -49,15 +53,17 @@ impl Tokenizer {
 
         for (i, t) in id_to_token.iter().enumerate() {
             // 1. Detect standard special control marks
-            if (t.starts_with('<') && t.ends_with('>')) || (t.starts_with('[') && t.ends_with(']')) {
+            if (t.starts_with('<') && t.ends_with('>')) || (t.starts_with('[') && t.ends_with(']'))
+            {
                 special_tokens.insert(t.clone(), i as u32);
             }
-            
+
             // 2. Count space prefix representations to determine concordance
             if t.contains('Ġ') {
                 count_gpt_space += 1;
             }
-            if t.contains('\u{2581}') { // SentencePiece space prefix (U+2581)
+            if t.contains('\u{2581}') {
+                // SentencePiece space prefix (U+2581)
                 count_sp_space += 1;
             }
         }
@@ -69,9 +75,9 @@ impl Tokenizer {
         } else {
             None
         };
-        
-            // Space prefix auto-detected — silenced
-            // Special control marks auto-detected — silenced
+
+        // Space prefix auto-detected — silenced
+        // Special control marks auto-detected — silenced
 
         Self {
             vocab,
@@ -85,12 +91,13 @@ impl Tokenizer {
 
     /// Loads the tokenizer vocabulary and merges from a GGUF model.
     pub fn from_gguf(model: &GGUFModel) -> anyhow::Result<Self> {
-        let tokens_val = model.get_metadata_array("tokenizer.ggml.tokens")
+        let tokens_val = model
+            .get_metadata_array("tokenizer.ggml.tokens")
             .ok_or_else(|| anyhow::anyhow!("No tokens found in GGUF"))?;
-        
+
         let mut vocab = HashMap::with_capacity(tokens_val.len());
         let mut id_to_token = Vec::with_capacity(tokens_val.len());
-        
+
         for (i, val) in tokens_val.iter().enumerate() {
             if let MetadataValue::String(s) = val {
                 vocab.insert(s.clone(), i as u32);
@@ -105,10 +112,11 @@ impl Tokenizer {
                 special_tokens.insert(token.clone(), i as u32);
             }
         }
-        
-        let merges_val = model.get_metadata_array("tokenizer.ggml.merges")
+
+        let merges_val = model
+            .get_metadata_array("tokenizer.ggml.merges")
             .ok_or_else(|| anyhow::anyhow!("No merges found in GGUF"))?;
-            
+
         let mut merges = HashMap::with_capacity(merges_val.len());
         for (rank, val) in merges_val.iter().enumerate() {
             if let MetadataValue::String(s) = val {
@@ -118,12 +126,16 @@ impl Tokenizer {
                 }
             }
         }
-        
+
         let mut count_gpt_space = 0;
         let mut count_sp_space = 0;
         for token in &id_to_token {
-            if token.contains('Ġ') { count_gpt_space += 1; }
-            if token.contains('\u{2581}') { count_sp_space += 1; }
+            if token.contains('Ġ') {
+                count_gpt_space += 1;
+            }
+            if token.contains('\u{2581}') {
+                count_sp_space += 1;
+            }
         }
         let space_char = if count_sp_space > count_gpt_space {
             Some('\u{2581}')
@@ -133,9 +145,9 @@ impl Tokenizer {
             None
         };
 
-        Ok(Self { 
-            vocab, 
-            id_to_token, 
+        Ok(Self {
+            vocab,
+            id_to_token,
             merges,
             special_tokens,
             byte_encoder: bytes_to_unicode(),
@@ -146,10 +158,12 @@ impl Tokenizer {
     /// Encodes a string into a list of token IDs.
     /// Handles special tokens first, then applies BPE. Falls back to character-level IDs if needed.
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        if text.is_empty() { return vec![]; }
-        
+        if text.is_empty() {
+            return vec![];
+        }
+
         let mut final_tokens = Vec::new();
-        
+
         // 1. Handle special tokens
         let mut parts = vec![text.to_string()];
         for special in self.special_tokens.keys() {
@@ -160,8 +174,12 @@ impl Tokenizer {
                 } else {
                     let split: Vec<_> = part.split(special).collect();
                     for (i, s) in split.iter().enumerate() {
-                        if !s.is_empty() { new_parts.push(s.to_string()); }
-                        if i < split.len() - 1 { new_parts.push(special.clone()); }
+                        if !s.is_empty() {
+                            new_parts.push(s.to_string());
+                        }
+                        if i < split.len() - 1 {
+                            new_parts.push(special.clone());
+                        }
                     }
                 }
             }
@@ -174,7 +192,7 @@ impl Tokenizer {
             } else {
                 // 2. Standard BPE process
                 let mut tokens = self.encode_bpe(&part);
-                
+
                 // 3. ROBUST FALLBACK: If BPE failed to produce tokens for this part, use byte/char IDs
                 if tokens.is_empty() && !part.trim().is_empty() {
                     for b in part.as_bytes() {
@@ -193,19 +211,22 @@ impl Tokenizer {
         let mut tokens = Vec::new();
         let bytes = text.as_bytes();
         // Pre-tokenization: map bytes to special unicode characters
-        let mut words: Vec<String> = bytes.iter()
+        let mut words: Vec<String> = bytes
+            .iter()
             .map(|&b| self.byte_encoder.get(&b).unwrap().to_string())
             .collect();
-        
-        if words.is_empty() { return vec![]; }
-        
+
+        if words.is_empty() {
+            return vec![];
+        }
+
         // Iteratively merge the best pairs according to the merge ranks
         loop {
             let mut best_pair: Option<(String, String)> = None;
             let mut best_rank = u32::MAX;
-            
+
             for i in 0..words.len().saturating_sub(1) {
-                let pair = (words[i].clone(), words[i+1].clone());
+                let pair = (words[i].clone(), words[i + 1].clone());
                 if let Some(&rank) = self.merges.get(&pair) {
                     if rank < best_rank {
                         best_rank = rank;
@@ -213,12 +234,12 @@ impl Tokenizer {
                     }
                 }
             }
-            
+
             if let Some(pair) = best_pair {
                 let mut new_words = Vec::new();
                 let mut i = 0;
                 while i < words.len() {
-                    if i < words.len() - 1 && words[i] == pair.0 && words[i+1] == pair.1 {
+                    if i < words.len() - 1 && words[i] == pair.0 && words[i + 1] == pair.1 {
                         new_words.push(format!("{}{}", pair.0, pair.1));
                         i += 2;
                     } else {
@@ -231,7 +252,7 @@ impl Tokenizer {
                 break;
             }
         }
-        
+
         for w in words {
             if let Some(&id) = self.vocab.get(&w) {
                 tokens.push(id);
@@ -248,13 +269,15 @@ impl Tokenizer {
                 raw_text.push_str(token);
             }
         }
-        
-        if raw_text.is_empty() { return String::new(); }
+
+        if raw_text.is_empty() {
+            return String::new();
+        }
 
         // Reverse the mapping of bytes to unicode escape characters
-        let byte_decoder: HashMap<char, u8> = self.byte_encoder.iter()
-            .map(|(&b, &c)| (c, b)).collect();
-            
+        let byte_decoder: HashMap<char, u8> =
+            self.byte_encoder.iter().map(|(&b, &c)| (c, b)).collect();
+
         let mut decoded_bytes = Vec::new();
         for c in raw_text.chars() {
             if let Some(sc) = self.space_char {
@@ -263,7 +286,7 @@ impl Tokenizer {
                     continue;
                 }
             }
-            
+
             if let Some(&b) = byte_decoder.get(&c) {
                 decoded_bytes.push(b);
             } else {
@@ -274,7 +297,7 @@ impl Tokenizer {
                 }
             }
         }
-        
+
         String::from_utf8_lossy(&decoded_bytes).into_owned()
     }
 }
@@ -285,7 +308,7 @@ fn bytes_to_unicode() -> HashMap<u8, char> {
     let mut bs: Vec<u8> = (b'!'..=b'~').collect();
     bs.extend(0xA1..=0xAC_u8);
     bs.extend(0xAE..=0xFF_u8);
-    
+
     let mut cs: Vec<u32> = bs.iter().map(|&b| b as u32).collect();
     let mut n = 0;
     for b in 0..=255 {
@@ -295,7 +318,7 @@ fn bytes_to_unicode() -> HashMap<u8, char> {
             n += 1;
         }
     }
-    
+
     let mut map = HashMap::new();
     for (b, c) in bs.into_iter().zip(cs.into_iter()) {
         map.insert(b, std::char::from_u32(c).unwrap());

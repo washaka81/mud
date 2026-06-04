@@ -7,7 +7,9 @@ pub struct LanguageSkill {
 
 impl LanguageSkill {
     pub fn new(lang_id: &str) -> Self {
-        Self { lang_id: lang_id.to_string() }
+        Self {
+            lang_id: lang_id.to_string(),
+        }
     }
 }
 

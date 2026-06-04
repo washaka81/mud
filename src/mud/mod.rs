@@ -1,15 +1,12 @@
+use memmap2::Mmap;
 use std::collections::HashMap;
 use std::sync::Arc;
-use memmap2::Mmap;
 
-pub mod routing;
-pub mod inference;
-pub mod skills;
-pub mod ingester;
-pub mod store;
-pub mod graph;
-pub mod auto_trainer;
 pub mod corpus_trainer;
+pub mod inference;
+pub mod routing;
+pub mod skills;
+pub mod speculative;
 
 /// MUD: Modular Understanding Dynamics
 /// File version 1.0
@@ -20,6 +17,7 @@ pub enum MudTensorType {
     Ternary2Bit = 0,
     Float32 = 1,
     Float16 = 2,
+    Int4 = 3,
 }
 
 #[derive(Clone)]
@@ -50,11 +48,12 @@ pub struct MudFile {
 
 impl MudFile {
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
-        use std::io::Write;
+        use byteorder::{LittleEndian, WriteBytesExt};
         use std::fs::File;
-        use byteorder::{WriteBytesExt, LittleEndian};
+        use std::io::Write;
 
-        let mut file = File::create(path)?;
+        let temp_path = format!("{}.tmp", path);
+        let mut file = File::create(&temp_path)?;
         file.write_all(MUD_MAGIC)?;
 
         file.write_u32::<LittleEndian>(self.global_metadata.len() as u32)?;
@@ -75,7 +74,7 @@ impl MudFile {
         }
 
         file.write_u32::<LittleEndian>(all_tensors.len() as u32)?;
-        
+
         let mut tensor_bytes = Vec::new();
         let mut header_data = Vec::new();
 
@@ -89,7 +88,7 @@ impl MudFile {
             for &d in &tensor.shape {
                 header_data.write_u64::<LittleEndian>(d as u64)?;
             }
-            
+
             let size = if let Some(owned) = &tensor.owned_data {
                 let s = owned.len();
                 tensor_bytes.push(owned.clone());
@@ -100,6 +99,7 @@ impl MudFile {
                     MudTensorType::Ternary2Bit => elements.div_ceil(16) * 4,
                     MudTensorType::Float32 => elements * 4,
                     MudTensorType::Float16 => elements * 2,
+                    MudTensorType::Int4 => elements.div_ceil(2),
                 };
                 let slice = unsafe { std::slice::from_raw_parts(tensor.data_ptr, s) };
                 tensor_bytes.push(slice.to_vec());
@@ -119,6 +119,10 @@ impl MudFile {
             file.write_all(&data)?;
         }
 
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, path)?;
+
         Ok(())
     }
 
@@ -127,7 +131,9 @@ impl MudFile {
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
         let mut pos = 0;
 
-        if &mmap[pos..pos + 4] != MUD_MAGIC { anyhow::bail!("Invalid MUD magic number"); }
+        if &mmap[pos..pos + 4] != MUD_MAGIC {
+            anyhow::bail!("Invalid MUD magic number");
+        }
         pos += 4;
 
         let meta_count = u32::from_le_bytes(mmap[pos..pos + 4].try_into()?) as usize;
@@ -156,7 +162,10 @@ impl MudFile {
             let t_type_raw = u32::from_le_bytes(mmap[pos..pos + 4].try_into()?);
             pos += 4;
             let t_type = match t_type_raw {
-                0 => MudTensorType::Ternary2Bit, 1 => MudTensorType::Float32, 2 => MudTensorType::Float16,
+                0 => MudTensorType::Ternary2Bit,
+                1 => MudTensorType::Float32,
+                2 => MudTensorType::Float16,
+                3 => MudTensorType::Int4,
                 _ => anyhow::bail!("Unsupported MUD tensor type: {}", t_type_raw),
             };
             let n_dims = u32::from_le_bytes(mmap[pos..pos + 4].try_into()?) as usize;
@@ -168,41 +177,82 @@ impl MudFile {
             }
             let offset = u64::from_le_bytes(mmap[pos..pos + 8].try_into()?) as usize;
             pos += 8;
-            tensors.insert(name.clone(), MudTensor { 
-                name, t_type, shape, data_ptr: std::ptr::null(), offset, mmap: Some(mmap.clone()), owned_data: None,
-            });
+            tensors.insert(
+                name.clone(),
+                MudTensor {
+                    name,
+                    t_type,
+                    shape,
+                    data_ptr: std::ptr::null(),
+                    offset,
+                    mmap: Some(mmap.clone()),
+                    owned_data: None,
+                },
+            );
         }
 
         let data_start = (pos + 31) & !31;
         let mmap_len = mmap.len();
         for tensor in tensors.values_mut() {
-            let ptr_offset = data_start.checked_add(tensor.offset)
+            let ptr_offset = data_start
+                .checked_add(tensor.offset)
                 .expect("load: data_start + tensor.offset overflow");
-            assert!(ptr_offset < mmap_len, "load: offset 0x{:x} fuera del mmap (len=0x{:x})", ptr_offset, mmap_len);
+            assert!(
+                ptr_offset < mmap_len,
+                "load: offset 0x{:x} fuera del mmap (len=0x{:x})",
+                ptr_offset,
+                mmap_len
+            );
             tensor.data_ptr = unsafe { mmap.as_ptr().add(ptr_offset) };
         }
 
         let mut skills = HashMap::new();
-        skills.insert("core".to_string(), MudSkill { name: "core".to_string(), tensors, metadata: HashMap::new() });
-        Ok(Self { mmap: Some(mmap), skills, global_metadata })
+        skills.insert(
+            "core".to_string(),
+            MudSkill {
+                name: "core".to_string(),
+                tensors,
+                metadata: HashMap::new(),
+            },
+        );
+        Ok(Self {
+            mmap: Some(mmap),
+            skills,
+            global_metadata,
+        })
     }
 
     pub fn get_tensor_ternary(&self, skill: &str, name: &str) -> Option<*const u32> {
-        self.skills.get(skill)?.tensors.get(name).filter(|t| t.t_type == MudTensorType::Ternary2Bit).map(|t| t.data_ptr as *const u32)
+        self.skills
+            .get(skill)?
+            .tensors
+            .get(name)
+            .filter(|t| t.t_type == MudTensorType::Ternary2Bit)
+            .map(|t| t.data_ptr as *const u32)
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn dequantize_ternary_row(packed: *const u32, out: &mut [f32], n: usize) {
     // Guarda: out debe tener al menos n elementos
-    debug_assert!(out.len() >= n, "dequantize_ternary_row: out.len()={} < n={}", out.len(), n);
-    let u32_count = n / 16;        // bloques completos
-    let remainder = n % 16;        // elementos residuales (sin bloque completo)
+    debug_assert!(
+        out.len() >= n,
+        "dequantize_ternary_row: out.len()={} < n={}",
+        out.len(),
+        n
+    );
+    let u32_count = n / 16; // bloques completos
+    let remainder = n % 16; // elementos residuales (sin bloque completo)
     unsafe {
         for i in 0..u32_count {
             let val = *packed.add(i);
             for j in 0..16 {
                 let bits = (val >> (j * 2)) & 3;
-                out[i * 16 + j] = match bits { 1 => 1.0, 2 => -1.0, _ => 0.0 };
+                out[i * 16 + j] = match bits {
+                    1 => 1.0,
+                    2 => -1.0,
+                    _ => 0.0,
+                };
             }
         }
         // Desempaqueta los bits residuales del bloque parcial final
@@ -210,7 +260,11 @@ pub unsafe fn dequantize_ternary_row(packed: *const u32, out: &mut [f32], n: usi
             let val = *packed.add(u32_count);
             for j in 0..remainder {
                 let bits = (val >> (j * 2)) & 3;
-                out[u32_count * 16 + j] = match bits { 1 => 1.0, 2 => -1.0, _ => 0.0 };
+                out[u32_count * 16 + j] = match bits {
+                    1 => 1.0,
+                    2 => -1.0,
+                    _ => 0.0,
+                };
             }
         }
     }

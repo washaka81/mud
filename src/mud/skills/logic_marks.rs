@@ -2,5 +2,7 @@
 pub struct LogicMarkSkill;
 
 impl crate::mud::skills::MudSkill for LogicMarkSkill {
-    fn name(&self) -> &str { "logic_marks" }
+    fn name(&self) -> &str {
+        "logic_marks"
+    }
 }

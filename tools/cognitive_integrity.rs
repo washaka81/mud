@@ -1,4 +1,4 @@
-use forge_llm::mud::{MudFile, inference::MudInference};
+use forge_llm::mud::{inference::MudInference, MudFile};
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,27 +12,40 @@ const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
 fn main() -> anyhow::Result<()> {
-    println!("{}=================================================={}", BOLD, RESET);
-    println!("{}🧠  MUD ENGINE END-TO-END COGNITIVE INTEGRITY AUDIT 🧠{}", BOLD, RESET);
-    println!("{}=================================================={}", BOLD, RESET);
+    println!(
+        "{}=================================================={}",
+        BOLD, RESET
+    );
+    println!(
+        "{}🧠  MUD ENGINE END-TO-END COGNITIVE INTEGRITY AUDIT 🧠{}",
+        BOLD, RESET
+    );
+    println!(
+        "{}=================================================={}",
+        BOLD, RESET
+    );
 
-    let model_path = std::env::args().nth(1).unwrap_or_else(|| "models/core_skills.mud".to_string());
-    println!("{}   🔍 Loading MUD Model from: {}{}{}", CYAN, BOLD, model_path, RESET);
+    let model_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "models/core_skills.mud".to_string());
+    println!(
+        "{}   🔍 Loading MUD Model from: {}{}{}",
+        CYAN, BOLD, model_path, RESET
+    );
     let mud_file = MudFile::load(&model_path)?;
 
     println!("{}   ⚡ Initializing Vulkan Context...{}", CYAN, RESET);
     let vk = Arc::new(vulkan_context_or_dummy());
 
-    println!("{}   ⚙️  Initializing MudInference Engine...{}", CYAN, RESET);
+    println!(
+        "{}   ⚙️  Initializing MudInference Engine...{}",
+        CYAN, RESET
+    );
     let mut engine = MudInference::new(&mud_file, Some(vk))?;
     println!("{}   ✅ Engine initialized successfully.{}", GREEN, RESET);
 
     // List of test prompts to evaluate coherence
-    let test_prompts = vec![
-        "whats",
-        "me gusta cha cha",
-        "¿Qué es MUD?",
-    ];
+    let test_prompts = vec!["whats", "me gusta cha cha", "¿Qué es MUD?"];
 
     println!("\n{}--- COGNITIVE RESPONSE EVALUATION ---{}", BOLD, RESET);
 
@@ -49,10 +62,12 @@ fn main() -> anyhow::Result<()> {
         println!("   Processed prompt in: {:.2?}", prompt_duration);
 
         let start_gen = Instant::now();
-        let (tokens, used_knowledge) = engine.generate(&x, 30, prompt, &mut conversation_pos);
+        let (tokens, used_knowledge) =
+            engine.generate(&x, 30, prompt, &mut conversation_pos, 0, |_, _| {});
         let gen_duration = start_gen.elapsed();
 
-        let generated_text = tokens.iter()
+        let generated_text = tokens
+            .iter()
             .map(|&id| engine.tokenizer.decode(&[id]))
             .collect::<Vec<_>>()
             .join(" ");
@@ -68,11 +83,11 @@ fn main() -> anyhow::Result<()> {
         // 1. Repetitive Loop Audit (hene or Hin loops)
         let contains_hene = generated_text.to_lowercase().contains("hene");
         let contains_hin = generated_text.to_lowercase().contains("hin");
-        
+
         let loop_detected = if tokens.len() >= 6 {
             let mut found_loop = false;
             for i in 0..tokens.len() - 4 {
-                if tokens[i] == tokens[i+2] && tokens[i+1] == tokens[i+3] {
+                if tokens[i] == tokens[i + 2] && tokens[i + 1] == tokens[i + 3] {
                     found_loop = true;
                     break;
                 }
@@ -85,18 +100,33 @@ fn main() -> anyhow::Result<()> {
         let status = if contains_hene || contains_hin || loop_detected {
             format!("{}❌ COLLAPSED (Repetition Detected){}", RED, RESET)
         } else if tokens.is_empty() {
-            format!("{}⚠️  EMPTY RESPONSE (Weak or Flat Weights){}", YELLOW, RESET)
+            format!(
+                "{}⚠️  EMPTY RESPONSE (Weak or Flat Weights){}",
+                YELLOW, RESET
+            )
         } else {
-            format!("{}✅ COHERENT & STABLE (Cognitive Cohesion OK){}", GREEN, RESET)
+            format!(
+                "{}✅ COHERENT & STABLE (Cognitive Cohesion OK){}",
+                GREEN, RESET
+            )
         };
 
         println!("   Cognitive Coherence Status: {}", status);
         println!("   --------------------------------------------------");
     }
 
-    println!("\n{}=================================================={}", BOLD, RESET);
-    println!("{}🎉 END-TO-END COGNITIVE INTEGRITY AUDIT COMPLETE 🎉{}", BOLD, RESET);
-    println!("{}=================================================={}", BOLD, RESET);
+    println!(
+        "\n{}=================================================={}",
+        BOLD, RESET
+    );
+    println!(
+        "{}🎉 END-TO-END COGNITIVE INTEGRITY AUDIT COMPLETE 🎉{}",
+        BOLD, RESET
+    );
+    println!(
+        "{}=================================================={}",
+        BOLD, RESET
+    );
 
     Ok(())
 }

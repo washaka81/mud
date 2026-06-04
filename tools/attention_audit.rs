@@ -1,13 +1,13 @@
-use forge_llm::mud::MudFile;
 use forge_llm::mud::inference::MudInference;
+use forge_llm::mud::MudFile;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     let model_path = "models/core_skills.mud";
-    if !std::path::Path::new(model_path).exists() { 
+    if !std::path::Path::new(model_path).exists() {
         println!("MUD model not found at {}", model_path);
-        return Ok(()); 
+        return Ok(());
     }
 
     println!("=== MUD Attention & Working Memory Audit ===");
@@ -16,18 +16,34 @@ fn main() -> anyhow::Result<()> {
     let mut engine = MudInference::new(&mud_file, Some(vk))?;
 
     let hidden = engine.model.hidden_size;
-    
+
     println!("\n[1. Working Memory (KV Cache) Trace]");
     println!("  Hidden Size: {}, Context Window: 2048", hidden);
-    
+
     let mut x = vec![1.0f32; hidden];
-    
+
     println!("  --- Initializing state (Prompt Priming Simulation) ---");
     // Simulate processing 5 tokens
     for pos in 0..5 {
         engine.step(&mut x, "audit", &[], pos);
-        let mag = x.iter().map(|v| v*v).sum::<f32>().sqrt();
-        println!("  Pos {}: Output Magnitude = {:.4}", pos, mag);
+        let mag = x.iter().map(|v| v * v).sum::<f32>().sqrt();
+
+        let layer_type = if engine
+            .model
+            .layers
+            .first()
+            .map(|l| matches!(l, forge_llm::mud::inference::MudLayer::Mamba(_)))
+            .unwrap_or(false)
+        {
+            "Mamba/SSM"
+        } else {
+            "Attention"
+        };
+
+        println!(
+            "  Pos {}: Output Magnitude = {:.4} (L0 Type: {})",
+            pos, mag, layer_type
+        );
     }
 
     println!("\n[2. Attention Scaling & GQA]");
@@ -49,6 +65,10 @@ fn main() -> anyhow::Result<()> {
 struct HeadSize;
 impl HeadSize {
     fn calculate(hidden: usize) -> usize {
-        if hidden.is_multiple_of(64) { 64 } else { 32 }
+        if hidden.is_multiple_of(64) {
+            64
+        } else {
+            32
+        }
     }
 }

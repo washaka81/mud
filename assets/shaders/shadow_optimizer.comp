@@ -1,0 +1,42 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// 🚀 EDGE-07: VULKAN ZERO-COPY OPTIMIZER (L-QAT)
+// Applies Stochastic Gradient Descent (SGD) with Weight Decay to FP32 shadow weights.
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer ShadowWeights { float shadow_w[]; };
+layout(std430, set = 0, binding = 1) buffer Gradients { float grad_w[]; };
+layout(std430, set = 0, binding = 2) buffer PrqScales { float scales[]; };
+layout(std430, set = 0, binding = 3) buffer OutputTernary { uint packed_w[]; }; // The 1.58-bit destination
+
+layout(push_constant) uniform PushConstants {
+    uint total_elements;
+    uint cols;          // Columns per row to update PRQ Scales
+    float learning_rate;
+    float weight_decay; // Lambda (λ) for homeostasis
+} pcs;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pcs.total_elements) return;
+
+    uint row = idx / pcs.cols;
+    
+    // 1. Load shadow weight and gradient
+    float w = shadow_w[idx];
+    float g = grad_w[idx];
+    
+    // 2. Apply Weight Decay (L2 Regularization equivalent)
+    w = w * (1.0 - pcs.learning_rate * pcs.weight_decay);
+    
+    // 3. Apply Gradient Descent
+    w = w - (pcs.learning_rate * g);
+    
+    // 4. Save updated shadow weight
+    shadow_w[idx] = w;
+    
+    // [Note: Re-packing into OutputTernary (packed_w) and updating PRQ scales
+    // will be handled in a secondary subgroup pass to avoid atomics across rows].
+}

@@ -16,7 +16,9 @@ impl Default for MemorySkill {
 
 impl MemorySkill {
     pub fn new() -> Self {
-        Self { history_file: "models/conversation_history.txt".to_string() }
+        Self {
+            history_file: "models/conversation_history.txt".to_string(),
+        }
     }
 
     /// Appends a user/assistant pair to the local history file.
@@ -26,7 +28,7 @@ impl MemorySkill {
             .append(true)
             .open(&self.history_file)
             .unwrap();
-        
+
         let _ = writeln!(file, "User: {}\nMUD: {}\n---", user, assistant);
     }
 }

@@ -66,8 +66,10 @@ impl MudSkill for AutoformatterSkill {
         }
 
         // 4. Global replacements (example)
-        let processed = result.replace("mud", "MUD").replace("forge llm", "Forge LLM");
-        
+        let processed = result
+            .replace("mud", "MUD")
+            .replace("forge llm", "Forge LLM");
+
         *text = processed;
     }
 }

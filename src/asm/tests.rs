@@ -157,12 +157,12 @@ fn test_rms_norm_scale_zero_input() {
 #[test]
 fn test_sum_squares_edge_cases() {
     // Single element (kernel may process in batches, but should handle small sizes)
-    let x = vec![4.0f32; 32];
+    let x = [4.0f32; 32];
     let result = unsafe { sum_squares_avx2(32, x.as_ptr()) };
     assert!((result - 32.0 * 16.0).abs() < 1e-3, "sum_squares 32 elements: {}", result);
 
     // Large values (check relative error within f32 precision)
-    let x = vec![1000.0f32; 64];
+    let x = [1000.0f32; 64];
     let result = unsafe { sum_squares_avx2(64, x.as_ptr()) };
     let expected = 64.0 * 1_000_000.0;
     let rel_err = (result - expected).abs() / expected;
@@ -218,9 +218,9 @@ fn bench_ternary_gemv_comparison() {
 
     // Benchmark single-row
     let start_single = std::time::Instant::now();
-    for i in 0..1024 {
+    for (i, out_val) in out.iter_mut().enumerate().take(1024) {
         unsafe {
-            ternary_gemv_avx2(n, x.as_ptr(), packed_weights.as_ptr().add(i * stride), &mut out[i], scale);
+            ternary_gemv_avx2(n, x.as_ptr(), packed_weights.as_ptr().add(i * stride), out_val, scale);
         }
     }
     let duration_single = start_single.elapsed();

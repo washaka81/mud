@@ -27,8 +27,16 @@ impl MudSkill for TranslationSkill {
     }
 
     fn should_activate(&self, _x: &[f32], context: &str) -> bool {
-        let translation_keywords = ["translate", "to english", "en español", "to spanish", "language"];
-        translation_keywords.iter().any(|&k| context.to_lowercase().contains(k))
+        let translation_keywords = [
+            "translate",
+            "to english",
+            "en español",
+            "to spanish",
+            "language",
+        ];
+        translation_keywords
+            .iter()
+            .any(|&k| context.to_lowercase().contains(k))
     }
 
     fn route_bias(&self, _logits: &mut [f32]) {
@@ -36,7 +44,7 @@ impl MudSkill for TranslationSkill {
     }
 
     fn post_process_token(&self, _text: &mut String) {
-        // If the target language is different from detected, 
+        // If the target language is different from detected,
         // we could apply specific grammatical rules here.
         let target = self.target_lang.read().unwrap();
         if *target == "en" {

@@ -8,7 +8,9 @@ pub struct PersonalitySkill {
 
 impl PersonalitySkill {
     pub fn new(identity: &str) -> Self {
-        Self { identity: identity.to_string() }
+        Self {
+            identity: identity.to_string(),
+        }
     }
 }
 

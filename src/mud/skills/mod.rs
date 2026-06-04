@@ -1,5 +1,5 @@
 /// Definition of a MUD Modular Skill.
-/// A Skill is an intrinsic capability that can influence the engine's 
+/// A Skill is an intrinsic capability that can influence the engine's
 /// routing, processing, and output.
 pub trait MudSkill: Send + Sync {
     /// Name of the skill (e.g., "autoformatter").
@@ -20,24 +20,31 @@ pub trait MudSkill: Send + Sync {
     fn set_param(&self, _key: &str, _value: &str) {}
 
     /// Determines if the skill should be active for the current context.
-    fn should_activate(&self, _x: &[f32], _context: &str) -> bool { true }
+    fn should_activate(&self, _x: &[f32], _context: &str) -> bool {
+        true
+    }
 
     /// Executes an autonomous action based on detected intent (e.g., file ingestion).
-    fn execute_autonomous_action(&self, _context: &str, _engine: &crate::mud::inference::MudInference) {}
+    fn execute_autonomous_action(
+        &self,
+        _context: &str,
+        _engine: &crate::mud::inference::MudInference,
+    ) {
+    }
 }
 
 pub mod autoformatter;
-pub mod logic_math;
-pub mod retrieval;
-pub mod language;
-pub mod personality;
-pub mod translator;
-pub mod memory;
-pub mod learning;
-pub mod data_analysis;
-pub mod plotting;
-pub mod web_search;
 pub mod code_formatter;
-pub mod logic_marks;
-pub mod text_styling;
 pub mod coding;
+pub mod data_analysis;
+pub mod language;
+pub mod learning;
+pub mod logic_marks;
+pub mod logic_math;
+pub mod memory;
+pub mod personality;
+pub mod plotting;
+pub mod retrieval;
+pub mod text_styling;
+pub mod translator;
+pub mod web_search;

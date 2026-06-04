@@ -1,21 +1,27 @@
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).map(|s| s.as_str()).unwrap_or("models/core_skills.mud");
+    let path = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("models/core_skills.mud");
     println!("🔍 Embedding Audit: {}", path);
 
     let mf = forge_llm::mud::MudFile::load(path)?;
     let core = mf.skills.get("core").unwrap();
-    let tensor = core.tensors.get("token_embd.weight")
+    let tensor = core
+        .tensors
+        .get("token_embd.weight")
         .ok_or_else(|| anyhow::anyhow!("token_embd.weight not found"))?;
 
     let vocab = tensor.shape[0];
     let hidden = tensor.shape[1];
     let total = vocab * hidden;
-    println!("  Vocab: {}, Hidden: {}, Total params: {}", vocab, hidden, total);
+    println!(
+        "  Vocab: {}, Hidden: {}, Total params: {}",
+        vocab, hidden, total
+    );
 
-    let data = unsafe {
-        std::slice::from_raw_parts(tensor.data_ptr as *const f32, total)
-    };
+    let data = unsafe { std::slice::from_raw_parts(tensor.data_ptr as *const f32, total) };
 
     // Global stats
     let global_mean = data.iter().sum::<f32>() / total as f32;
@@ -67,7 +73,9 @@ fn main() -> anyhow::Result<()> {
         let mut dot = 0.0f32;
         let mut norm_t = 0.0f32;
         let mut se = 0.0f32;
-        let mut pos = 0u64; let mut neg = 0u64; let mut zer = 0u64;
+        let mut pos = 0u64;
+        let mut neg = 0u64;
+        let mut zer = 0u64;
 
         for &v in row {
             let q = (v / scale).round().clamp(-1.0, 1.0) as i8;
@@ -77,26 +85,42 @@ fn main() -> anyhow::Result<()> {
             se += (v - r).powi(2);
             ternary.push(q);
             recon.push(r);
-            match q { 1 => pos += 1, -1 => neg += 1, _ => zer += 1 }
+            match q {
+                1 => pos += 1,
+                -1 => neg += 1,
+                _ => zer += 1,
+            }
         }
 
-        positives += pos; negatives += neg; zero_tern += zer;
+        positives += pos;
+        negatives += neg;
+        zero_tern += zer;
         let rn = norm_t.sqrt();
         let row_norm = row.iter().map(|v| v.powi(2)).sum::<f32>().sqrt();
-        let cos = if rn > 0.0 && row_norm > 0.0 { dot / (rn * row_norm) } else { 1.0 };
+        let cos = if rn > 0.0 && row_norm > 0.0 {
+            dot / (rn * row_norm)
+        } else {
+            1.0
+        };
         cos_sims.push(cos);
         mses.push(se / hidden as f32);
         zero_fracs.push(zer as f32 / hidden as f32);
 
         // Global-scale ternary
         let gscale = global_absmean.max(1e-10);
-        let mut gdot = 0.0f32; let mut gn = 0.0f32;
+        let mut gdot = 0.0f32;
+        let mut gn = 0.0f32;
         for &v in row {
             let q = (v / gscale).round().clamp(-1.0, 1.0);
             let r = q * gscale;
-            gdot += v * r; gn += r * r;
+            gdot += v * r;
+            gn += r * r;
         }
-        let gcos = if gn.sqrt() > 0.0 && row_norm > 0.0 { gdot / (gn.sqrt() * row_norm) } else { 1.0 };
+        let gcos = if gn.sqrt() > 0.0 && row_norm > 0.0 {
+            gdot / (gn.sqrt() * row_norm)
+        } else {
+            1.0
+        };
         cos_sims_global.push(gcos);
     }
 
@@ -118,17 +142,26 @@ fn main() -> anyhow::Result<()> {
 
     let mean_absmean = row_absmeans.iter().sum::<f32>() / max_rows as f32;
     let min_absmean = row_absmeans.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max_absmean = row_absmeans.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let max_absmean = row_absmeans
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
     let mean_stddev = row_stds.iter().sum::<f32>() / max_rows as f32;
 
     println!();
     println!("=== PER-ROW STATS ===");
-    println!("  Row AbsMean: min={:.6}  max={:.6}  mean={:.6}", min_absmean, max_absmean, mean_absmean);
+    println!(
+        "  Row AbsMean: min={:.6}  max={:.6}  mean={:.6}",
+        min_absmean, max_absmean, mean_absmean
+    );
     println!("  Row StdDev:  mean={:.6}", mean_stddev);
 
     println!();
     println!("=== ROW-WISE TERNARY SIMULATION ===");
-    println!("  Cosine sim:  mean={:.6}  median={:.6}  min={:.6}", mean_cos, median_cos, min_cos);
+    println!(
+        "  Cosine sim:  mean={:.6}  median={:.6}  min={:.6}",
+        mean_cos, median_cos, min_cos
+    );
     println!("  MSE:         mean={:.8}", mean_mse);
     println!("  Cos < 0.90:  {}/{} rows", below_09, max_rows);
     println!("  Cos < 0.95:  {}/{} rows", below_095, max_rows);
@@ -145,7 +178,10 @@ fn main() -> anyhow::Result<()> {
     let pct_zer = zero_tern as f64 / total_par * 100.0;
     println!();
     println!("=== TERNARY DISTRIBUTION ===");
-    println!("  +1: {:.2}%   0: {:.2}%   -1: {:.2}%", pct_pos, pct_zer, pct_neg);
+    println!(
+        "  +1: {:.2}%   0: {:.2}%   -1: {:.2}%",
+        pct_pos, pct_zer, pct_neg
+    );
     println!("  Asymmetry (+/-): {:.2}%", (pct_pos - pct_neg).abs());
 
     println!();
@@ -153,7 +189,11 @@ fn main() -> anyhow::Result<()> {
     let orig_fp32 = total as f64 * 4.0;
     let orig_fp16 = total as f64 * 2.0;
     let ternary_bits = total as f64 * 2.0 / 8.0; // 2-bit ternary
-    let scale_bytes = if hidden < 256 { vocab as f64 } else { vocab as f64 * 2.0 }; // u8 if dim<256 else f16
+    let scale_bytes = if hidden < 256 {
+        vocab as f64
+    } else {
+        vocab as f64 * 2.0
+    }; // u8 if dim<256 else f16
     let total_mud = ternary_bits + scale_bytes;
 
     println!("  Original FP32:  {:.1} MB", orig_fp32 / 1_048_576.0);

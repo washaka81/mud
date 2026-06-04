@@ -1,6 +1,10 @@
+#![allow(clippy::needless_range_loop)]
 use std::collections::HashMap;
 
-fn row_wise_absmean_ternarize(data: &mut [f32], hidden: usize) -> (Vec<u8>, Vec<f32>, HashMap<String, String>) {
+fn row_wise_absmean_ternarize(
+    data: &mut [f32],
+    hidden: usize,
+) -> (Vec<u8>, Vec<f32>, HashMap<String, String>) {
     let n_rows = data.len() / hidden;
     let mut scales_f32 = Vec::with_capacity(n_rows);
     for row_i in 0..n_rows {
@@ -10,9 +14,8 @@ fn row_wise_absmean_ternarize(data: &mut [f32], hidden: usize) -> (Vec<u8>, Vec<
         scales_f32.push(absmean.max(1e-10));
     }
 
-    let metadata: HashMap<String, String> = HashMap::from([
-        ("embed_ternarized".to_string(), "row_absmean".to_string()),
-    ]);
+    let metadata: HashMap<String, String> =
+        HashMap::from([("embed_ternarized".to_string(), "row_absmean".to_string())]);
 
     // Ternarize data in-place
     for row_i in 0..n_rows {
@@ -34,14 +37,19 @@ fn pack_ternary_rowwise(data: &[f32], _hidden: usize) -> Vec<u8> {
     let mut packed = vec![0u32; u32_count];
     for i in 0..n {
         let val = data[i];
-        let bit = if val > 0.5 { 1u32 } else if val < -0.5 { 2u32 } else { 0u32 };
+        let bit = if val > 0.5 {
+            1u32
+        } else if val < -0.5 {
+            2u32
+        } else {
+            0u32
+        };
         let u32_idx = i / 16;
         let shift = (i % 16) * 2;
         packed[u32_idx] |= bit << shift;
     }
-    let bytes = unsafe {
-        std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4)
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4) };
     bytes.to_vec()
 }
 
@@ -60,13 +68,20 @@ fn main() -> anyhow::Result<()> {
 
     let mf = forge_llm::mud::MudFile::load(input)?;
     let core = mf.skills.get("core").unwrap();
-    let tensor = core.tensors.get("token_embd.weight")
+    let tensor = core
+        .tensors
+        .get("token_embd.weight")
         .ok_or_else(|| anyhow::anyhow!("token_embd.weight not found"))?;
 
     let vocab = tensor.shape[0];
     let hidden = tensor.shape[1];
     let total = vocab * hidden;
-    println!("  Tensor: {} x {} = {:.1}M params", vocab, hidden, total as f64 / 1_000_000.0);
+    println!(
+        "  Tensor: {} x {} = {:.1}M params",
+        vocab,
+        hidden,
+        total as f64 / 1_000_000.0
+    );
 
     let mut emb_data = vec![0.0f32; total];
     unsafe {
@@ -100,7 +115,11 @@ fn main() -> anyhow::Result<()> {
             norm_o += o * o;
             se += (o - r).powi(2);
         }
-        let cos = if norm_t > 0.0 && norm_o > 0.0 { dot / (norm_t.sqrt() * norm_o.sqrt()) } else { 1.0 };
+        let cos = if norm_t > 0.0 && norm_o > 0.0 {
+            dot / (norm_t.sqrt() * norm_o.sqrt())
+        } else {
+            1.0
+        };
         cos_sum += cos;
         mse_sum += se / hidden as f32;
     }
@@ -117,12 +136,24 @@ fn main() -> anyhow::Result<()> {
 
     println!();
     println!("=== COMPRESSION ===");
-    println!("  Before (FP32): {:.1} MB", before_size as f64 / 1_048_576.0);
-    println!("  After (ternary): {:.2} MB", after_size as f64 / 1_048_576.0);
-    println!("    data (2-bit): {:.2} MB", after_data as f64 / 1_048_576.0);
+    println!(
+        "  Before (FP32): {:.1} MB",
+        before_size as f64 / 1_048_576.0
+    );
+    println!(
+        "  After (ternary): {:.2} MB",
+        after_size as f64 / 1_048_576.0
+    );
+    println!(
+        "    data (2-bit): {:.2} MB",
+        after_data as f64 / 1_048_576.0
+    );
     println!("    scales (f32): {:.2} KB", after_scales as f64 / 1024.0);
     println!("  Ratio: {:.1}x", before_size as f64 / after_size as f64);
-    println!("  Effective bits/param: {:.3}", after_size as f64 * 8.0 / total as f64);
+    println!(
+        "  Effective bits/param: {:.3}",
+        after_size as f64 * 8.0 / total as f64
+    );
 
     println!();
     println!("  Saving to {}...", output);
@@ -148,15 +179,18 @@ fn main() -> anyhow::Result<()> {
 
     // Almacenar escalas per-row como tensor Float32
     let scales_bytes: Vec<u8> = scales_f32.iter().flat_map(|s| s.to_le_bytes()).collect();
-    new_tensors.insert("embed_scales".to_string(), forge_llm::mud::MudTensor {
-        name: "embed_scales".to_string(),
-        t_type: forge_llm::mud::MudTensorType::Float32,
-        shape: vec![vocab],
-        data_ptr: std::ptr::null(),
-        offset: 0,
-        mmap: None,
-        owned_data: Some(scales_bytes),
-    });
+    new_tensors.insert(
+        "embed_scales".to_string(),
+        forge_llm::mud::MudTensor {
+            name: "embed_scales".to_string(),
+            t_type: forge_llm::mud::MudTensorType::Float32,
+            shape: vec![vocab],
+            data_ptr: std::ptr::null(),
+            offset: 0,
+            mmap: None,
+            owned_data: Some(scales_bytes),
+        },
+    );
 
     let mut new_skills = HashMap::new();
     let new_skill = forge_llm::mud::MudSkill {

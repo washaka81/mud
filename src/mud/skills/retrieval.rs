@@ -16,7 +16,9 @@ impl Default for RetrievalSkill {
 
 impl RetrievalSkill {
     pub fn new() -> Self {
-        Self { last_fact: RwLock::new(None) }
+        Self {
+            last_fact: RwLock::new(None),
+        }
     }
 }
 
@@ -27,7 +29,10 @@ impl MudSkill for RetrievalSkill {
 
     fn should_activate(&self, _x: &[f32], context: &str) -> bool {
         let retrieval_keywords = ["what", "who", "where", "when", "tell me", "info", "fact"];
-        context.trim().ends_with('?') || retrieval_keywords.iter().any(|&k| context.to_lowercase().contains(k))
+        context.trim().ends_with('?')
+            || retrieval_keywords
+                .iter()
+                .any(|&k| context.to_lowercase().contains(k))
     }
 
     fn pre_process(&self, x: &mut [f32]) {
@@ -36,7 +41,9 @@ impl MudSkill for RetrievalSkill {
         let fact_guard = self.last_fact.read().unwrap();
         if fact_guard.is_some() {
             // Signal to the model that context is available
-            if !x.is_empty() { x[0] += 1.0; } 
+            if !x.is_empty() {
+                x[0] += 1.0;
+            }
         }
     }
 

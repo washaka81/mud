@@ -1,5 +1,5 @@
-use forge_llm::mud::MudFile;
 use forge_llm::mud::inference::MudInference;
+use forge_llm::mud::MudFile;
 use forge_llm::vulkan::VulkanContext;
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
 
     let mud_path = "models/core_skills.mud";
     let vk = Arc::new(VulkanContext::new().unwrap());
-    
+
     // 1. MEMORY AUDIT
     let start_mem = Instant::now();
     let mud_file = MudFile::load(mud_path)?;
@@ -33,24 +33,44 @@ fn main() -> anyhow::Result<()> {
     // 2. TERNARY SIMD BENCHMARK
     println!("\n[2. KERNEL PERFORMANCE]");
     let mut x = vec![1.0f32; hidden_size];
-    let iters = 1000;
-    
+    println!("  [Warmup] Compilando shaders y subiendo pesos a VRAM...");
+    let start_warmup = Instant::now();
+    engine.step(&mut x, "benchmark", &[], 0);
+    println!("  [Warmup] Listo en {:?}", start_warmup.elapsed());
+
+    let iters = 100;
+    println!("  Ejecutando {} iteraciones de benchmark...", iters);
     let start_bench = Instant::now();
     for i in 0..iters {
-        engine.step(&mut x, "benchmark", &[], i % 2048);
+        engine.step(&mut x, "benchmark", &[], (i + 1) % 2048);
+        if (i + 1) % 20 == 0 {
+            use std::io::Write;
+            print!(".");
+            let _ = std::io::stdout().flush();
+        }
     }
+    println!();
     let bench_duration = start_bench.elapsed();
     let avg_step = bench_duration / iters as u32;
-    
+
     println!("  Average Inference Step: {:?}", avg_step);
-    println!("  Theoretical Throughput: {:.2} steps/sec", 1.0 / avg_step.as_secs_f64());
+    println!(
+        "  Theoretical Throughput: {:.2} steps/sec",
+        1.0 / avg_step.as_secs_f64()
+    );
 
     // 3. SCALABILITY PROJECTION
     println!("\n[3. SCALABILITY PROJECTION (10+ Experts)]");
     let base_expert_size = (hidden_size * hidden_size * 3 * 2) as f64 / 8.0 / 1024.0 / 1024.0; // 2-bit packing
     println!("  Memory per Expert:    {:.4} MB", base_expert_size);
-    println!("  Estimated RAM for 16 Experts: {:.2} MB", mmap_size + (base_expert_size * 8.0));
-    println!("  Max Experts (on 16GB RAM):   ~{}", (1024.0 * 8.0 / base_expert_size) as usize);
+    println!(
+        "  Estimated RAM for 16 Experts: {:.2} MB",
+        mmap_size + (base_expert_size * 8.0)
+    );
+    println!(
+        "  Max Experts (on 16GB RAM):   ~{}",
+        (1024.0 * 8.0 / base_expert_size) as usize
+    );
 
     println!("\nBenchmark Complete.");
     Ok(())

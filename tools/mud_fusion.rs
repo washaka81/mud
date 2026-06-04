@@ -13,7 +13,11 @@ fn main() -> anyhow::Result<()> {
     let input_paths = &args[2..];
 
     println!("=== MUD Model Fusion Tool ===");
-    println!("Merging {} models into {}...", input_paths.len(), output_path);
+    println!(
+        "Merging {} models into {}...",
+        input_paths.len(),
+        output_path
+    );
 
     let mut fused_metadata: HashMap<String, String> = HashMap::new();
     let mut fused_skills: HashMap<String, MudSkill> = HashMap::new();
@@ -23,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     for path in input_paths {
         println!("  Reading {}...", path);
         let mud = MudFile::load(path)?;
-        
+
         // 1. Merge Metadata (Keep latest)
         for (k, v) in &mud.global_metadata {
             fused_metadata.insert(k.clone(), v.clone());
@@ -35,18 +39,24 @@ fn main() -> anyhow::Result<()> {
                 fused_skills.insert(skill_name.clone(), skill.clone());
                 // Initial expert count for core
                 if skill_name == "core" {
-                    total_experts = mud.global_metadata.get("num_experts")
-                        .and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(0);
+                    total_experts = mud
+                        .global_metadata
+                        .get("num_experts")
+                        .and_then(|s: &String| s.parse::<usize>().ok())
+                        .unwrap_or(0);
                 }
             } else {
                 // COLLISION: Special logic for "core" MoE experts
                 if skill_name == "core" {
                     println!("    Detected colliding 'core' skill. Concatenating experts...");
-                    let incoming_experts = mud.global_metadata.get("num_experts")
-                        .and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(0);
-                    
+                    let incoming_experts = mud
+                        .global_metadata
+                        .get("num_experts")
+                        .and_then(|s: &String| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+
                     let target_skill = fused_skills.get_mut("core").unwrap();
-                    
+
                     for i in 0..incoming_experts {
                         let new_id = total_experts + i;
                         // Copy expert weights (w1, w2, w3) with remapped names
@@ -62,7 +72,10 @@ fn main() -> anyhow::Result<()> {
                     }
                     total_experts += incoming_experts;
                 } else {
-                    println!("    Colliding skill '{}' ignored (keeping first).", skill_name);
+                    println!(
+                        "    Colliding skill '{}' ignored (keeping first).",
+                        skill_name
+                    );
                 }
             }
         }
@@ -70,7 +83,7 @@ fn main() -> anyhow::Result<()> {
 
     // Update global expert count
     fused_metadata.insert("num_experts".to_string(), total_experts.to_string());
-    
+
     let fused_model = MudFile {
         mmap: None,
         skills: fused_skills,

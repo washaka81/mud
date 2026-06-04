@@ -1,0 +1,20 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputW1 { float w1[]; };
+layout(set = 0, binding = 1) readonly buffer InputW3 { float w3[]; };
+layout(set = 0, binding = 2) writeonly buffer OutputGate { float out_val[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint size;
+} pcs;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pcs.size) return;
+
+    float x = w1[idx];
+    float sig = 1.0 / (1.0 + exp(-x));
+    out_val[idx] = (x * sig) * w3[idx];
+}

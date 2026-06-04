@@ -2,8 +2,20 @@
 name = "forge_llm"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alejandro Fonda <alejandro.fonda@gmail.com>"]
 description = "Ultra-optimized Ternary MoE inference engine (MUD architecture)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/washaka81/mud"
+readme = "README.md"
 default-run = "forge_llm"
+
+[[bin]]
+name = "jamba_benchmark"
+path = "tools/jamba_benchmark.rs"
+
+[[bin]]
+name = "vulkan_simulator"
+path = "tools/vulkan_simulator.rs"
 
 [dependencies]
 # Memory mapping for loading .mud files efficiently
@@ -19,7 +31,7 @@ log = "0.4.20"
 env_logger = "0.10.1"
 anyhow = "1.0.75"
 rand = "0.10.1"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rand_distr = "0.5.1"
 crossterm = "0.29.0"
 unicode-width = "0.2.2"
 sysinfo = "0.38.4"
@@ -35,6 +47,8 @@ ctrlc = "3.4.0"
 forge_autograd = { version = "0.1.0", path = "forge_autograd" }
 ratatui = "0.26.1"
 comfy-table = "7.1.0"
+gguf = "0.1.2"
+candle-core = "0.10.2"
 
 [[bin]]
 name = "forge_llm"
@@ -55,10 +69,6 @@ path = "tools/expert_anatomy.rs"
 [[bin]]
 name = "step_inference"
 path = "tools/step_inference.rs"
-
-[[bin]]
-name = "truth_auditor"
-path = "tools/truth_auditor.rs"
 
 [[bin]]
 name = "weight_audit"
@@ -89,10 +99,6 @@ name = "memory_benchmark"
 path = "tools/memory_benchmark.rs"
 
 [[bin]]
-name = "knowledge_packager"
-path = "tools/knowledge_packager.rs"
-
-[[bin]]
 name = "ptr_audit"
 path = "tools/ptr_audit.rs"
 
@@ -117,10 +123,6 @@ name = "interactive_validator"
 path = "tools/interactive_validator.rs"
 
 [[bin]]
-name = "mud_autotrainer"
-path = "tools/mud_autotrainer.rs"
-
-[[bin]]
 name = "cognitive_integrity"
 path = "tools/cognitive_integrity.rs"
 
@@ -135,10 +137,6 @@ path = "tools/embed_ternarize.rs"
 [lib]
 name = "forge_llm"
 crate-type = ["cdylib", "lib"]
-
-# GUI/TUI for professional dashboards
-ratatui = "0.26.1"
-comfy-table = "7.1.0"
 
 [build-dependencies]
 # Used to compile ASM files during the build process
@@ -157,6 +155,18 @@ name = "hw_detect"
 path = "tools/hw_detect.rs"
 
 [[bin]]
+name = "propagation_probe"
+path = "tools/propagation_probe.rs"
+
+[[bin]]
+name = "wave_alignment_audit"
+path = "tools/wave_alignment_audit.rs"
+
+[[bin]]
+name = "mud_selector"
+path = "tools/mud_selector.rs"
+
+[[bin]]
 name = "recalibration_projector"
 path = "tools/recalibration_projector.rs"
 
@@ -168,6 +178,41 @@ path = "tools/mud_corpus_trainer.rs"
 name = "vocab_check"
 path = "tools/vocab_check.rs"
 
+[[bin]]
+name = "chat_once"
+path = "tools/chat_once.rs"
+
+[[bin]]
+name = "repro_crash"
+path = "tools/repro_crash.rs"
+
+[[bin]]
+name = "diagnose_model"
+path = "tools/diagnose_model.rs"
+
+[[bin]]
+name = "mud_diagnostics"
+path = "tools/mud_diagnostics.rs"
+
+[[bin]]
+name = "diagnose_chat"
+path = "tools/diagnose_chat.rs"
+
+[[bin]]
+name = "diagnose_layers"
+path = "tools/diagnose_layers.rs"
+
+[[bin]]
+name = "matrix_benchmark"
+path = "tools/matrix_benchmark.rs"
+[[bin]]
+name = "precision_benchmark"
+path = "tools/precision_benchmark.rs"
+
+[[bin]]
+name = "create_blank_mud"
+path = "tools/create_blank_mud.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -175,3 +220,50 @@ codegen-units = 1
 panic = "abort"
 # Target CPU features should be specified during compilation (e.g. RUSTFLAGS="-C target-cpu=native")
 
+
+[[bin]]
+name = "trace_bug6"
+path = "tools/trace_bug6.rs"
+
+[[bin]]
+name = "trace_bak"
+path = "tools/trace_bak.rs"
+
+[[bin]]
+name = "mud_offsets"
+path = "tools/mud_offsets.rs"
+
+[[bin]]
+name = "mud_forge"
+path = "tools/mud_forge.rs"
+
+[[bin]]
+name = "iteration_validator"
+path = "tools/iteration_validator.rs"
+
+[[bin]]
+name = "conversion_verifier"
+path = "tools/conversion_verifier.rs"
+
+[[bin]]
+name = "training_estimator"
+path = "tools/training_estimator.rs"
+
+[[bin]]
+name = "awake_aligner"
+path = "tools/awake_aligner.rs"
+
+[[bin]]
+name = "boundary_validator"
+path = "tools/boundary_validator.rs"
+
+[[bin]]
+name = "gguf_to_safetensors"
+path = "tools/gguf_to_safetensors.rs"
+[[bin]]
+name = "gguf_to_mud"
+path = "tools/gguf_to_mud.rs"
+
+[[bin]]
+name = "int4_quantizer"
+path = "tools/int4_quantizer.rs"

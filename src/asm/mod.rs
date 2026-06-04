@@ -8,14 +8,48 @@ pub struct BlockQ4_0 {
 }
 
 extern "C" {
-    pub fn q4_0_gemv_asm(n: usize, x: *const f32, weights: *const BlockQ4_0, out: *mut f32);
     pub fn rms_norm_scale_asm(n: usize, x: *const f32, eps: f32) -> f32;
     pub fn ternary_gemv_avx2(n: usize, x: *const f32, weights: *const u32, out: *mut f32, scale: f32);
     pub fn ternary_gemv_4rows_avx2(n: usize, x: *const f32, weights: *const u32, out: *mut f32, scale: f32, stride: usize);
+    pub fn ternary_gemm_batch4_avx2(
+        out_dim: usize,
+        in_dim: usize,
+        x_ptr: *const f32,
+        w_ptr: *const u32,
+        out_ptr: *mut f32,
+        scales: *const f32,
+    );
     pub fn dot_product_avx2(n: usize, a: *const f32, b: *const f32) -> f32;
     pub fn sum_squares_avx2(n: usize, x: *const f32) -> f32;
+    pub fn q4_0_gemv_asm(n: usize, x: *const f32, weights: *const BlockQ4_0, out: *mut f32);
+    pub fn silu_vectorial_avx2(n: usize, src: *const f32, dst: *mut f32);
+    pub fn apply_rope_asm(n: usize, x: *mut f32, cos: *const f32, sin: *const f32);
+    pub fn mamba_scan_avx2(
+        n: usize,
+        d_state: usize,
+        x: *const f32,
+        a: *const f32,
+        b: *const f32,
+        c: *const f32,
+        dt: *const f32,
+        state: *mut f32,
+        out: *mut f32,
+    );
+    pub fn mamba_delta_fold_avx2(len: usize, state: *mut f32, decay: f32);
+    pub fn pext_unpack_ternary(packed: u64, out: *mut i8);
+    pub fn ternary_gemv_lut_avx2(
+        n: usize,
+        x: *const i8,
+        weights: *const i8,
+        out: *mut f32,
+        scale: f32,
+    );
 }
 
+/// Dequantizes a row of Q4_0 weights to f32.
+/// # Safety
+/// The caller must ensure that `row` points to at least `n / 32` valid `BlockQ4_0` blocks
+/// and that `out` has at least `n` elements.
 pub unsafe fn dequantize_q4_0_row(row: *const BlockQ4_0, out: &mut [f32], n: usize) {
     let blocks = n / 32;
     for i in 0..blocks {
@@ -32,9 +66,22 @@ pub unsafe fn dequantize_q4_0_row(row: *const BlockQ4_0, out: &mut [f32], n: usi
     }
 }
 
-pub unsafe fn q4_0_gemv_fused(n_in: usize, n_out: usize, x: &[f32], weights: *const BlockQ4_0, norm_w: *const f32, out: &mut [f32], eps: f32) {
+/// Fused Matrix-Vector multiplication for Q4_0 block quantization.
+/// # Safety
+/// The caller must ensure that `x`, `x_norm`, and `out` have sufficient length for
+/// `n_in` and `n_out` sizes. `weights` must point to valid memory.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn q4_0_gemv_fused(
+    n_in: usize,
+    n_out: usize,
+    x: &[f32],
+    weights: *const BlockQ4_0,
+    norm_w: *const f32,
+    out: &mut [f32],
+    eps: f32,
+    x_norm: &mut [f32],
+) {
     let scale = rms_norm_scale_asm(n_in, x.as_ptr(), eps);
-    let mut x_norm = vec![0.0f32; n_in];
     for (i, item) in x_norm.iter_mut().enumerate().take(n_in) {
         *item = x[i] * scale * (*norm_w.add(i));
     }

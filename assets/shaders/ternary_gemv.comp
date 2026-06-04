@@ -7,11 +7,11 @@ layout(local_size_x = 32) in; // Tuned for Intel SIMD32
 layout(set = 0, binding = 0) buffer InputX { float x[]; };
 layout(set = 0, binding = 1) buffer Weights { uint packed_w[]; };
 layout(set = 0, binding = 2) buffer OutputY { float y[]; };
+layout(set = 0, binding = 3) buffer Scales { float scales[]; };
 
 layout(push_constant) uniform PushConstants {
     uint n_in;
     uint n_out;
-    float scale;
     uint batch_size;
     uint do_norm;
     uint do_rope;
@@ -60,7 +60,7 @@ void main() {
     float total_sum = subgroupAdd(local_sum);
     
     if (lane_id == 0) {
-        float out_val = total_sum * pcs.scale;
+        float out_val = total_sum * scales[row];
         
         // Optional RoPE Fusion stub
         if (pcs.do_rope == 1u) {

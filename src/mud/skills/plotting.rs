@@ -1,5 +1,5 @@
-use crate::mud::skills::MudSkill;
 use crate::mud::inference::MudInference;
+use crate::mud::skills::MudSkill;
 
 /// Implementation of the ASCII Plotting skill.
 /// Renders simple bar charts from numeric data.
@@ -32,7 +32,8 @@ impl MudSkill for PlottingSkill {
         if let Some(start) = context.find('[') {
             if let Some(end) = context.find(']') {
                 let nums_str = &context[start + 1..end];
-                let values: Vec<f32> = nums_str.split(',')
+                let values: Vec<f32> = nums_str
+                    .split(',')
                     .filter_map(|s| s.trim().parse::<f32>().ok())
                     .collect();
 
