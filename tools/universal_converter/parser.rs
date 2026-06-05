@@ -107,6 +107,7 @@ pub fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
                 "k_proj" | "wk" => format!("{}.attn_k.{}", prefix, suffix),
                 "v_proj" | "wv" => format!("{}.attn_v.{}", prefix, suffix),
                 "o_proj" | "wo" => format!("{}.attn_output.{}", prefix, suffix),
+                "qkv_proj" => format!("{}.attn_qkv.{}", prefix, suffix),
                 _ => return None,
             };
             return Some((mapped, ternarize));
@@ -176,6 +177,7 @@ pub fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
                     "gate_proj" | "w1" => "w1",
                     "down_proj" | "w2" => "w2",
                     "up_proj" | "w3" => "w3",
+                    "gate_up_proj" => "gate_up",
                     _ => return None,
                 };
                 return Some((

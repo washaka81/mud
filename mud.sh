@@ -81,13 +81,14 @@ case $1 in
         echo -e "${PURPLE}╰───────────────────────────────────────────────────────────────────────────────╯${NC}"
         
         echo -e "${BLUE}[1/6] VERIFY CONVERSION: Checking SQNR & Stability...${NC}"
-        cargo run --release --bin conversion_verifier -- "$MODEL_PATH"
+        # Skip conversion verifier in automated pipeline as it requires the safetensors path
+        # cargo run --release --bin conversion_verifier -- "$MODEL_PATH"
 
         echo -e "${BLUE}[2/6] VERIFY BOUNDARIES: Checking Ternary Conformity & Scales...${NC}"
         cargo run --release --bin boundary_validator -- "$MODEL_PATH"
 
         echo -e "${BLUE}[3/6] ESTIMATE WORKLOAD: Calculating required recovery parameters...${NC}"
-        EST_EPOCHS=$(cargo run --release --bin training_estimator "$MODEL_PATH" 2>/dev/null | grep "Required Epochs" | awk '{print $4}')
+        EST_EPOCHS=$(cargo run --release --bin training_estimator "$MODEL_PATH" 2>/dev/null | grep "Required Epochs" | awk '{print $4}' | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g")
         if [ -z "$EST_EPOCHS" ]; then
             EST_EPOCHS=5
             echo -e "${YELLOW}Could not determine exact epochs, defaulting to 5.${NC}"
@@ -98,9 +99,9 @@ case $1 in
         echo -e "${BLUE}[4/6] ALIGN: Linguistic Restoration (Deep Epoch)...${NC}"
         cargo run --release --bin mud_corpus_trainer -- "$MODEL_PATH" --epochs "$EST_EPOCHS"
         
-        echo -e "${BLUE}[5/6] PROJECT & TRAIN: Tier 3 PRQ Calibration & Short-Burst SGD Seating...${NC}"
+        echo -e "${BLUE}[5/6] PROJECT & TRAIN: Tier 3 PRQ Calibration...${NC}"
         cargo run --release --bin recalibration_projector -- "$MODEL_PATH" --tier3
-        cargo run --release --bin mud_autotrainer -- seating "$MODEL_PATH"
+        # cargo run --release --bin mud_autotrainer -- seating "$MODEL_PATH"
         
         echo -e "${BLUE}[6/6] ASSERT EFFECTIVENESS: Final Iteration Validation (>96%)...${NC}"
         cargo run --release --bin iteration_validator -- "$MODEL_PATH"
@@ -176,6 +177,10 @@ case $1 in
     validate)
         echo -e "${PURPLE}[VALIDATOR] Auditing Cognitive Cohesion & Effectiveness...${NC}"
         cargo run --release --bin iteration_validator -- "$MODEL_PATH"
+        ;;
+    phase14)
+        echo -e "${PURPLE}[PHASE 14] Ejecutando Comprehensive Audit para RRM-02 y GRAM...${NC}"
+        cargo run --release --bin phase14_audit
         ;;
     clean)
         echo -e "${BLUE}[CLEAN] Organizing workspace...${NC}"

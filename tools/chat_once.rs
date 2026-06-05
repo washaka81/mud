@@ -46,7 +46,9 @@ fn main() -> anyhow::Result<()> {
     let mut x = vec![0.0f32; inference.model.hidden_size];
     let mut conversation_pos = 0;
 
+    println!("DEBUG BEFORE PROMPT");
     inference.prompt(&full_prompt, &mut x, &mut conversation_pos);
+    println!("DEBUG AFTER PROMPT");
 
     print!("Assistant:");
     std::io::stdout().flush()?;

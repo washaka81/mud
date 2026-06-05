@@ -59,8 +59,12 @@ fn extract_merges_from_json(path: &str) -> Option<String> {
 
 fn extract_config_metadata(input_path: &str) -> Option<HashMap<String, String>> {
     let path = std::path::Path::new(input_path);
-    let parent = path.parent()?;
-    let config_path = parent.join("config.json");
+    let input_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent()?
+    };
+    let config_path = input_dir.join("config.json");
     if !config_path.exists() {
         return None;
     }
@@ -212,6 +216,7 @@ fn main() -> anyhow::Result<()> {
 
     // Step 3: Quantize and Map
     let mut mud_tensors = HashMap::new();
+    let config_meta = extract_config_metadata(input_path).unwrap_or_default();
     let mut max_layer = 0;
     let mut max_expert = 0;
 
@@ -251,62 +256,103 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let t_type;
-            let owned_data;
-            let mut captured_scales = None;
-
-            if should_ternarize {
-                t_type = MudTensorType::Ternary2Bit;
-                let bitnet_s = bitnet_scales.get(&name).copied().unwrap_or(1.0);
-                let (data, mut scales) = quantizer::ternarize_and_pack(&tensor_view, bitnet_s);
-                if let Some(dampening) = scales_map.get(&name) {
-                    for s in &mut scales {
-                        *s *= dampening;
-                    }
-                }
-                owned_data = data;
-                captured_scales = Some(scales);
+            let f32_vec: Vec<f32> = quantizer::to_f32_vec(&tensor_view);
+            let original_shape = if tensor_view.dtype() == safetensors::tensor::Dtype::U8 {
+                let mut s = tensor_view.shape().to_vec();
+                s[0] *= 4;
+                s
             } else {
-                t_type = MudTensorType::Float32;
-                owned_data = quantizer::convert_to_f32_bytes(&tensor_view);
+                tensor_view.shape().to_vec()
             };
 
-            mud_tensors.insert(
-                mapped_name.clone(),
-                MudTensor {
-                    name: mapped_name.clone(),
-                    t_type,
-                    shape: if tensor_view.dtype() == safetensors::tensor::Dtype::U8 {
-                        let mut s = tensor_view.shape().to_vec();
-                        s[0] *= 4;
-                        s
-                    } else {
-                        tensor_view.shape().to_vec()
-                    },
-                    data_ptr: std::ptr::null(),
-                    offset: 0,
-                    mmap: None,
-                    owned_data: Some(owned_data),
-                },
-            );
+            let mut sub_tensors: Vec<(String, Vec<f32>, Vec<usize>)> = vec![];
 
-            if let Some(scales) = captured_scales {
-                let scale_name = mapped_name.replace(".weight", ".prq_scale");
-                let n_rows = scales.len();
-                let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
+            if mapped_name.ends_with(".attn_qkv.weight") {
+                let prefix = mapped_name.trim_end_matches(".attn_qkv.weight");
+                let num_heads = config_meta.get("num_heads").and_then(|s| s.parse::<usize>().ok()).unwrap_or(32);
+                let num_kv_heads = config_meta.get("num_kv_heads").and_then(|s| s.parse::<usize>().ok()).unwrap_or(8);
+                let hidden_size = config_meta.get("hidden_size").and_then(|s| s.parse::<usize>().ok()).unwrap_or(original_shape[1]);
+                let head_dim = config_meta.get("head_dim").and_then(|s| s.parse::<usize>().ok()).unwrap_or(hidden_size / num_heads);
+                
+                let q_rows = num_heads * head_dim;
+                let k_rows = num_kv_heads * head_dim;
+                let v_rows = num_kv_heads * head_dim;
+                
+                let q_data = f32_vec[0 .. q_rows * hidden_size].to_vec();
+                let k_data = f32_vec[q_rows * hidden_size .. (q_rows + k_rows) * hidden_size].to_vec();
+                let v_data = f32_vec[(q_rows + k_rows) * hidden_size ..].to_vec();
+                
+                sub_tensors.push((format!("{}.attn_q.weight", prefix), q_data, vec![q_rows, hidden_size]));
+                sub_tensors.push((format!("{}.attn_k.weight", prefix), k_data, vec![k_rows, hidden_size]));
+                sub_tensors.push((format!("{}.attn_v.weight", prefix), v_data, vec![v_rows, hidden_size]));
+            } else if mapped_name.ends_with(".gate_up.weight") {
+                let prefix = mapped_name.trim_end_matches(".gate_up.weight");
+                let rows = original_shape[0] / 2;
+                let cols = original_shape[1];
+                let gate_data = f32_vec[0 .. rows * cols].to_vec();
+                let up_data = f32_vec[rows * cols ..].to_vec();
+                sub_tensors.push((format!("{}.gate.weight", prefix), gate_data, vec![rows, cols]));
+                sub_tensors.push((format!("{}.up.weight", prefix), up_data, vec![rows, cols]));
+            } else {
+                sub_tensors.push((mapped_name.clone(), f32_vec, original_shape));
+            }
+
+            for (sub_name, sub_data, sub_shape) in sub_tensors {
+                let t_type;
+                let owned_data;
+                let mut captured_scales = None;
+
+                if should_ternarize {
+                    t_type = MudTensorType::Ternary2Bit;
+                    let bitnet_s = bitnet_scales.get(&name).copied().unwrap_or(1.0);
+                    let (data, mut scales) = quantizer::ternarize_f32_and_pack(&sub_data, sub_shape[0], sub_shape[1], bitnet_s);
+                    if let Some(dampening) = scales_map.get(&name) {
+                        for s in &mut scales {
+                            *s *= dampening;
+                        }
+                    }
+                    owned_data = data;
+                    captured_scales = Some(scales);
+                } else {
+                    t_type = MudTensorType::Float32;
+                    let mut byte_data = Vec::with_capacity(sub_data.len() * 4);
+                    for w in sub_data {
+                        byte_data.extend_from_slice(&w.to_le_bytes());
+                    }
+                    owned_data = byte_data;
+                }
 
                 mud_tensors.insert(
-                    scale_name.clone(),
+                    sub_name.clone(),
                     MudTensor {
-                        name: scale_name,
-                        t_type: MudTensorType::Float32,
-                        shape: vec![n_rows],
+                        name: sub_name.clone(),
+                        t_type,
+                        shape: sub_shape,
                         data_ptr: std::ptr::null(),
                         offset: 0,
                         mmap: None,
-                        owned_data: Some(scales_bytes),
+                        owned_data: Some(owned_data),
                     },
                 );
+
+                if let Some(scales) = captured_scales {
+                    let scale_name = sub_name.replace(".weight", ".prq_scale");
+                    let n_rows = scales.len();
+                    let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
+
+                    mud_tensors.insert(
+                        scale_name.clone(),
+                        MudTensor {
+                            name: scale_name.clone(),
+                            t_type: MudTensorType::Float32,
+                            shape: vec![n_rows],
+                            data_ptr: std::ptr::null(),
+                            offset: 0,
+                            mmap: None,
+                            owned_data: Some(scales_bytes),
+                        },
+                    );
+                }
             }
 
             // UNTIE EMBEDDINGS: If this is the embedding layer, also create the output projection in FP32
@@ -343,8 +389,7 @@ fn main() -> anyhow::Result<()> {
     println!("✅ Quantization and Structural Mapping complete.");
 
     let mut global_metadata = HashMap::new();
-    let has_gate = mud_tensors.keys().any(|k| k.contains(".gate.weight"));
-    let config_meta = extract_config_metadata(input_path).unwrap_or_default();
+    let has_gate = mud_tensors.keys().any(|k: &String| k.contains(".gate.weight"));
 
     let num_layers = config_meta
         .get("num_layers")
@@ -403,9 +448,12 @@ fn main() -> anyhow::Result<()> {
     let mut vocab_size = 32000;
 
     // Locate tokenizer.json dynamically next to the safetensors file
-    let input_dir = std::path::Path::new(input_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
+    let path = std::path::Path::new(input_path);
+    let input_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(std::path::Path::new("."))
+    };
     let tokenizer_file = input_dir.join("tokenizer.json");
     let tokenizer_path_str = tokenizer_file.to_string_lossy().to_string();
     let tokenizer_path = if tokenizer_file.exists() {
@@ -526,9 +574,8 @@ fn main() -> anyhow::Result<()> {
         .get("ffn_hidden")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(
-            mud_tensors
-                .keys()
-                .find(|k| k.starts_with("blk.0.expert.") && k.ends_with(".w1.weight"))
+            mud_tensors.keys()
+                .find(|k: &&String| k.starts_with("blk.0.expert.") && k.ends_with(".w1.weight"))
                 .and_then(|k| mud_tensors.get(k))
                 .map(|t| t.shape[0])
                 .unwrap_or(hidden_size * 4),

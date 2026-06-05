@@ -113,13 +113,22 @@ fn main() -> anyhow::Result<()> {
 
     println!("\n\x1b[1;33m[Phase 1: Raw Kernel Latency]\x1b[0m");
 
-    // Benchmark Mamba Scan ASM Kernel
-    let x = vec![1.0f32; hidden];
-    let a_bar = vec![0.9f32; hidden * d_state];
-    let b_bar = vec![0.1f32; hidden * d_state];
-    let c = vec![0.05f32; d_state];
-    let mut state = vec![0.0f32; hidden * d_state];
-    let mut out = vec![0.0f32; hidden];
+    let mut _workspace = InferenceWorkspace::new(
+        None,
+        hidden,
+        hidden * 4,
+        n_layers,
+        1,
+        vocab_size,
+        d_state,
+        d_conv,
+    );
+    
+    // Fill test data
+    _workspace.mamba_in.write().fill(1.0);
+    _workspace.mamba_a_bar.write().fill(0.9);
+    _workspace.mamba_b_bar.write().fill(0.1);
+    _workspace.mamba_c.write().fill(0.05);
 
     let start = Instant::now();
     let iters = 1000;
@@ -128,13 +137,13 @@ fn main() -> anyhow::Result<()> {
             forge_llm::asm::mamba_scan_avx2(
                 hidden,
                 d_state,
-                x.as_ptr(),
-                a_bar.as_ptr(),
-                b_bar.as_ptr(),
-                c.as_ptr(),
+                _workspace.mamba_in.read().as_ptr(),
+                _workspace.mamba_a_bar.read().as_ptr(),
+                _workspace.mamba_b_bar.read().as_ptr(),
+                _workspace.mamba_c.read().as_ptr(),
                 std::ptr::null(),
-                state.as_mut_ptr(),
-                out.as_mut_ptr(),
+                _workspace.ssm_states[0].write().as_mut_ptr(),
+                _workspace.mamba_out.write().as_mut_ptr(),
             );
         }
     }
@@ -149,24 +158,25 @@ fn main() -> anyhow::Result<()> {
 
     println!("\n\x1b[1;33m[Phase 2: Numerical Reliability]\x1b[0m");
     // Reliability check: Magnitude drift through sequence
-    let mut mag = 1.0;
+    let mut mag: f32 = 1.0;
     println!("  Sequence Scan Stability (100 steps):");
     for i in 1..=100 {
         unsafe {
             forge_llm::asm::mamba_scan_avx2(
                 hidden,
                 d_state,
-                x.as_ptr(),
-                a_bar.as_ptr(),
-                b_bar.as_ptr(),
-                c.as_ptr(),
+                _workspace.mamba_in.read().as_ptr(),
+                _workspace.mamba_a_bar.read().as_ptr(),
+                _workspace.mamba_b_bar.read().as_ptr(),
+                _workspace.mamba_c.read().as_ptr(),
                 std::ptr::null(),
-                state.as_mut_ptr(),
-                out.as_mut_ptr(),
+                _workspace.ssm_states[0].write().as_mut_ptr(),
+                _workspace.mamba_out.write().as_mut_ptr(),
             );
         }
         if i % 25 == 0 {
-            let sum_sq: f32 = out.iter().map(|v| v * v).sum();
+            let out_guard = _workspace.mamba_out.read();
+            let sum_sq: f32 = out_guard.iter().map(|v| v * v).sum();
             mag = sum_sq.sqrt();
             println!("    Step {:>3}: Output RMS = {:.6}", i, mag);
         }

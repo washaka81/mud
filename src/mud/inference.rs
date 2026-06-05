@@ -546,16 +546,28 @@ impl MudInference {
             .get("num_heads")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(4);
-        let num_kv_heads = mud_file
-            .global_metadata
-            .get("num_kv_heads")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(num_heads);
         let head_dim = mud_file
             .global_metadata
             .get("head_dim")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or_else(|| hidden_size / num_heads);
+
+        let mut num_kv_heads = mud_file
+            .global_metadata
+            .get("num_kv_heads")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(num_heads);
+
+        // Auto-detect num_kv_heads from actual tensor shape to prevent out-of-bounds reads
+        if let Some(t) = core.tensors.get("blk.0.attn_k.weight") {
+            if !t.shape.is_empty() {
+                let rows = t.shape[0];
+                if rows > 0 && head_dim > 0 {
+                    num_kv_heads = rows / head_dim;
+                }
+            }
+        }
+
         let d_state = mud_file
             .global_metadata
             .get("d_state")
@@ -687,36 +699,42 @@ impl MudInference {
                         w1: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w1.weight", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.gate.weight", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_gate.weight", l)))
                             .map(|t| t.data_ptr as *const u32)
                             .unwrap_or(std::ptr::null()),
                         w2: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w2.weight", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.down.weight", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_down.weight", l)))
                             .map(|t| t.data_ptr as *const u32)
                             .unwrap_or(std::ptr::null()),
                         w3: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w3.weight", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.up.weight", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_up.weight", l)))
                             .map(|t| t.data_ptr as *const u32)
                             .unwrap_or(std::ptr::null()),
                         w1_scales: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w1.prq_scale", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.gate.prq_scale", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_gate.prq_scale", l)))
                             .map(|t| t.data_ptr as *const f32)
                             .unwrap_or(std::ptr::null()),
                         w2_scales: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w2.prq_scale", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.down.prq_scale", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_down.prq_scale", l)))
                             .map(|t| t.data_ptr as *const f32)
                             .unwrap_or(std::ptr::null()),
                         w3_scales: core
                             .tensors
                             .get(&format!("blk.{}.expert.{}.w3.prq_scale", l, e))
+                            .or_else(|| core.tensors.get(&format!("blk.{}.expert.{}.up.prq_scale", l, e)))
                             .or_else(|| core.tensors.get(&format!("blk.{}.ffn_up.prq_scale", l)))
                             .map(|t| t.data_ptr as *const f32)
                             .unwrap_or(std::ptr::null()),
@@ -2543,7 +2561,10 @@ impl MudInference {
             use rayon::prelude::*;
 
             // Hito E: T-SAR Dynamic INT8 Quantization (Zero-Allocation on stack)
-            let mut x_i8 = [0i8; 16384];
+            #[repr(align(32))]
+            struct AlignedArray([i8; 16384]);
+            
+            let mut x_aligned = AlignedArray([0i8; 16384]);
             let mut x_absmax = 1e-8f32;
             for j in 0..n_in {
                 let v = x_guard[j].abs();
@@ -2551,11 +2572,11 @@ impl MudInference {
             }
             let q_scale = 127.0 / x_absmax;
             for j in 0..n_in {
-                x_i8[j] = (x_guard[j] * q_scale).round().clamp(-127.0, 127.0) as i8;
+                x_aligned.0[j] = (x_guard[j] * q_scale).round().clamp(-127.0, 127.0) as i8;
             }
             let inv_q_scale = x_absmax / 127.0;
 
-            let x_ptr = x_i8.as_ptr() as usize;
+            let x_ptr = x_aligned.0.as_ptr() as usize;
             let w_ptr = w as usize;
             let s_ptr = scales as usize;
             let y_ptr = y_guard.as_mut_ptr() as usize;
@@ -2565,7 +2586,7 @@ impl MudInference {
                 .into_par_iter()
                 .for_each(|i| {
                     unsafe {
-                        let mut w_i8 = [0i8; 16384];
+                        let mut w_aligned = AlignedArray([0i8; 16384]);
                         let x_p = x_ptr as *const i8;
                         let w_p = (w_ptr as *const u32).add(i * blocks_per_row);
                         let s_p = s_ptr as *const f32;
@@ -2574,7 +2595,7 @@ impl MudInference {
                         let blocks_64 = n_in / 32;
                         let row_ptr_64 = w_p as *const u64;
                         for b in 0..blocks_64 {
-                            crate::asm::pext_unpack_ternary(*row_ptr_64.add(b), w_i8.as_mut_ptr().add(b * 32));
+                            crate::asm::pext_unpack_ternary(*row_ptr_64.add(b), w_aligned.0.as_mut_ptr().add(b * 32));
                         }
 
                         // Remaining weights if n_in is not a multiple of 32 (we assume it is for now)
@@ -2582,7 +2603,7 @@ impl MudInference {
                         crate::asm::ternary_gemv_lut_avx2(
                             n_in,
                             x_p,
-                            w_i8.as_ptr(),
+                            w_aligned.0.as_ptr(),
                             y_p,
                             1.0,
                         );

@@ -58,8 +58,8 @@ fn holographic_scale_search(row_slice: &[f32], absmean: f32) -> f32 {
     best_scale.max(1e-8)
 }
 
-pub fn ternarize_and_pack(tensor: &TensorView, bitnet_scale: f32) -> (Vec<u8>, Vec<f32>) {
-    let floats: Vec<f32> = match tensor.dtype() {
+pub fn to_f32_vec(tensor: &TensorView) -> Vec<f32> {
+    match tensor.dtype() {
         Dtype::F16 => {
             let slice: &[f16] = unsafe {
                 std::slice::from_raw_parts(
@@ -105,7 +105,12 @@ pub fn ternarize_and_pack(tensor: &TensorView, bitnet_scale: f32) -> (Vec<u8>, V
             un_packed
         }
         _ => panic!("Unsupported dtype: {:?}", tensor.dtype()),
-    };
+    }
+}
+
+#[allow(dead_code)]
+pub fn ternarize_and_pack(tensor: &TensorView, bitnet_scale: f32) -> (Vec<u8>, Vec<f32>) {
+    let floats = to_f32_vec(tensor);
 
     let n_rows = if tensor.dtype() == Dtype::U8 {
         tensor.shape()[0] * 4
@@ -114,6 +119,10 @@ pub fn ternarize_and_pack(tensor: &TensorView, bitnet_scale: f32) -> (Vec<u8>, V
     };
     let n_cols = floats.len() / n_rows;
 
+    ternarize_f32_and_pack(&floats, n_rows, n_cols, bitnet_scale)
+}
+
+pub fn ternarize_f32_and_pack(floats: &[f32], n_rows: usize, n_cols: usize, bitnet_scale: f32) -> (Vec<u8>, Vec<f32>) {
     // Compute per-row absmean scales with depth dampening factor (0.707)
     let mut row_scales: Vec<f32> = (0..n_rows)
         .into_par_iter()

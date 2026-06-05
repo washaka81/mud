@@ -63,14 +63,7 @@ mamba_scan_avx2:
     vmovups %ymm1, (%r14, %r13, 4)            # store state_0
     
     # Channel i+1
-    lea (%r14, %rax), %rdi                    # state_1
-    lea (%r15, %rax), %r11                    # a_bar_1 (temporarily overwrite rdi and r11? No, r11 is out! rdi is n!)
-    # Wait, rdi is n! r11 is out! We can't overwrite them!
-    # Let's use push/pop or available registers.
-    # We have rbp, r12, r13, r14, r15, rbx, r10, r11, rcx, r8, r9, rdx, rsi, rdi
-    # This is too complex to write inline without a register map.
-    # Let's revert to scalar fallback for safety if we can't map registers.
-    # Actually, let's just do sequential execution inside the MIMO block to avoid register exhaustion, 
+    # We will compute the second channel using offset addressing directly to avoid register exhaustion.
     # relying on the CPU's Out-Of-Order execution to hide latency.
     
     vmovups (%r14, %r13, 4), %ymm1            # state_0

@@ -272,3 +272,13 @@ path = "tools/gguf_to_mud.rs"
 [[bin]]
 name = "int4_quantizer"
 path = "tools/int4_quantizer.rs"
+
+[[bin]]
+name = "fix_metadata"
+path = "tools/fix_metadata.rs"
+
+
+[[bin]]
+name = "ldt_audit"
+path = "tools/ldt_audit.rs"
+
