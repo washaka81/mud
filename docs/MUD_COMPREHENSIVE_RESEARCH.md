@@ -125,3 +125,50 @@ Given our constraint of **8-16 GB RAM without dedicated GPU**, the optimal conve
    * *MUD Role:* General production assistant model.
 
 Both models will fit comfortably within ~3 GB of active memory when converted to our packed 1.58-bit layout, leaving ample RAM for context caches and systems operation.
+
+---
+
+## 📚 May/June 2026 ArXiv Ternary Research Breakthroughs (Search start=50)
+
+We have evaluated the latest papers from the May 2026 ArXiv index to extract paradigms applicable to the MUD architecture:
+
+### 1. Litespark Inference (arXiv:2605.06485)
+*   **Focus:** Custom SIMD addition/subtraction kernels replacing floating-point multipliers, targeting integer dot-product instructions on consumer CPUs.
+*   **MUD Applicability:** Evaluates custom SIMD performance on AMD, Intel, and Apple Silicon. Achieves up to **52× higher throughput** and 14× memory reduction compared to standard PyTorch. This confirms our design choice of implementing custom AVX2 assembly kernels (like `ternary_gemv_lut_avx2` and `pext_unpack_ternary`) to exploit ternary weights {-1, 0, +1} rather than falling back to standard floating-point runtime multipliers.
+
+### 2. Stochastic Additive No-mulT Attention (S²ANTA) (arXiv:2605.01910)
+*   **Focus:** Sparsifies Value-cache fetches by sampling $S \ll n_k$ indices from the post-softmax distribution and performing gather-and-add (no-mul) operations. Introduces Bernoulli $qK^\mathsf{T}$ sampling for stochastic ternary queries to sparsify key-feature access.
+*   **MUD Applicability:** Provides an alternative to LOP KV Pruning for extremely long contexts (e.g., 32k+). Instead of a deterministic top-$K$ selection, $S^2$ANTA uses stratified stochastic sampling to aggregate values. We can integrate Bernoulli $qK^\mathsf{T}$ sampling as a fallback mechanism for context lengths where deterministic LOP might suffer from cognitive looping.
+
+### 3. LUT-Based Accelerator Space Exploration (arXiv:2604.25183)
+*   **Focus:** Formalizes the design space of Lookup Table (LUT) accelerators for 1.58-bit models (replacing multipliers with conditional additions).
+*   **MUD Applicability:** Demonstrates that while LUT-based weight-reuse is highly effective for high-cost activations (like FP16), it yields diminishing returns for small integer activations. This justifies our development focus on simple AVX2 integer byte-level lookup registers (`vpshufb` / `mpGEMM` patterns) rather than designing complex software LUT caches for quantized activations.
+
+### 4. BitRL: Reinforcement Learning with 1-bit LLMs (arXiv:2604.24273)
+*   **Focus:** Adapts RL algorithms (quantized policy gradients) to the BitNet b1.58 ternary architecture for edge learning, solving the exploration-stability trade-off.
+*   **MUD Applicability:** Provides theoretical convergence bounds under extreme quantization. This is highly valuable for our native `corpus_trainer` and future autonomous learning loops, helping to prevent catastrophic "Zero-Sigma" matrix collapse during on-device reinforcement learning.
+
+---
+
+## 📚 June 2026 ArXiv Ternary Research Breakthroughs (Search start=0)
+
+We have evaluated the latest papers from the June 2026 ArXiv index to extract paradigms applicable to the MUD architecture:
+
+### 1. Meta Flip Graph meets Serendipitous Product: new Fast Matrix Multiplication results (arXiv:2606.02480)
+*   **Focus:** Out of 680 rectangular matrix multiplication formats evaluated, **375 formats found ternary schemes** (using only $\{-1, 0, 1\}$ coefficients) where previously only complex integer or rational coefficients were known.
+*   **MUD Applicability:** Highly valuable for optimizing non-square projections in MUD (like FFN gate/up projections, which project from `hidden` to `ffn_hidden`, e.g., $D \to 4D$ or $4D \to D$). We can decompose these rectangular projections into these newly discovered fast ternary multiplication layouts, avoiding unnecessary operations and increasing decode speed on edge CPUs.
+
+### 2. In-Memory Computing Macro for Ternary Weights (arXiv:2605.30814)
+*   **Focus:** SRAM-based analog computing-in-memory macro supporting 2-4b weight, 1-7b input, with dual-8T bitcells for ternary weight storage and decoupled read paths to improve discharge current linearity.
+*   **MUD Applicability:** Represents the hardware state-of-the-art direction for ternary architectures. While our focus is on software execution on commodity CPUs/iGPUs, understanding the voltage-charge representation helps us model simulated hardware behaviors in our Vulkan shaders.
+
+### 3. FairyFuse: Multiplication-Free LLM Inference on CPUs via Fused Ternary Kernels (arXiv:2604.20913)
+*   **Focus:** A CPU-only inference engine executing ternary weight-activation multiplication-free loops via fused AVX-512/AVX2 kernels. It shifts deeply memory-bound GEMV operations toward the compute-bound regime by avoiding dequantization to float, instead performing masked additions/subtractions using BMI2.
+*   **MUD Applicability:** Directly supports our `BIT-01` lookup register optimizations. Fusing linear layers (like gates and projections) into a single execution pass using BMI2 instructions to decode ternary bits fits MUD's AVX2 kernel strategy perfectly.
+
+### 4. ITQ3_S: High-Fidelity 3-bit LLM Inference via Interleaved Ternary Quantization with Rotation-Domain Smoothing (arXiv:2603.27914)
+*   **Focus:** Smooths outlier activations/weights using offline Fast Walsh-Hadamard Transform (FWHT) pre-rotation, followed by uniform ternary coding. Reconstructs online by fusing the inverse FWHT into the matrix loading stage of the kernel.
+*   **MUD Applicability:** Spreading outlier energy through the rotation domain mitigates the severe post-training degradation typical of naive ternary quantization. We can explore integrating FWHT pre-rotation into our `universal_converter` calibration step.
+
+
+

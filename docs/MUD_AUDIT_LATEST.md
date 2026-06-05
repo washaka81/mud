@@ -65,8 +65,8 @@ cargo test              ✅  21/21 passed, 0 failed
 | INF-08 | `inference.rs` | ~~`RwLock<usize>` para `active_experts` en hot path~~ | **FIXED** — Migrado a `AtomicUsize`. |
 | INF-09 | `inference.rs` | ~~Incoherencia posicional (Word Salad)~~ | **FIXED** — Implementado **Split RoPE** (LLaMA-style) y restauración de escalas de cuantización. |
 | PERF-01 | `inference.rs` | ~~`vec![0.0; _pos + 1]` en cada head~~ | **FIXED** — **Zero-Allocation Hot-Loop** integrado en `InferenceWorkspace`. |
-| PERF-05 | `tokenizer.rs` | 🔴 Alto | BPE O(n²) → priority queue O(n log n) |
-| PERF-08 | `auto_trainer.rs` | 🔴 Alto | `shadow_w{1,2,3}.clone()` × 3 por token para la tape → refactorizar para no clonar |
+| PERF-05 | `tokenizer.rs` | ~~BPE O(n²) → priority queue O(n log n)~~ | **FIXED** (EDGE-05) — Algoritmo BPE re-escrito a O(N log N) con cola de prioridad y linked-list para evitar loops cuadráticos de clonación y búsquedas. |
+| PERF-08 | `corpus_trainer.rs` | ~~shadow_w{1,2,3}.clone() × 3 por token para la tape → refactorizar para no clonar~~ | **FIXED** — Reemplazado closure de QAT y `to_vec()` de clase por proyección y QAT in-place directamente en el vector pre-asignado `class_embs`. |
 | PERF-03 | `inference.rs` | 🟠 Medio | `vec![0.0; ...]` × num_experts en rayon → buffer pool |
 | PERF-04 | `main.rs` | 🟠 Medio | `type_writer` O(n²) → comparación directa sobre chars |
 | PERF-06 | `inference.rs` | 🟡 Bajo | `format!("l{}_q", l)` en hot path → preallocar keys |
@@ -122,6 +122,8 @@ Issues corregidos y verificados en sesiones anteriores:
 | 38 | Qwen2.5-0.5B conversion | `universal_converter/parser.rs`, `downloaded_model.safetensors` | Bias tensors ignorados (parser fix). GQA 14:2 heads. Vocab 151k. 943 MB → 122 MB (7.7×). |
 | 39 | Auto-Trainer rewrite (EN REVISIÓN) | `auto_trainer.rs` | Multi-capa, escalas, persistencia, gate trainable, full voc CE, type-safe. Pendiente revisión. |
 | 40 | Doc overhaul | `docs/*` | Roadmap + Audit + Embed Ternarization docs actualizados. |
+| 41 | Deferred Scaling (Softmax/RMSNorm) | `src/mud/inference.rs` | El scale de RMSNorm del query/key se difirió y fusionó en los scores de atención, y el scale de RMSNorm del value se difirió y fusionó en la dequantización del GEMV, eliminando overhead vectorial de pre-escala. |
+| 42 | KV-Cache LOP Pruning (VitaLLM) | `src/mud/inference.rs` | Implementado filtrado de top-32 tokens en tiempo de decodificación usando similitudes estimadas con bitwise-masked IEEE-754 nearest power-of-two. |
 
 ---
 

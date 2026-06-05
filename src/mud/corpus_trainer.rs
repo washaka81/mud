@@ -764,22 +764,29 @@ impl MudCorpusTrainer {
             let num_classes = 1 + neg_ids.len();
             let mut class_embs = Vec::with_capacity(num_classes * hidden_size);
 
-            let mut push_qat = |id: usize| {
-                let start = id * hidden_size;
-                let mut emb = shadow_emb[start..start + hidden_size].to_vec();
-                let absmean = emb.iter().map(|v| v.abs()).sum::<f32>() / hidden_size as f32;
+            // clase 0 = target (positivo)
+            {
+                let start = target_id * hidden_size;
+                class_embs.extend_from_slice(&shadow_emb[start..start + hidden_size]);
+                let slice = &mut class_embs[0..hidden_size];
+                let absmean = slice.iter().map(|v| v.abs()).sum::<f32>() / (hidden_size as f32);
                 let scale = (absmean * 0.707).max(1e-8);
-                for v in &mut emb {
+                for v in slice {
                     *v = (*v / scale).round().clamp(-1.0, 1.0) * scale;
                 }
-                class_embs.extend_from_slice(&emb);
-            };
-
-            // clase 0 = target (positivo)
-            push_qat(target_id);
-            for &neg in &neg_ids {
-                push_qat(neg);
             }
+
+            for (ni, &neg) in neg_ids.iter().enumerate() {
+                let start = neg * hidden_size;
+                class_embs.extend_from_slice(&shadow_emb[start..start + hidden_size]);
+                let slice = &mut class_embs[(1 + ni) * hidden_size..(2 + ni) * hidden_size];
+                let absmean = slice.iter().map(|v| v.abs()).sum::<f32>() / (hidden_size as f32);
+                let scale = (absmean * 0.707).max(1e-8);
+                for v in slice {
+                    *v = (*v / scale).round().clamp(-1.0, 1.0) * scale;
+                }
+            }
+
 
             let emb_node = tape.push_leaf(class_embs, vec![num_classes, hidden_size]);
             let logits = tape.linear(x_node, emb_node);

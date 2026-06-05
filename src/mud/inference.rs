@@ -6,6 +6,12 @@ use crate::vulkan::VulkanContext;
 use std::sync::Arc;
 use vulkano::buffer::Subbuffer;
 
+#[inline(always)]
+fn approx_p2(x: f32) -> f32 {
+    let bits = x.to_bits();
+    f32::from_bits(bits & 0xFF800000)
+}
+
 pub struct MudExpert {
     pub w1: *const u32,
     pub w2: *const u32,
@@ -146,6 +152,8 @@ pub struct InferenceWorkspace {
     pub routing_results: parking_lot::RwLock<Vec<(usize, f32)>>,
     pub trace_in_buffer: parking_lot::RwLock<Vec<f32>>,
     pub routing_z_loss: parking_lot::Mutex<f32>,
+    pub lop_temp: parking_lot::Mutex<Vec<(usize, f32)>>,
+    pub lop_active: parking_lot::Mutex<Vec<bool>>,
 }
 
 pub struct ExpertWorkspace {
@@ -449,6 +457,8 @@ impl InferenceWorkspace {
             routing_results: parking_lot::RwLock::new(Vec::with_capacity(8)),
             trace_in_buffer: parking_lot::RwLock::new(vec![0.0f32; hidden]),
             routing_z_loss: parking_lot::Mutex::new(0.0),
+            lop_temp: parking_lot::Mutex::new(Vec::with_capacity(4096)),
+            lop_active: parking_lot::Mutex::new(vec![false; 4096]),
         }
     }
 }
@@ -1075,7 +1085,8 @@ impl MudInference {
                         let mut x_norm_guard = ws.x_norm.write();
                         unsafe {
                             for i in 0..hidden {
-                                x_norm_guard[i] = x_guard[i] * scale_attn * (*norm_ptr.add(i));
+                                // DEFERRED SCALING: Do not multiply by scale_attn here
+                                x_norm_guard[i] = x_guard[i] * (*norm_ptr.add(i));
                             }
                         }
                     }
@@ -1146,6 +1157,14 @@ impl MudInference {
                     let scale = 1.0 / (hd as f32).sqrt();
 
                     let max_pos = _pos.min(4095);
+                    
+                    // DEFERRED SCALING: Save current token's RMSNorm scale into cache
+                    let scale_offset = l * 4096 * nkv + max_pos * nkv;
+                    if scale_offset + nkv <= self.kv_scales_k.len() {
+                        self.kv_scales_k[scale_offset..scale_offset + nkv].fill(scale_attn);
+                        self.kv_scales_v[scale_offset..scale_offset + nkv].fill(scale_attn);
+                    }
+
                     let cache_offset = l * 4096 * hidden + max_pos * hidden;
                     if cache_offset + hidden <= self.kv_cache_k.len() {
                         let k_guard = ws.k.read();
@@ -1170,6 +1189,35 @@ impl MudInference {
                             let seq_len = max_pos + 1;
                             let scores = &mut scores_guard[0..seq_len];
 
+                            // KV-Cache LOP Pruning per head: select top-32 keys using sign-magnitude power-of-two approximations
+                            let active_guard = if seq_len > 32 {
+                                let mut temp = ws.lop_temp.lock();
+                                let mut active = ws.lop_active.lock();
+                                temp.clear();
+
+                                for t in 0..seq_len {
+                                    let t_off = l * 4096 * hidden + t * hidden + kv_off;
+                                    let k_t_h = &self.kv_cache_k[t_off..t_off + hd];
+                                    
+                                    let mut s_val = 0.0f32;
+                                    for i in 0..hd {
+                                        let approx_q = approx_p2(q_h[i]);
+                                        let approx_k = approx_p2(k_t_h[i]);
+                                        s_val += approx_q * approx_k;
+                                    }
+                                    temp.push((t, s_val));
+                                }
+
+                                temp.select_nth_unstable_by(31, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                                active[..seq_len].fill(false);
+                                for &(idx, _) in &temp[0..32] {
+                                    active[idx] = true;
+                                }
+                                Some(active)
+                            } else {
+                                None
+                            };
+
                             // Optimized dot product loop
                             // ALiBi slope: m = 2^(-8 * (h_idx+1) / num_heads)
                             let alibi_m = if self.model.use_alibi {
@@ -1181,16 +1229,24 @@ impl MudInference {
 
                             let mut max_score = f32::NEG_INFINITY;
                             for (t, score_item) in scores.iter_mut().enumerate().take(seq_len) {
+                                if let Some(ref act) = active_guard {
+                                    if !act[t] {
+                                        *score_item = f32::NEG_INFINITY;
+                                        continue;
+                                    }
+                                }
+
                                 let t_off = l * 4096 * hidden + t * hidden + kv_off;
                                 let k_t_h = &self.kv_cache_k[t_off..t_off + hd];
                                 let score_val = unsafe {
                                     crate::asm::dot_product_avx2(hd, q_h.as_ptr(), k_t_h.as_ptr())
                                 };
-                                let mut score = score_val * scale;
+                                
+                                // DEFERRED SCALING: apply current token and past key scales here
+                                let key_scale = self.kv_scales_k[l * 4096 * nkv + t * nkv + (h / kv_group)];
+                                let mut score = score_val * scale * scale_attn * key_scale;
                                 
                                 if self.model.use_alibi {
-                                    // distance = t - current_pos (usually max_pos)
-                                    // t <= max_pos, so t - max_pos is <= 0
                                     let distance = t as isize - max_pos as isize;
                                     score += alibi_m * distance as f32;
                                 }
@@ -1223,9 +1279,17 @@ impl MudInference {
                             let out_h_slice = &mut attn_out_guard[q_off..q_off + hd];
                             out_h_slice.fill(0.0);
                             for (t, &s_val) in scores.iter().enumerate().take(seq_len) {
+                                if let Some(ref act) = active_guard {
+                                    if !act[t] {
+                                        continue;
+                                    }
+                                }
                                 let t_off = l * 4096 * hidden + t * hidden + kv_off;
                                 let v_t_h = &self.kv_cache_v[t_off..t_off + hd];
-                                let w = s_val;
+                                
+                                // DEFERRED SCALING: apply past value scale to restore scale consistency
+                                let v_scale = self.kv_scales_v[l * 4096 * nkv + t * nkv + (h / kv_group)];
+                                let w = s_val * v_scale;
                                 // Use AXPY-like loop for weighted sum
                                 for i in 0..hd {
                                     out_h_slice[i] += w * v_t_h[i];
@@ -2532,6 +2596,23 @@ impl MudInference {
         y: &UnifiedBuffer,
         is_async: bool,
     ) {
+        Self::gemv_vulkan_or_cpu_scaled(vk_ctx, key, n_in, n_out, x, w, scales, y, is_async, 1.0);
+    }
+
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemv_vulkan_or_cpu_scaled(
+        vk_ctx: Option<&VulkanContext>,
+        key: &str,
+        n_in: usize,
+        n_out: usize,
+        x: &UnifiedBuffer,
+        w: *const u32,
+        scales: *const f32,
+        y: &UnifiedBuffer,
+        is_async: bool,
+        scale_post: f32,
+    ) {
 
 
         let mut vlk_done = false;
@@ -2551,6 +2632,16 @@ impl MudInference {
                     vlk_done = true;
                 }
             }
+        }
+
+        if vlk_done {
+            if scale_post != 1.0 {
+                let mut y_guard = y.write();
+                for val in y_guard.iter_mut().take(n_out) {
+                    *val *= scale_post;
+                }
+            }
+            return;
         }
 
         if !vlk_done {
@@ -2609,9 +2700,9 @@ impl MudInference {
                         );
 
                         if !s_p.is_null() {
-                            *y_p *= *s_p.add(i) * inv_q_scale;
+                            *y_p *= *s_p.add(i) * inv_q_scale * scale_post;
                         } else {
-                            *y_p *= inv_q_scale;
+                            *y_p *= inv_q_scale * scale_post;
                         }
                     }
                 });

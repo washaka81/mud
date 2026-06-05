@@ -208,10 +208,9 @@ impl Tokenizer {
 
     /// Internal BPE encoder for a single text fragment.
     fn encode_bpe(&self, text: &str) -> Vec<u32> {
-        let mut tokens = Vec::new();
         let bytes = text.as_bytes();
         // Pre-tokenization: map bytes to special unicode characters
-        let mut words: Vec<String> = bytes
+        let words: Vec<String> = bytes
             .iter()
             .map(|&b| self.byte_encoder.get(&b).unwrap().to_string())
             .collect();
@@ -220,43 +219,95 @@ impl Tokenizer {
             return vec![];
         }
 
-        // Iteratively merge the best pairs according to the merge ranks
-        loop {
-            let mut best_pair: Option<(String, String)> = None;
-            let mut best_rank = u32::MAX;
+        #[derive(Clone)]
+        struct Part {
+            text: String,
+            prev: isize,
+            next: isize,
+        }
 
-            for i in 0..words.len().saturating_sub(1) {
-                let pair = (words[i].clone(), words[i + 1].clone());
-                if let Some(&rank) = self.merges.get(&pair) {
-                    if rank < best_rank {
-                        best_rank = rank;
-                        best_pair = Some(pair);
-                    }
-                }
-            }
+        let mut parts = Vec::with_capacity(words.len());
+        for (i, w) in words.iter().enumerate() {
+            parts.push(Part {
+                text: w.clone(),
+                prev: i as isize - 1,
+                next: if i == words.len() - 1 { -1 } else { i as isize + 1 },
+            });
+        }
 
-            if let Some(pair) = best_pair {
-                let mut new_words = Vec::new();
-                let mut i = 0;
-                while i < words.len() {
-                    if i < words.len() - 1 && words[i] == pair.0 && words[i + 1] == pair.1 {
-                        new_words.push(format!("{}{}", pair.0, pair.1));
-                        i += 2;
-                    } else {
-                        new_words.push(words[i].clone());
-                        i += 1;
-                    }
-                }
-                words = new_words;
-            } else {
-                break;
+        use std::collections::BinaryHeap;
+        use std::cmp::Ordering;
+
+        #[derive(Eq, PartialEq)]
+        struct MergePair {
+            rank: u32,
+            left_idx: usize,
+            right_idx: usize,
+        }
+
+        impl Ord for MergePair {
+            fn cmp(&self, other: &Self) -> Ordering {
+                // Min-heap on rank
+                other.rank.cmp(&self.rank)
             }
         }
 
-        for w in words {
-            if let Some(&id) = self.vocab.get(&w) {
+        impl PartialOrd for MergePair {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut heap = BinaryHeap::new();
+        for i in 0..parts.len() - 1 {
+            let pair = (parts[i].text.clone(), parts[i + 1].text.clone());
+            if let Some(&rank) = self.merges.get(&pair) {
+                heap.push(MergePair { rank, left_idx: i, right_idx: i + 1 });
+            }
+        }
+
+        while let Some(MergePair { rank: _, left_idx, right_idx }) = heap.pop() {
+            // Check if the pair is still valid and adjacent
+            if parts[left_idx].next != right_idx as isize || parts[right_idx].prev != left_idx as isize {
+                continue;
+            }
+
+            // Merge right_idx into left_idx
+            let right_text = parts[right_idx].text.clone();
+            parts[left_idx].text.push_str(&right_text);
+            
+            let next_idx = parts[right_idx].next;
+            parts[left_idx].next = next_idx;
+            if next_idx != -1 {
+                parts[next_idx as usize].prev = left_idx as isize;
+            }
+
+            // Push new adjacent pairs to heap
+            let next_idx = parts[left_idx].next;
+            if next_idx != -1 {
+                let pair = (parts[left_idx].text.clone(), parts[next_idx as usize].text.clone());
+                if let Some(&rank) = self.merges.get(&pair) {
+                    heap.push(MergePair { rank, left_idx, right_idx: next_idx as usize });
+                }
+            }
+
+            let prev_idx = parts[left_idx].prev;
+            if prev_idx != -1 {
+                let pair = (parts[prev_idx as usize].text.clone(), parts[left_idx].text.clone());
+                if let Some(&rank) = self.merges.get(&pair) {
+                    heap.push(MergePair { rank, left_idx: prev_idx as usize, right_idx: left_idx });
+                }
+            }
+        }
+
+        let mut tokens = Vec::new();
+        let mut curr = 0isize;
+        while curr != -1 {
+            let part = &parts[curr as usize];
+            if let Some(&id) = self.vocab.get(&part.text) {
                 tokens.push(id);
             }
+            curr = part.next;
         }
         tokens
     }

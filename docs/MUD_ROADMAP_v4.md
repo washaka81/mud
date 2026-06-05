@@ -94,9 +94,9 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 | Mamba SSM O(1) | [2312.00752](https://arxiv.org/abs/2312.00752) | ✅ IDEAL | O(1) fijo | contexto gratis | ✅ DONE |
 | GQA grupos KV | [2305.13245](https://arxiv.org/abs/2305.13245) | ✅ ACTIVO | -75% KV | +latencia | ✅ DONE |
 | RoPE in-place | [2104.09864](https://arxiv.org/abs/2104.09864) | ✅ ACTIVO | 0 extra | 0 overhead | ✅ DONE |
-| **z-loss router** | [2202.08906](https://arxiv.org/abs/2202.08906) | ✅ CRÍTICO | 0 extra | +estabilidad QAT | 🔴 Sprint 1 |
-| **Attention Sinks** | [2309.17453](https://arxiv.org/abs/2309.17453) | ✅ CRÍTICO | 0 extra | fix coherencia | 🔴 Sprint 1 |
-| **Embedding INT4** | K-Quants | ✅ CRÍTICO | -2 GB | -87% vocab | 🔴 Sprint 1 |
+| **z-loss router** | [2202.08906](https://arxiv.org/abs/2202.08906) | ✅ CRÍTICO | 0 extra | +estabilidad QAT | ✅ DONE |
+| **Attention Sinks** | [2309.17453](https://arxiv.org/abs/2309.17453) | ✅ CRÍTICO | 0 extra | fix coherencia | ✅ DONE |
+| **Embedding INT4** | K-Quants | ✅ CRÍTICO | -2 GB | -87% vocab | ✅ DONE |
 | **COCONUT loop** | [2412.06769](https://arxiv.org/abs/2412.06769) | ✅ IDEAL | 0 extra | +reasoning | 🟠 Sprint 2 |
 | **ALiBi** | [2108.12409](https://arxiv.org/abs/2108.12409) | ✅ IDEAL | 0 extra | contexto ∞ | 🟡 Sprint 3 |
 | Mamba-3 MIMO | [2603.15569](https://arxiv.org/abs/2603.15569) | ✅ FACTIBLE | 0 extra | +20% AVX2 | 🟠 Sprint 2 |
@@ -107,6 +107,8 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 | Vulkan Zero-Copy | MUD actual | ✅ iGPU only | 0 (shared) | 20 t/s iGPU | 🟠 Sprint 2 |
 | FlashAttention | [2205.14135](https://arxiv.org/abs/2205.14135) | ❌ GPU req. | N/A | +2-4× | ⚫ Futuro |
 | P2P WiFi Swarm | MUD Roadmap | ❌ N nodos | N × RAM | +lineal | ⚫ Futuro |
+| KV-Cache LOP Pruning | [2604.27396](https://arxiv.org/abs/2604.27396) | ✅ IDEAL | -54x RAM trafic | +35% decode t/s | ✅ DONE |
+| Deferred Scaling (Softmax/RMS) | [2604.27396](https://arxiv.org/abs/2604.27396) | ✅ CRÍTICO | 0 extra | evita pipeline stalls | ✅ DONE |
 
 ---
 
@@ -286,20 +288,22 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 
 | # | Ítem | Esfuerzo | Impacto en PC Modesto | Paper |
 |---|------|----------|----------------------|-------|
-| 1 | **EDGE-03: z-loss router** | 1 día | 🔴 Estabiliza QAT ahora mismo | [2202.08906](https://arxiv.org/abs/2202.08906) |
-| 2 | **EDGE-01: Attention Sinks** | 2 días | 🔴 Fix coherencia pos.4000 | [2309.17453](https://arxiv.org/abs/2309.17453) |
-| 3 | **EDGE-02: Embedding INT4** | 3 días | 🔴 -2 GB RAM, -87% vocab | K-Quants |
-| 4 | **RRM-01: COCONUT loop** | 5 días | 🟠 +reasoning, 0 RAM extra | [2412.06769](https://arxiv.org/abs/2412.06769) |
-| 5 | **AWAKE-01: Self-Aligner** | 10 días | 🔴 8.8% → 99.9% coherencia | [1712.05877](https://arxiv.org/abs/1712.05877) |
-| 6 | **EDGE-05: BPE O(n log n)** | 5 días | 🟠 -latencia prompts largos | PERF-05 fix |
-| 7 | **BIT-01: AVX2 vs LUT audit** | 7 días | 🟠 +50% TPS potencial | [2410.16144](https://arxiv.org/abs/2410.16144) |
-| 8 | **UNIV-01: Converter Phi-4-mini** | 15 días | 🔴 Modelo maestro nuevo SOTA | [2402.17764](https://arxiv.org/abs/2402.17764) |
-| 9 | **MATH-03: Mamba-3 MIMO** | 12 días | 🟠 +20-25% AVX2 intensity | [2603.15569](https://arxiv.org/abs/2603.15569) |
-| 10 | **DECL-02: ALiBi** | 4 días | 🟡 256k contexto gratis | [2108.12409](https://arxiv.org/abs/2108.12409) |
-| 11 | **ALIGN-02: TTT Layers** | 20 días | 🟡 +calidad (1-2 capas max) | [2407.04620](https://arxiv.org/abs/2407.04620) |
-| 12 | **EDGE-04: MUD-Executable** | 8 días | 🟡 Portabilidad total | Llamafile |
-| 13 | **LDT-01: Lattice Projections** | 45 días | ⚫ Investigación | [2502.17416](https://arxiv.org/abs/2502.17416) |
-| 14 | **RRM-02: Vulkan Async** | 30 días | 🟡 +2-3× throughput iGPU | [2211.17192](https://arxiv.org/abs/2211.17192) |
+| 1 | ~~**EDGE-03: z-loss router**~~ | 1 día | 🔴 Estabiliza QAT ahora mismo | [2202.08906](https://arxiv.org/abs/2202.08906) |
+| 2 | ~~**PERF-01: Deferred Scaling**~~ | 2 días | 🔴 Evita stalls Softmax/RMS | [2604.27396](https://arxiv.org/abs/2604.27396) |
+| 3 | ~~**EDGE-01: Attention Sinks**~~ | 2 días | 🔴 Fix coherencia pos.4000 | [2309.17453](https://arxiv.org/abs/2309.17453) |
+| 4 | ~~**EDGE-02: Embedding INT4**~~ | 3 días | 🔴 -2 GB RAM, -87% vocab | K-Quants |
+| 5 | ~~**PERF-02: LOP KV Pruning**~~ | 4 días | 🟠 +35% TPS, -54x EMA | [2604.27396](https://arxiv.org/abs/2604.27396) |
+| 6 | **RRM-01: COCONUT loop** | 5 días | 🟠 +reasoning, 0 RAM extra | [2412.06769](https://arxiv.org/abs/2412.06769) |
+| 7 | **AWAKE-01: Self-Aligner** | 10 días | 🔴 8.8% → 99.9% coherencia | [1712.05877](https://arxiv.org/abs/1712.05877) |
+| 8 | ~~**EDGE-05: BPE O(n log n)**~~ | 5 días | 🟠 -latencia prompts largos | PERF-05 fix |
+| 9 | **BIT-01: AVX2 vs LUT audit** | 7 días | 🟠 +50% TPS potencial | [2410.16144](https://arxiv.org/abs/2410.16144) |
+| 10 | **UNIV-01: Converter Phi-4-mini** | 15 días | 🔴 Modelo maestro nuevo SOTA | [2402.17764](https://arxiv.org/abs/2402.17764) |
+| 11 | **MATH-03: Mamba-3 MIMO** | 12 días | 🟠 +20-25% AVX2 intensity | [2603.15569](https://arxiv.org/abs/2603.15569) |
+| 12 | **DECL-02: ALiBi** | 4 días | 🟡 256k contexto gratis | [2108.12409](https://arxiv.org/abs/2108.12409) |
+| 13 | **ALIGN-02: TTT Layers** | 20 días | 🟡 +calidad (1-2 capas max) | [2407.04620](https://arxiv.org/abs/2407.04620) |
+| 14 | **EDGE-04: MUD-Executable** | 8 días | 🟡 Portabilidad total | Llamafile |
+| 15 | **LDT-01: Lattice Projections** | 45 días | ⚫ Investigación | [2502.17416](https://arxiv.org/abs/2502.17416) |
+| 16 | **RRM-02: Vulkan Async** | 30 días | 🟡 +2-3× throughput iGPU | [2211.17192](https://arxiv.org/abs/2211.17192) |
 
 ---
 
@@ -317,6 +321,7 @@ Cada ítem del roadmap ahora incluye tres dimensiones de evaluación:
 | Looped Transformers [2502.17416] | Recursión > más params (mismo budget) | Validación teórica RRM | ★★★★☆ |
 | Speculative Decoding [2211.17192] | 2-3× throughput en producción | RRM-02 Vulkan | ★★★★☆ |
 | TTT [2407.04620] | Supera Mamba-2 en long-context | ALIGN-02 (1-2 capas) | ★★★☆☆ |
+| VitaLLM [2604.27396] | LOP: -54x mem. Deferred Scaling. | Implementación directa en MUD | ★★★★★ |
 
 ---
 
