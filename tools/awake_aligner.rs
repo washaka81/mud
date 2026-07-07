@@ -1,8 +1,8 @@
 use forge_llm::mud::{MudFile, MudTensorType};
+use memmap2::Mmap;
 use safetensors::SafeTensors;
 use std::env;
 use std::fs::File;
-use memmap2::Mmap;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -29,21 +29,39 @@ fn main() -> anyhow::Result<()> {
 
         if let Some(core) = mud_file.skills.get_mut("core") {
             let mud_tensor_names: Vec<String> = core.tensors.keys().cloned().collect();
-            
+
             for name in mud_tensor_names {
                 let sf_name = match name.as_str() {
                     "token_embd.weight" => "model.embed_tokens.weight".to_string(),
                     "output.weight" => "lm_head.weight".to_string(),
                     "output_norm.weight" => "model.norm.weight".to_string(),
-                    _ if name.contains("attn_q") => name.replace("blk.", "model.layers.").replace(".attn_q.weight", ".self_attn.q_proj.weight"),
-                    _ if name.contains("attn_k") => name.replace("blk.", "model.layers.").replace(".attn_k.weight", ".self_attn.k_proj.weight"),
-                    _ if name.contains("attn_v") => name.replace("blk.", "model.layers.").replace(".attn_v.weight", ".self_attn.v_proj.weight"),
-                    _ if name.contains("attn_output") => name.replace("blk.", "model.layers.").replace(".attn_output.weight", ".self_attn.o_proj.weight"),
-                    _ if name.contains("expert.0.w1") => name.replace("blk.", "model.layers.").replace(".expert.0.w1.weight", ".mlp.gate_proj.weight"),
-                    _ if name.contains("expert.0.w2") => name.replace("blk.", "model.layers.").replace(".expert.0.w2.weight", ".mlp.down_proj.weight"),
-                    _ if name.contains("expert.0.w3") => name.replace("blk.", "model.layers.").replace(".expert.0.w3.weight", ".mlp.up_proj.weight"),
-                    _ if name.contains("attn_norm") => name.replace("blk.", "model.layers.").replace(".attn_norm.weight", ".input_layernorm.weight"),
-                    _ if name.contains("norm") && name.starts_with("blk") => name.replace("blk.", "model.layers.").replace(".norm.weight", ".post_attention_layernorm.weight"),
+                    _ if name.contains("attn_q") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".attn_q.weight", ".self_attn.q_proj.weight"),
+                    _ if name.contains("attn_k") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".attn_k.weight", ".self_attn.k_proj.weight"),
+                    _ if name.contains("attn_v") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".attn_v.weight", ".self_attn.v_proj.weight"),
+                    _ if name.contains("attn_output") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".attn_output.weight", ".self_attn.o_proj.weight"),
+                    _ if name.contains("expert.0.w1") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".expert.0.w1.weight", ".mlp.gate_proj.weight"),
+                    _ if name.contains("expert.0.w2") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".expert.0.w2.weight", ".mlp.down_proj.weight"),
+                    _ if name.contains("expert.0.w3") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".expert.0.w3.weight", ".mlp.up_proj.weight"),
+                    _ if name.contains("attn_norm") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".attn_norm.weight", ".input_layernorm.weight"),
+                    _ if name.contains("norm") && name.starts_with("blk") => name
+                        .replace("blk.", "model.layers.")
+                        .replace(".norm.weight", ".post_attention_layernorm.weight"),
                     _ => continue,
                 };
 
@@ -52,11 +70,23 @@ fn main() -> anyhow::Result<()> {
                         println!("    💎 Keeping {} in FP32 for Signal Boost...", name);
                         let sf_data = sf_tensor.data();
                         let floats: Vec<f32> = match sf_tensor.dtype() {
-                            safetensors::Dtype::BF16 => sf_data.chunks_exact(2).map(|b| half::bf16::from_le_bytes([b[0], b[1]]).to_f32()).collect(),
-                            safetensors::Dtype::F16 => sf_data.chunks_exact(2).map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32()).collect(),
+                            safetensors::Dtype::BF16 => sf_data
+                                .chunks_exact(2)
+                                .map(|b| half::bf16::from_le_bytes([b[0], b[1]]).to_f32())
+                                .collect(),
+                            safetensors::Dtype::F16 => sf_data
+                                .chunks_exact(2)
+                                .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
+                                .collect(),
                             _ => vec![],
                         };
-                        let bytes = unsafe { std::slice::from_raw_parts(floats.as_ptr() as *const u8, floats.len() * 4) }.to_vec();
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts(
+                                floats.as_ptr() as *const u8,
+                                floats.len() * 4,
+                            )
+                        }
+                        .to_vec();
                         if let Some(t) = core.tensors.get_mut(&name) {
                             t.owned_data = Some(bytes);
                             t.t_type = MudTensorType::Float32;
@@ -65,7 +95,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     println!("    ✨ Matching: {}...", name);
-                    
+
                     let shape = sf_tensor.shape();
                     let rows = if shape.len() > 1 { shape[0] } else { 1 };
                     let cols = if shape.len() > 1 { shape[1] } else { shape[0] };
@@ -89,7 +119,12 @@ fn main() -> anyhow::Result<()> {
                                     half::f16::from_le_bytes(b).to_f32()
                                 }
                                 safetensors::Dtype::F32 => {
-                                    let b = [sf_data[idx * 4], sf_data[idx * 4 + 1], sf_data[idx * 4 + 2], sf_data[idx * 4 + 3]];
+                                    let b = [
+                                        sf_data[idx * 4],
+                                        sf_data[idx * 4 + 1],
+                                        sf_data[idx * 4 + 2],
+                                        sf_data[idx * 4 + 3],
+                                    ];
                                     f32::from_le_bytes(b)
                                 }
                                 _ => 0.0,
@@ -103,7 +138,7 @@ fn main() -> anyhow::Result<()> {
                             1e-8
                         };
                         new_scales.push(s);
-                        
+
                         for c in 0..cols {
                             let idx = r * cols + c;
                             ternary_data[idx] = (ternary_data[idx] / s).round().clamp(-1.0, 1.0);
@@ -111,31 +146,49 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Update weight
-                    let u32_count = total_elements.div_ceil(16);
+                    let u32_count = total_elements.div_ceil(8);
                     let mut packed = vec![0u32; u32_count];
                     for i in 0..total_elements {
-                        let bit = if ternary_data[i] > 0.5 { 1u32 } else if ternary_data[i] < -0.5 { 2u32 } else { 0u32 };
-                        packed[i / 16] |= bit << ((i % 16) * 2);
+                        let bit = if ternary_data[i] > 0.5 {
+                            1u32
+                        } else if ternary_data[i] < -0.5 {
+                            2u32
+                        } else {
+                            0u32
+                        };
+                        packed[i / 8] |= bit << ((i % 8) * 4);
                     }
-                    let packed_bytes = unsafe { std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4) }.to_vec();
-                    
+                    let packed_bytes = unsafe {
+                        std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4)
+                    }
+                    .to_vec();
+
                     if let Some(t) = core.tensors.get_mut(&name) {
                         t.owned_data = Some(packed_bytes);
                         t.t_type = MudTensorType::Ternary2Bit;
                     }
 
                     // Update scales
-                    let scale_bytes = unsafe { std::slice::from_raw_parts(new_scales.as_ptr() as *const u8, new_scales.len() * 4) }.to_vec();
+                    let scale_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            new_scales.as_ptr() as *const u8,
+                            new_scales.len() * 4,
+                        )
+                    }
+                    .to_vec();
                     let scale_name = name.replace(".weight", ".prq_scale");
-                    core.tensors.insert(scale_name, forge_llm::mud::MudTensor {
-                        name: "scale".to_string(),
-                        t_type: MudTensorType::Float32,
-                        shape: vec![rows],
-                        data_ptr: std::ptr::null(),
-                        offset: 0,
-                        mmap: None,
-                        owned_data: Some(scale_bytes),
-                    });
+                    core.tensors.insert(
+                        scale_name,
+                        forge_llm::mud::MudTensor {
+                            name: "scale".to_string(),
+                            t_type: MudTensorType::Float32,
+                            shape: vec![rows],
+                            data_ptr: std::ptr::null(),
+                            offset: 0,
+                            mmap: None,
+                            owned_data: Some(scale_bytes),
+                        },
+                    );
                 }
             }
         }

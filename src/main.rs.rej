@@ -1,0 +1,18 @@
+--- src/main.rs
++++ src/main.rs
+@@ -107,6 +107,7 @@
+     
+     let mut token = start_token;
+     let mut gen_count = 0;
++    let mut generated_tokens = Vec::new();
+ 
+     // Speculative DRAFER init
+     let speculative = args.contains(&"--speculative".to_string());
+@@ -174,6 +184,7 @@
+ 
+             let next_token = forge_llm::mud::self_play::sample_top_p(&logits, 0.95);
+             token = next_token as u32;
++            generated_tokens.push(token);
+         }
+ 
+         if let Some(s) = tokenizer.decode(token) {

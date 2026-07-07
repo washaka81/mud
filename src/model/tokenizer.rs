@@ -28,12 +28,8 @@ impl Tokenizer {
         let sep = if tokens_str.contains('\n') { '\n' } else { ',' };
 
         for (i, t) in tokens_str.split(sep).enumerate() {
-            let clean_t = t.trim();
-            if clean_t.is_empty() && i > 0 {
-                continue;
-            }
-            id_to_token.push(clean_t.to_string());
-            vocab.insert(clean_t.to_string(), i as u32);
+            id_to_token.push(t.to_string());
+            vocab.insert(t.to_string(), i as u32);
         }
 
         let mut merges = HashMap::new();
@@ -206,13 +202,26 @@ impl Tokenizer {
         final_tokens
     }
 
+    /// Encodes a string simply to match the API expected by corpus trainer and sampling
+    pub fn encode_simple(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    /// Decodes simply to match the API expected by corpus trainer and sampling
+    pub fn decode_simple(&self, ids: &[u32]) -> String {
+        self.decode(ids)
+    }
+
     /// Internal BPE encoder for a single text fragment.
     fn encode_bpe(&self, text: &str) -> Vec<u32> {
         let bytes = text.as_bytes();
-        // Pre-tokenization: map bytes to special unicode characters
+        
+        // Map bytes to unicode characters using the byte_encoder (GPT-2 style)
         let words: Vec<String> = bytes
             .iter()
-            .map(|&b| self.byte_encoder.get(&b).unwrap().to_string())
+            .map(|&b| {
+                self.byte_encoder.get(&b).cloned().unwrap_or(b as char).to_string()
+            })
             .collect();
 
         if words.is_empty() {
@@ -266,9 +275,17 @@ impl Tokenizer {
             }
         }
 
-        while let Some(MergePair { rank: _, left_idx, right_idx }) = heap.pop() {
+        while let Some(MergePair { rank, left_idx, right_idx }) = heap.pop() {
             // Check if the pair is still valid and adjacent
             if parts[left_idx].next != right_idx as isize || parts[right_idx].prev != left_idx as isize {
+                continue;
+            }
+
+            // VERY IMPORTANT: Check if the text actually still matches this rank!
+            // Without this, if parts[1] merged with parts[2], parts[1] grows but keeps its index,
+            // and an older pair involving parts[0] and parts[1] might blindly merge them!
+            let current_pair = (parts[left_idx].text.clone(), parts[right_idx].text.clone());
+            if self.merges.get(&current_pair) != Some(&rank) {
                 continue;
             }
 
@@ -306,6 +323,14 @@ impl Tokenizer {
             let part = &parts[curr as usize];
             if let Some(&id) = self.vocab.get(&part.text) {
                 tokens.push(id);
+            } else {
+                // If somehow an invalid merge bypassed the checks, or it's a completely unknown token,
+                // fall back to byte characters instead of dropping it silently.
+                for c in part.text.chars() {
+                    if let Some(&id) = self.vocab.get(&c.to_string()) {
+                        tokens.push(id);
+                    }
+                }
             }
             curr = part.next;
         }
@@ -375,4 +400,72 @@ fn bytes_to_unicode() -> HashMap<u8, char> {
         map.insert(b, std::char::from_u32(c).unwrap());
     }
     map
+}
+
+#[derive(Default)]
+pub struct TokenStreamDecoder {
+    byte_buffer: Vec<u8>,
+}
+
+impl TokenStreamDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn decode_next(&mut self, tokenizer: &Tokenizer, id: u32) -> String {
+        let token_str = if let Some(t) = tokenizer.id_to_token.get(id as usize) {
+            t
+        } else {
+            return String::new();
+        };
+
+        let byte_decoder: std::collections::HashMap<char, u8> =
+            tokenizer.byte_encoder.iter().map(|(&b, &c)| (c, b)).collect();
+
+        for c in token_str.chars() {
+            if let Some(sc) = tokenizer.space_char {
+                if c == sc {
+                    self.byte_buffer.push(b' ');
+                    continue;
+                }
+            }
+
+            if let Some(&b) = byte_decoder.get(&c) {
+                self.byte_buffer.push(b);
+            } else {
+                let mut buf = [0; 4];
+                for b in c.encode_utf8(&mut buf).as_bytes() {
+                    self.byte_buffer.push(*b);
+                }
+            }
+        }
+
+        // Try to decode as UTF-8. Find the maximal valid UTF-8 prefix.
+        let mut decoded = String::new();
+        loop {
+            match std::str::from_utf8(&self.byte_buffer) {
+                Ok(s) => {
+                    decoded.push_str(s);
+                    self.byte_buffer.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid_up_to = e.valid_up_to();
+                    if valid_up_to > 0 {
+                        decoded.push_str(std::str::from_utf8(&self.byte_buffer[..valid_up_to]).unwrap());
+                    }
+                    if let Some(error_len) = e.error_len() {
+                        // Invalid bytes. Output replacement char and skip them.
+                        decoded.push_str("");
+                        self.byte_buffer.drain(..valid_up_to + error_len);
+                    } else {
+                        // Incomplete char at the end of the buffer. Wait for more bytes.
+                        self.byte_buffer.drain(..valid_up_to);
+                        break;
+                    }
+                }
+            }
+        }
+
+        decoded
+    }
 }

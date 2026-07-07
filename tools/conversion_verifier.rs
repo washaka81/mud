@@ -27,17 +27,23 @@ fn dequantize_tensor_prq(
         if t.t_type == MudTensorType::Ternary2Bit {
             let cols = t.shape.last().cloned().unwrap_or(elements);
             let rows = elements / cols;
+            println!(
+                "  -> t.shape={:?}, rows={}, cols={}, t.t_type={:?}",
+                t.shape, rows, cols, t.t_type
+            );
             for r in 0..rows {
                 dequantize_ternary_row(
-                    (t.data_ptr as *const u32).add(r * cols / 16),
+                    (t.data_ptr as *const u32).add(r * cols / 8),
                     &mut data[r * cols..(r + 1) * cols],
                     cols,
                 );
             }
             if let Some(st) = scales {
                 let sp = st.data_ptr as *const f32;
+                let is_scalar = st.shape.iter().product::<usize>() == 1;
+                println!("  -> scales.shape={:?}, is_scalar={}", st.shape, is_scalar);
                 for r in 0..rows {
-                    let s = *sp.add(r);
+                    let s = if is_scalar { *sp } else { *sp.add(r) };
                     for j in 0..cols {
                         data[r * cols + j] *= s;
                     }
@@ -79,7 +85,30 @@ fn convert_view_to_f32(tensor: &TensorView) -> Vec<f32> {
             };
             slice.to_vec()
         }
-        _ => panic!("Unsupported safetensors dtype"),
+        Dtype::U8 => {
+            let slice: &[u8] = tensor.data();
+            let rows_packed = tensor.shape()[0];
+            let cols = tensor.shape()[1];
+            let mut un_packed = vec![0.0f32; rows_packed * 4 * cols];
+
+            for r_p in 0..rows_packed {
+                for c in 0..cols {
+                    let val = slice[r_p * cols + c];
+                    for k in 0..4 {
+                        let bits = (val >> (k * 2)) & 3;
+                        let weight = match bits {
+                            0 => -1.0,
+                            1 => 0.0,
+                            2 => 1.0,
+                            _ => 0.0,
+                        };
+                        un_packed[(r_p * 4 + k) * cols + c] = weight;
+                    }
+                }
+            }
+            un_packed
+        }
+        _ => panic!("Unsupported safetensors dtype: {:?}", tensor.dtype()),
     }
 }
 
@@ -116,13 +145,12 @@ fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
 
         if sub == "mamba" || sub == "mixer" || sub == "ssm" {
             let proj = parts[4];
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale {
-                "scale"
-            } else {
-                parts.last().unwrap_or(&"weight")
-            };
-            let ternarize = !is_scale && proj.contains("proj");
+            let is_scale = parts.last() == Some(&"scale") || parts.last() == Some(&"weight_scale");
+            if is_scale {
+                return None;
+            }
+            let suffix = parts.last().unwrap_or(&"weight");
+            let ternarize = proj.contains("proj");
             let mapped = match proj {
                 "in_proj" => format!("{}.ssm_in.{}", prefix, suffix),
                 "out_proj" => format!("{}.ssm_out.{}", prefix, suffix),
@@ -140,9 +168,12 @@ fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
                 return None;
             }
             let proj = parts[4];
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale { "scale" } else { "weight" };
-            let ternarize = !is_scale;
+            let is_scale = parts.last() == Some(&"scale") || parts.last() == Some(&"weight_scale");
+            if is_scale {
+                return None;
+            }
+            let suffix = "weight";
+            let ternarize = true;
             let mapped = match proj {
                 "q_proj" | "wq" => format!("{}.attn_q.{}", prefix, suffix),
                 "k_proj" | "wk" => format!("{}.attn_k.{}", prefix, suffix),
@@ -156,9 +187,12 @@ fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
             if parts.len() < 5 {
                 return None;
             }
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale { "scale" } else { "weight" };
-            let ternarize = !is_scale;
+            let is_scale = parts.last() == Some(&"scale") || parts.last() == Some(&"weight_scale");
+            if is_scale {
+                return None;
+            }
+            let suffix = "weight";
+            let ternarize = true;
             if parts[4] == "gate" && parts.len() == 6 {
                 return Some((format!("{}.gate.{}", prefix, suffix), false));
             }
@@ -302,7 +336,27 @@ fn main() -> anyhow::Result<()> {
         if let Some((mapped_name, should_ternarize)) = map_llama_to_mud(&name) {
             if let Some(mud_tensor) = core.tensors.get(&mapped_name) {
                 let sf_view = safe_tensors.tensor(&name)?;
-                let orig_weights = convert_view_to_f32(&sf_view);
+                let mut orig_weights = convert_view_to_f32(&sf_view);
+
+                if should_ternarize {
+                    let scale_name = name.replace(".weight", ".weight_scale");
+                    if let Ok(scale_view) = safe_tensors.tensor(&scale_name) {
+                        let scale_val = convert_view_to_f32(&scale_view)[0];
+                        for w in &mut orig_weights {
+                            *w /= scale_val;
+                        }
+                    } else {
+                        let fallback_name = name.replace(".weight", ".scale");
+                        if let Ok(scale_view) = safe_tensors.tensor(&fallback_name) {
+                            let scale_val = convert_view_to_f32(&scale_view)[0];
+                            for w in &mut orig_weights {
+                                *w /= scale_val;
+                            }
+                        }
+                    }
+                }
+
+                println!("Dequantizing {}", mapped_name);
 
                 // Mamba / HiPPO Stability Audit (BUG-M1/A-log negative eigenvalues)
                 if mapped_name.contains(".ssm_a") {

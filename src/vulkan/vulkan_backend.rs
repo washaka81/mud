@@ -1,4 +1,4 @@
-use rayon::prelude::*;
+
 use std::sync::{Arc, LazyLock, Mutex};
 
 static VK_CTX: LazyLock<Mutex<Option<Arc<crate::vulkan::VulkanContext>>>> =
@@ -10,8 +10,9 @@ static VK_SUBMIT_LOCK: Mutex<()> = Mutex::new(());
 fn lazy_init_vulkan() -> Option<Arc<crate::vulkan::VulkanContext>> {
     let mut lock = VK_CTX.lock().unwrap();
     if lock.is_none() {
-        if let Ok(ctx) = crate::vulkan::VulkanContext::new() {
-            *lock = Some(Arc::new(ctx));
+        match crate::vulkan::VulkanContext::new() {
+            Ok(ctx) => *lock = Some(Arc::new(ctx)),
+            Err(e) => eprintln!("❌ ERROR INITIALIZING VULKAN: {:?}", e),
         }
     }
     lock.as_ref().cloned()
@@ -19,7 +20,9 @@ fn lazy_init_vulkan() -> Option<Arc<crate::vulkan::VulkanContext>> {
 
 fn quantize_ternary(w: &[f32]) -> Vec<u32> {
     let gamma = w.iter().copied().map(|x| x.abs() as f64).sum::<f64>() / w.len() as f64;
-    let scale = ((gamma as f32) * 0.707).max(1e-8);
+    // DEPTH_DAMPENING_FACTOR (1/sqrt(2)): Dampens absmean to resolve Target Sigma paradox,
+    // correcting the true variance limit of the ternary grid to sigma=0.86.
+    let scale = ((gamma as f32) * std::f32::consts::FRAC_1_SQRT_2).max(1e-8);
     let n = w.len();
     let mut packed = vec![0u32; n.div_ceil(16)];
     for i in 0..n {
@@ -42,14 +45,14 @@ fn gemv_cpu(
     n_out: usize,
     scales: *const f32,
 ) {
-    let blocks_per_row = n_in / 16;
+    let blocks_per_row = n_in.div_ceil(16);
     let stride = blocks_per_row;
     let mut i = 0;
     unsafe {
         // Process 4 rows at a time using the 4-rows kernel
         while i + 4 <= n_out {
             let row_ptr = w_packed.as_ptr().add(i * stride);
-            crate::asm::ternary_gemv_4rows_avx2(
+            crate::asm::ternary_gemv_4rows(
                 n_in,
                 x.as_ptr(),
                 row_ptr,
@@ -68,7 +71,7 @@ fn gemv_cpu(
         // Handle remaining rows (1-3) with single-row kernel
         while i < n_out {
             let row_ptr = w_packed.as_ptr().add(i * stride);
-            crate::asm::ternary_gemv_avx2(n_in, x.as_ptr(), row_ptr, &mut y[i], 1.0);
+            crate::asm::ternary_gemv(n_in, x.as_ptr(), row_ptr, &mut y[i], 1.0);
             if !scales.is_null() {
                 y[i] *= *scales.add(i);
             }
@@ -78,7 +81,7 @@ fn gemv_cpu(
 }
 
 fn gemv_transpose_cpu(dy: &[f32], w_packed: &[u32], dx: &mut [f32], n_in: usize, n_out: usize) {
-    let blocks = n_in / 16;
+    let blocks = n_in.div_ceil(16);
     dx.fill(0.0);
     // Process each output row: for each row, unpack 16 weights at a time
     // and add dy_i * w_ij into dx[j]
@@ -206,7 +209,7 @@ pub unsafe extern "C" fn vb_quantize(w: *const f32, w_len: u32, out: *mut u32) -
 /// # Safety
 /// Pointers must be valid and appropriately sized:
 /// x: [batch_size, n_in]
-/// w_packed: [n_out, n_in/16]
+/// w_packed: [n_out, n_in.div_ceil(16)]
 /// y: [batch_size, n_out]
 pub unsafe extern "C" fn vb_gemm_forward(
     x: *const f32,
@@ -238,108 +241,30 @@ pub unsafe extern "C" fn vb_gemm_forward(
             let _submit_guard = VK_SUBMIT_LOCK.lock().unwrap();
             let key = format!("ptr_{:x}", w_packed as usize);
 
-            if batch_size > 1 {
-                // HYBRID ZERO-COPY PARALLELIZATION:
-                // Send a minimum peak (1 item) to iGPU to keep it alive,
-                // while the CPU parallelizes the rest with Rayon.
-                let vk_batch = 1;
-                let _cpu_batch = batch_size - vk_batch;
+            // VULK-02 Thermal-Aware Scheduling:
+            // Send the entire batch to Vulkan to keep CPU P-cores at 0% usage during dense tensor ops.
+            let buf_x = ctx.allocate_zero_copy_buffer(batch_size * n_in);
+            buf_x.write().unwrap()[..batch_size * n_in].copy_from_slice(x_slice);
 
-                let vk_x_slice = &x_slice[..vk_batch * n_in];
-                let cpu_x_slice = &x_slice[vk_batch * n_in..];
+            let buf_y = ctx.allocate_zero_copy_buffer(batch_size * n_out);
 
-                let buf_x = ctx.allocate_zero_copy_buffer(vk_batch * n_in);
-                buf_x.write().unwrap()[..vk_batch * n_in].copy_from_slice(vk_x_slice);
-                let buf_y = ctx.allocate_zero_copy_buffer(vk_batch * n_out);
-
-                let w_packed_usize = w_packed as usize;
-                let scales_usize = scales as usize;
-
-                let (vk_res, _) = rayon::join(
-                    || unsafe {
-                        ctx.run_ternary_gemm_cached(
-                            &key,
-                            vk_batch,
-                            n_in,
-                            n_out,
-                            &buf_x,
-                            w_packed_usize as *const u32,
-                            scales_usize as *const f32,
-                            &buf_y,
-                        )
-                    },
-                    || {
-                        let y_cpu = &mut y_slice[vk_batch * n_out..];
-                        y_cpu
-                            .par_chunks_mut(n_out)
-                            .enumerate()
-                            .for_each(|(b, out_row)| {
-                                let x_row = &cpu_x_slice[b * n_in..(b + 1) * n_in];
-                                gemv_cpu(
-                                    x_row,
-                                    w_slice,
-                                    out_row,
-                                    n_in,
-                                    n_out,
-                                    scales_usize as *const f32,
-                                );
-                            });
-                    },
-                );
-
-                if vk_res.is_ok() {
-                    y_slice[..vk_batch * n_out]
-                        .copy_from_slice(&buf_y.read().unwrap()[..vk_batch * n_out]);
-                    return 0;
-                } else {
-                    // Fallback to CPU for the Vulkan chunk if it fails
-                    let out_row = &mut y_slice[..vk_batch * n_out];
-                    let x_row = &x_slice[..vk_batch * n_in];
-                    gemv_cpu(
-                        x_row,
-                        w_slice,
-                        out_row,
-                        n_in,
-                        n_out,
-                        scales_usize as *const f32,
-                    );
-                    return 0;
-                }
-            } else {
-                // Allocation for full batch if batch_size == 1
-                let buf_x = ctx.allocate_zero_copy_buffer(batch_size * n_in);
-                buf_x.write().unwrap()[..batch_size * n_in].copy_from_slice(x_slice);
-
-                let buf_y = ctx.allocate_zero_copy_buffer(batch_size * n_out);
-
-                if let Ok(()) = unsafe {
-                    ctx.run_ternary_gemm_cached(
-                        &key, batch_size, n_in, n_out, &buf_x, w_packed, scales, &buf_y,
-                    )
-                } {
-                    y_slice.copy_from_slice(&buf_y.read().unwrap()[..batch_size * n_out]);
-                    return 0;
-                }
+            if let Ok(()) = unsafe {
+                ctx.run_ternary_gemm_cached(
+                    &key, batch_size, n_in, n_out, &buf_x, w_packed, scales, &buf_y,
+                )
+            } {
+                y_slice.copy_from_slice(&buf_y.read().unwrap()[..batch_size * n_out]);
+                return 0;
             }
         }
     }
 
-    // CPU Path: Parallelized over batch using Rayon
-    let scales_ptr = scales as usize;
-    y_slice
-        .par_chunks_mut(n_out)
-        .enumerate()
-        .for_each(|(b, out_row)| {
-            let x_row = &x_slice[b * n_in..(b + 1) * n_in];
-            gemv_cpu(
-                x_row,
-                w_slice,
-                out_row,
-                n_in,
-                n_out,
-                scales_ptr as *const f32,
-            );
-        });
+    // CPU Path: serial over batch (P-cores pinning in main.rs handles affinity)
+    for b in 0..batch_size {
+        let x_row = &x_slice[b * n_in..(b + 1) * n_in];
+        let out_row = &mut y_slice[b * n_out..(b + 1) * n_out];
+        gemv_cpu(x_row, w_slice, out_row, n_in, n_out, scales);
+    }
 
     0
 }
@@ -370,14 +295,12 @@ pub unsafe extern "C" fn vb_gemm_backward_input(
     let w_slice = std::slice::from_raw_parts(w_packed, w_len);
     let dx_slice = std::slice::from_raw_parts_mut(dx, batch_size * n_in);
 
-    // CPU Path: Parallelized over batch
-    dx_slice
-        .par_chunks_mut(n_in)
-        .enumerate()
-        .for_each(|(b, dx_row)| {
-            let dy_row = &dy_slice[b * n_out..(b + 1) * n_out];
-            gemv_transpose_cpu(dy_row, w_slice, dx_row, n_in, n_out);
-        });
+    // CPU Path: serial over batch
+    for b in 0..batch_size {
+        let dy_row = &dy_slice[b * n_out..(b + 1) * n_out];
+        let dx_row = &mut dx_slice[b * n_in..(b + 1) * n_in];
+        gemv_transpose_cpu(dy_row, w_slice, dx_row, n_in, n_out);
+    }
 
     0
 }
@@ -407,30 +330,28 @@ pub unsafe extern "C" fn vb_gemm_outer_product(
     let x_slice = std::slice::from_raw_parts(x, batch_size * n_in);
     let dw_slice = std::slice::from_raw_parts_mut(dw, n_out * n_in);
 
-    // Accumulated outer product over batch
-    dw_slice
-        .par_chunks_mut(n_in)
-        .enumerate()
-        .for_each(|(i, dw_row)| {
-            for b in 0..batch_size {
-                let dy_val = dy_slice[b * n_out + i];
-                if dy_val == 0.0 {
+    // Accumulated outer product over batch (serial)
+    for i in 0..n_out {
+        let dw_row = &mut dw_slice[i * n_in..(i + 1) * n_in];
+        for b in 0..batch_size {
+            let dy_val = dy_slice[b * n_out + i];
+            if dy_val == 0.0 {
+                continue;
+            }
+            let x_row = &x_slice[b * n_in..(b + 1) * n_in];
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") && n_in >= 8 {
+                    unsafe { outer_product_avx2_row(dy_val, x_row, dw_row, n_in) }
                     continue;
                 }
-                let x_row = &x_slice[b * n_in..(b + 1) * n_in];
-
-                #[cfg(target_arch = "x86_64")]
-                {
-                    if is_x86_feature_detected!("avx2") && n_in >= 8 {
-                        unsafe { outer_product_avx2_row(dy_val, x_row, dw_row, n_in) }
-                        continue;
-                    }
-                }
-                for j in 0..n_in {
-                    dw_row[j] += dy_val * x_row[j];
-                }
             }
-        });
+            for j in 0..n_in {
+                dw_row[j] += dy_val * x_row[j];
+            }
+        }
+    }
 
     0
 }
@@ -456,4 +377,45 @@ pub unsafe extern "C" fn vb_clear_caches() {
         ctx.buffer_cache.lock().clear();
         ctx.buffer_init.lock().clear();
     }
+}
+
+#[no_mangle]
+/// Precalentamiento de Vulkan a "baja frecuencia" en segundo plano.
+/// Inicializa el contexto, fuerza la compilación de shaders (para guardarlos en la caché de Mesa),
+/// y luego apaga Vulkan liberando la memoria.
+pub extern "C" fn vb_vulkan_prewarm_bg() {
+    std::thread::spawn(|| {
+        // Pausa inicial para no competir con la carga del modelo
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        if let Some(ctx) = lazy_init_vulkan() {
+            // Simulamos una carga de baja intensidad para forzar la compilación (prewarming)
+            let buf_x = ctx.allocate_zero_copy_buffer(16);
+            let buf_y = ctx.allocate_zero_copy_buffer(16);
+            let w_packed = [0u32; 1];
+            let scales = [1.0f32; 1];
+
+            unsafe {
+                let _ = ctx.run_ternary_gemm_cached(
+                    "prewarm_cache",
+                    1,
+                    16,
+                    16,
+                    &buf_x,
+                    w_packed.as_ptr(),
+                    scales.as_ptr(),
+                    &buf_y,
+                );
+            }
+
+            // Cuando termina el prewarming, apagamos Vulkan por completo
+            // liberando la memoria, pero los shaders ya quedaron en caché de disco (~/.cache/mesa_shader_cache)
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            {
+                let mut lock = VK_CTX.lock().unwrap();
+                *lock = None;
+            }
+            println!("✅ [VULKAN] Prewarming en segundo plano finalizado. Shaders en caché. GPU apagada para ahorrar energía.");
+        }
+    });
 }

@@ -81,13 +81,45 @@ silu_vectorial_avx2:
     jmp .loop
 
 .leftover:
+    cmp $4, %rdi
+    jl .leftover_1
+    
+    # Process 4 floats at a time using xmm
+    vmovups (%rsi), %xmm0
+    
+    vxorps %xmm15, %xmm0, %xmm1     # t = -x
+    vmulps %xmm8, %xmm1, %xmm2       # y = t * log2e
+    vroundps $0, %xmm2, %xmm3        # n = round(y)
+    vsubps %xmm3, %xmm2, %xmm4       # f = y - n
+    
+    vmovaps %xmm9, %xmm5
+    vfmadd213ps %xmm10, %xmm4, %xmm5
+    vfmadd213ps %xmm11, %xmm4, %xmm5
+    vfmadd213ps %xmm12, %xmm4, %xmm5
+    vfmadd213ps %xmm13, %xmm4, %xmm5  # p = 2^f
+    
+    vcvtps2dq %xmm3, %xmm6            # n as int32
+    vpaddd %xmm14, %xmm6, %xmm6       # n + 127
+    vpslld $23, %xmm6, %xmm6          # (n + 127) << 23
+    
+    vmulps %xmm6, %xmm5, %xmm5        # exp(-x)
+    vaddps %xmm13, %xmm5, %xmm5       # d = 1 + exp(-x)
+    vdivps %xmm5, %xmm0, %xmm7        # silu(x) = x / d
+    
+    vmovups %xmm7, (%rdx)
+    
+    add $16, %rsi
+    add $16, %rdx
+    sub $4, %rdi
+    jmp .leftover
+
+.leftover_1:
     cmp $0, %rdi
     je .done
     
-    # Load 1 float
+    # Scalar fallback for 1-3 remaining elements
     vmovss (%rsi), %xmm0
     
-    # Scalar fallback using XMM registers
     vxorps %xmm15, %xmm0, %xmm1
     vmulss %xmm8, %xmm1, %xmm2
     vroundss $0, %xmm2, %xmm2, %xmm3
@@ -113,7 +145,7 @@ silu_vectorial_avx2:
     add $4, %rsi
     add $4, %rdx
     sub $1, %rdi
-    jmp .leftover
+    jmp .leftover_1
 
 .done:
     vzeroupper

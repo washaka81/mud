@@ -1,0 +1,94 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// 🚀 GHOST-ALIGN: Stochastic Alignment Kernel for QAT
+// Optimized for iGPU Vulkan with Zero-Copy buffers, Shared Memory, and Subgroup Reductions.
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer ShadowW { float w[]; };
+layout(std430, set = 0, binding = 1) buffer InputX { float x[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint rows;
+    uint cols;
+    float scale;
+    float delta;
+} pcs;
+
+shared float shared_x[256];
+
+void main() {
+    uint row = gl_GlobalInvocationID.x;
+    uint local_id = gl_LocalInvocationID.x;
+    
+    float local_master = 0.0;
+    float local_student = 0.0;
+    
+    uint start = row * pcs.cols;
+    
+    // Pass 1: Compute master and student outputs
+    for (uint block = 0; block < (pcs.cols + 255u) / 256u; block++) {
+        uint col_offset = block * 256u;
+        
+        // Cooperative load of x into shared memory
+        if (col_offset + local_id < pcs.cols) {
+            float val = x[col_offset + local_id];
+            // 🛡️ SANITIZATION: Skip non-finite inputs
+            shared_x[local_id] = (isnan(val) || isinf(val)) ? 0.0 : val;
+        } else {
+            shared_x[local_id] = 0.0;
+        }
+        barrier();
+        
+        if (row < pcs.rows) {
+            uint limit = min(256u, pcs.cols - col_offset);
+            for (uint c = 0; c < limit; c++) {
+                float xf = shared_x[c];
+                float wf = w[start + col_offset + c];
+                float wq = (wf > pcs.delta) ? pcs.scale : ((wf < -pcs.delta) ? -pcs.scale : 0.0);
+                local_master += wf * xf;
+                local_student += wq * xf;
+            }
+        }
+        barrier();
+    }
+    
+    float err = 0.0;
+    if (row < pcs.rows) {
+        err = local_student - local_master;
+        // 🛡️ SANITIZATION: Prevent division by zero or NaN propagation in error calculation
+        if (isnan(err) || isinf(err)) err = 0.0;
+    }
+    
+    bool do_update = (row < pcs.rows) && (abs(err) > 1e-9);
+    float alpha = do_update ? (-0.001 * err) : 0.0;
+    // 🛡️ CLAMPING: Prevent explosive updates (Neural Kick stabilization)
+    alpha = clamp(alpha, -0.1, 0.1);
+
+    // Pass 2: Stochastic Update
+    for (uint block = 0; block < (pcs.cols + 255u) / 256u; block++) {
+        uint col_offset = block * 256u;
+        
+        // Cooperative load of x into shared memory
+        if (col_offset + local_id < pcs.cols) {
+            float val = x[col_offset + local_id];
+            shared_x[local_id] = (isnan(val) || isinf(val)) ? 0.0 : val;
+        } else {
+            shared_x[local_id] = 0.0;
+        }
+        barrier();
+        
+        if (do_update) {
+            uint limit = min(256u, pcs.cols - col_offset);
+            for (uint c = 0; c < limit; c++) {
+                float xf = shared_x[c];
+                float wf = w[start + col_offset + c];
+                float next_w = wf * (1.0 - 0.0001) + alpha * xf;
+                // 🛡️ CLAMPING: Prevent weight explosion beyond the ternary settling range
+                w[start + col_offset + c] = clamp(next_w, -5.0, 5.0);
+            }
+        }
+        barrier();
+    }
+}

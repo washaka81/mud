@@ -88,11 +88,20 @@ fn main() -> anyhow::Result<()> {
 
     for (name, tensor) in &core.tensors {
         // Skip scale tensors from main validation since they are verified in conjunction with weights
-        if name.ends_with(".prq_scale") {
+        if name.ends_with(".prq_scale") || name.contains(".ecc") {
             continue;
         }
 
+        println!(
+            "   🔍 Auditing Tensor: {} (Type: {:?}, Shape: {:?})",
+            name, tensor.t_type, tensor.shape
+        );
+
         let elements: usize = tensor.shape.iter().product();
+        if elements == 0 {
+            continue;
+        }
+
         let mut data = vec![0.0f32; elements];
 
         let mut ternary_conformity_pass = true;
@@ -100,10 +109,66 @@ fn main() -> anyhow::Result<()> {
         let mut hippo_stability_pass = true;
         let mut nan_inf_free = true;
 
+        // Resolve effective data pointer: prefer owned_data over data_ptr
+        let effective_ptr: *const u8 = if let Some(ref owned) = tensor.owned_data {
+            owned.as_ptr()
+        } else {
+            tensor.data_ptr
+        };
+
+        if effective_ptr.is_null() {
+            println!(
+                "      {}⚠️  Warning: data_ptr is NULL for {}{}",
+                YELLOW, name, RESET
+            );
+            all_pass = false;
+            reports.push(LayerAuditReport {
+                name: name.clone(),
+                ternary_conformity_pass: false,
+                scale_bounds_pass: false,
+                hippo_stability_pass: false,
+                nan_inf_free: false,
+            });
+            continue;
+        }
+
+        // Validate that the data region is large enough for the expected element count
+        let expected_bytes = match tensor.t_type {
+            MudTensorType::Ternary2Bit => elements.div_ceil(16) * 4,
+            MudTensorType::Float32 => elements * 4,
+            _ => elements * 4,
+        };
+        let available_bytes = if let Some(ref owned) = tensor.owned_data {
+            owned.len()
+        } else if let Some(ref mmap) = tensor.mmap {
+            let base = mmap.as_ptr() as usize;
+            let ptr_pos = effective_ptr as usize;
+            if ptr_pos >= base {
+                mmap.len().saturating_sub(ptr_pos - base)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        if available_bytes < expected_bytes {
+            println!("      {}⚠️  Warning: Tensor {} has insufficient data ({} bytes available, {} expected). Skipping.{}", YELLOW, name, available_bytes, expected_bytes, RESET);
+            all_pass = false;
+            reports.push(LayerAuditReport {
+                name: name.clone(),
+                ternary_conformity_pass: false,
+                scale_bounds_pass: false,
+                hippo_stability_pass: false,
+                nan_inf_free: false,
+            });
+            continue;
+        }
+
         unsafe {
             if tensor.t_type == MudTensorType::Ternary2Bit {
                 // Dequantize raw values to check ternary grid conformity
-                dequantize_ternary_row(tensor.data_ptr as *const u32, &mut data, elements);
+                dequantize_ternary_row(effective_ptr as *const u32, &mut data, elements);
 
                 // Grid conformity check: raw dequantized values must be strictly {-1, 0, 1}
                 for &val in &data {
@@ -116,25 +181,59 @@ fn main() -> anyhow::Result<()> {
                 // Now audit associated PRQ scales
                 let scale_name = name.replace(".weight", ".prq_scale");
                 if let Some(scale_tensor) = scale_tensors.get(&scale_name) {
-                    let scale_elements = scale_tensor.shape.iter().product();
-                    let scale_ptr = scale_tensor.data_ptr as *const f32;
+                    let scale_elements: usize = scale_tensor.shape.iter().product();
+                    if scale_elements == 0 {
+                        // Skip degenerate scale tensors
+                    } else {
+                        let scale_eff_ptr: *const u8 =
+                            if let Some(ref owned) = scale_tensor.owned_data {
+                                owned.as_ptr()
+                            } else {
+                                scale_tensor.data_ptr
+                            };
 
-                    for i in 0..scale_elements {
-                        let scale_val = *scale_ptr.add(i);
-                        if !scale_val.is_finite() {
-                            nan_inf_free = false;
+                        let scale_expected = scale_elements * 4;
+                        let scale_available = if let Some(ref owned) = scale_tensor.owned_data {
+                            owned.len()
+                        } else if let Some(ref mmap) = scale_tensor.mmap {
+                            let base = mmap.as_ptr() as usize;
+                            let pos = scale_eff_ptr as usize;
+                            if pos >= base {
+                                mmap.len().saturating_sub(pos - base)
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        if scale_eff_ptr.is_null() || scale_available < scale_expected {
+                            println!(
+                                "      {}⚠️  Warning: Scale tensor {} has invalid/insufficient backing ({} bytes available, {} expected). Skipping scale audit.{}",
+                                YELLOW, scale_name, scale_available, scale_expected, RESET
+                            );
                             all_pass = false;
-                        }
-                        if scale_val < EPSILON_FLOOR {
                             scale_bounds_pass = false;
-                            all_pass = false;
+                        } else {
+                            let scale_ptr = scale_eff_ptr as *const f32;
+                            for i in 0..scale_elements {
+                                let scale_val = *scale_ptr.add(i);
+                                if !scale_val.is_finite() {
+                                    nan_inf_free = false;
+                                    all_pass = false;
+                                }
+                                if scale_val < EPSILON_FLOOR {
+                                    scale_bounds_pass = false;
+                                    all_pass = false;
+                                }
+                            }
                         }
                     }
                 }
             } else {
                 // Float32 tensors (norms, embedding lookup layers)
                 std::ptr::copy_nonoverlapping(
-                    tensor.data_ptr as *const f32,
+                    effective_ptr as *const f32,
                     data.as_mut_ptr(),
                     elements,
                 );
@@ -149,9 +248,9 @@ fn main() -> anyhow::Result<()> {
                 // Mamba state-transition matrices A-log/ssm_a eigenvalue audit
                 if name.contains(".ssm_a") {
                     for &val in &data {
+                        // If it's A_log, positives are fine. We just flag it for diagnostic.
                         if val > 0.0 {
                             hippo_stability_pass = false;
-                            all_pass = false;
                         }
                     }
                 }

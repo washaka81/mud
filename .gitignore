@@ -30,6 +30,7 @@ checkpoints_vulkan/
 
 # --- TRAINING DATA & CORPUS ---
 training/*.txt
+training/*.bin
 !training/vocab_es_en.txt
 !training/extra_knowledge.txt
 !training/README.md
@@ -37,6 +38,7 @@ training/*.txt.backup
 training/*.log
 training/models/
 training/logs/
+training/corpus/
 
 # --- TEST DATA ---
 tests/data/books/
@@ -78,3 +80,14 @@ kernel-metadata.json
 training/corpus/*.txt
 training/corpus_backup/
 forge_autograd/target/
+
+.gemini/
+.antigravity/
+
+# --- IDE & PROJECT FILES ---
+.vscode/
+.idea/
+
+# --- ORCHESTRATION / AI FILES ---
+GEMINI.md
+AGENTS.md

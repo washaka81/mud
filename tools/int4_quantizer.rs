@@ -12,7 +12,7 @@ fn row_wise_int4_quantize(
     for row_i in 0..n_rows {
         let start = row_i * hidden;
         let row = &data[start..start + hidden];
-        
+
         let absmax = row.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
         let scale = (absmax / 7.0).max(1e-10);
         scales_f32.push(scale);
@@ -75,22 +75,26 @@ fn main() -> anyhow::Result<()> {
 
     let mut emb_data = vec![0.0f32; total];
     match tensor.t_type {
-        forge_llm::mud::MudTensorType::Float32 => {
-            unsafe {
-                std::ptr::copy_nonoverlapping(tensor.data_ptr as *const f32, emb_data.as_mut_ptr(), total);
-            }
+        forge_llm::mud::MudTensorType::Float32 => unsafe {
+            std::ptr::copy_nonoverlapping(
+                tensor.data_ptr as *const f32,
+                emb_data.as_mut_ptr(),
+                total,
+            );
         },
         forge_llm::mud::MudTensorType::Ternary2Bit => {
             unsafe {
                 forge_llm::mud::dequantize_ternary_row(
                     tensor.data_ptr as *const u32,
                     &mut emb_data,
-                    total
+                    total,
                 );
             }
             // If it had a prq_scale, we should apply it
             if let Some(scale_tensor) = core.tensors.get("token_embd.prq_scale") {
-                let scales = unsafe { std::slice::from_raw_parts(scale_tensor.data_ptr as *const f32, vocab) };
+                let scales = unsafe {
+                    std::slice::from_raw_parts(scale_tensor.data_ptr as *const f32, vocab)
+                };
                 for row_i in 0..vocab {
                     let s = scales[row_i];
                     let start = row_i * hidden;
@@ -99,7 +103,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-        },
+        }
         _ => {
             eprintln!("Unsupported tensor type: {:?}", tensor.t_type);
             std::process::exit(1);
@@ -153,10 +157,7 @@ fn main() -> anyhow::Result<()> {
         "  Before (FP32): {:.1} MB",
         before_size as f64 / 1_048_576.0
     );
-    println!(
-        "  After (INT4): {:.2} MB",
-        after_size as f64 / 1_048_576.0
-    );
+    println!("  After (INT4): {:.2} MB", after_size as f64 / 1_048_576.0);
     println!(
         "    data (4-bit): {:.2} MB",
         after_data as f64 / 1_048_576.0

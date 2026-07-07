@@ -78,8 +78,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut tokenizer_ok = true;
     for test in test_strings {
-        let tokens = tokenizer.encode(test);
-        let decoded = tokenizer.decode(&tokens);
+        let tokens = tokenizer.encode_simple(test);
+        let decoded = tokenizer.decode_simple(&tokens);
 
         let match_status = if decoded.trim() == test.trim() {
             format!("{}MATCH{}", GREEN, RESET)
@@ -154,7 +154,12 @@ fn main() -> anyhow::Result<()> {
             }
 
             let total = counts[0] + counts[1] + counts[2];
-            let variance = (counts[1] as f32 * 1.0 + counts[2] as f32 * 1.0) / total as f32;
+            let n = total as f32;
+            let mean = (counts[1] as f32 - counts[2] as f32) / n;
+            let variance = (counts[1] as f32 * (1.0 - mean).powi(2)
+                + counts[2] as f32 * (-1.0 - mean).powi(2)
+                + counts[0] as f32 * (0.0 - mean).powi(2))
+                / n;
             let sigma = variance.sqrt();
 
             if name.starts_with("blk.") {

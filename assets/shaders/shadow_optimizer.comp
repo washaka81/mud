@@ -2,41 +2,98 @@
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 
 // 🚀 EDGE-07: VULKAN ZERO-COPY OPTIMIZER (L-QAT)
-// Applies Stochastic Gradient Descent (SGD) with Weight Decay to FP32 shadow weights.
+// Applies Stochastic Gradient Descent (SGD) with Weight Decay to FP32 shadow weights,
+// computes Per-Row Quantization (PRQ) scales, and packages ternary weights.
 
 layout(local_size_x = 256) in;
 
 layout(std430, set = 0, binding = 0) buffer ShadowWeights { float shadow_w[]; };
 layout(std430, set = 0, binding = 1) buffer Gradients { float grad_w[]; };
 layout(std430, set = 0, binding = 2) buffer PrqScales { float scales[]; };
-layout(std430, set = 0, binding = 3) buffer OutputTernary { uint packed_w[]; }; // The 1.58-bit destination
+layout(std430, set = 0, binding = 3) buffer OutputTernary { uint packed_w[]; };
 
 layout(push_constant) uniform PushConstants {
     uint total_elements;
-    uint cols;          // Columns per row to update PRQ Scales
+    uint cols;
     float learning_rate;
-    float weight_decay; // Lambda (λ) for homeostasis
+    float weight_decay;
 } pcs;
 
-void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx >= pcs.total_elements) return;
+shared float shared_sum[256];
 
-    uint row = idx / pcs.cols;
+void main() {
+    // Each WORKGROUP processes ONE ROW. This guarantees perfectly coalesced memory access!
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
     
-    // 1. Load shadow weight and gradient
-    float w = shadow_w[idx];
-    float g = grad_w[idx];
+    uint rows = pcs.total_elements / pcs.cols;
+    if (row >= rows) return;
+
+    uint start = row * pcs.cols;
+    float local_sum_abs = 0.0;
     
-    // 2. Apply Weight Decay (L2 Regularization equivalent)
-    w = w * (1.0 - pcs.learning_rate * pcs.weight_decay);
+    // 1. Coalesced Update and local sum
+    for (uint c = tid; c < pcs.cols; c += 256) {
+        uint idx = start + c;
+        float w = shadow_w[idx];
+        float g = grad_w[idx];
+
+        // 🛡️ SANITIZATION
+        if (isnan(g) || isinf(g)) g = 0.0;
+        g = clamp(g, -10.0, 10.0);
+
+        // SGD + Weight Decay
+        w = w * (1.0 - pcs.learning_rate * pcs.weight_decay) - (pcs.learning_rate * g);
+        w = clamp(w, -5.0, 5.0);
+
+        shadow_w[idx] = w;
+        local_sum_abs += abs(w);
+    }
+
+    // 2. Subgroup & Shared Memory Reduction for sum_abs
+    local_sum_abs = subgroupAdd(local_sum_abs);
+    if (gl_SubgroupInvocationID == 0) {
+        shared_sum[gl_SubgroupID] = local_sum_abs;
+    }
+    barrier();
+
+    float total_sum_abs = 0.0;
+    if (tid < gl_NumSubgroups) {
+        total_sum_abs = shared_sum[tid];
+    }
+    total_sum_abs = subgroupAdd(total_sum_abs);
+
+    // 3. Compute PRQ Scale
+    float scale = 0.0;
+    float threshold = 0.0;
+    if (tid == 0) {
+        float absmean = total_sum_abs / float(pcs.cols);
+        
+        // Depth-dampened Per-Row Quantization (PRQ) scale
+        scale = max(absmean * 0.70710678, 1e-8);
+        scales[row] = scale;
+        shared_sum[0] = scale;
+    }
+    barrier();
+    scale = shared_sum[0];
     
-    // 3. Apply Gradient Descent
-    w = w - (pcs.learning_rate * g);
-    
-    // 4. Save updated shadow weight
-    shadow_w[idx] = w;
-    
-    // [Note: Re-packing into OutputTernary (packed_w) and updating PRQ scales
-    // will be handled in a secondary subgroup pass to avoid atomics across rows].
+    // threshold = 0.7 * scale, which yields 26% sparsity for normal dist.
+    threshold = scale * 0.7;
+
+    // 4. Coalesced Re-quantize and Pack (8 elements per u32)
+    uint packed_start = row * (pcs.cols / 8);
+    for (uint b = tid; b < pcs.cols / 8; b += 256) {
+        uint packed_val = 0u;
+        for (uint j = 0; j < 8; j++) {
+            uint idx = start + b * 8 + j;
+            float w = shadow_w[idx];
+            
+            uint bits = 0u;
+            if (w > threshold) bits = 0x1u;
+            else if (w < -threshold) bits = 0xFu;
+            
+            packed_val |= (bits << (j * 4));
+        }
+        packed_w[packed_start + b] = packed_val;
+    }
 }

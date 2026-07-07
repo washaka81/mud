@@ -1,5 +1,6 @@
 .section .text
 .global apply_rope_asm
+.global apply_rope_interleaved_asm
 
 # System V AMD64 ABI:
 # rdi: n (head_dim)
@@ -7,9 +8,7 @@
 # rdx: cos (puntero a tabla de cosenos)
 # rcx: sin (puntero a tabla de senos)
 
-# Optimized Split RoPE for AVX2 (i7-1260P P-core tuned)
-# Logic: out[i] = x[i]*cos[i] - x[i+half]*sin[i]
-#        out[i+half] = x[i]*sin[i] + x[i+half]*cos[i]
+# Optimized Split RoPE for AVX2
 apply_rope_asm:
     push %rbp
     mov %rsp, %rbp
@@ -24,38 +23,42 @@ apply_rope_asm:
     shl $2, %r9          # half * sizeof(float)
 
 .align 32
-.loop:
+.loop_split:
     test %rax, %rax
-    jz .done
+    jz .done_split
     
-    # 1. Load data
     vmovups (%rsi), %ymm0           # x[i..i+7]
     vmovups (%rsi, %r9), %ymm1      # x[i+half..i+half+7]
     vmovups (%rdx), %ymm2           # cos[i..i+7]
     vmovups (%rcx), %ymm3           # sin[i..i+7]
     
-    # 2. Calculate out[i..i+7] = x[i]*cos[i] - x[i+half]*sin[i]
     vmulps %ymm0, %ymm2, %ymm4      # x[i]*cos[i]
     vmulps %ymm1, %ymm3, %ymm5      # x[i+half]*sin[i]
     vsubps %ymm5, %ymm4, %ymm6      # out[i]
     
-    # 3. Calculate out[i+half..i+half+7] = x[i]*sin[i] + x[i+half]*cos[i]
     vmulps %ymm0, %ymm3, %ymm4      # x[i]*sin[i]
     vmulps %ymm1, %ymm2, %ymm5      # x[i+half]*cos[i]
     vaddps %ymm5, %ymm4, %ymm7      # out[i+half]
     
-    # 4. Store results
     vmovups %ymm6, (%rsi)
     vmovups %ymm7, (%rsi, %r9)
     
-    # 5. Next block
     add $32, %rsi
     add $32, %rdx
     add $32, %rcx
     dec %rax
-    jmp .loop
+    jmp .loop_split
 
-.done:
+.done_split:
+    vzeroupper
+    pop %rbp
+    ret
+
+# Placeholder for future AVX2 optimization. 
+# Current implementation is handled in Rust within MudInference::apply_rope.
+apply_rope_interleaved_asm:
+    push %rbp
+    mov %rsp, %rbp
     vzeroupper
     pop %rbp
     ret

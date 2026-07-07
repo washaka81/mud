@@ -1,0 +1,79 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// Multi-Head Causal Attention for short sequences
+// Dispatch: [n_heads, seq_len, 1] — each workgroup handles one head at one position
+// Supports GQA via repeat = n_head / n_kv_head
+
+layout(local_size_x = 32) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer QBuf { float q[]; };
+layout(std430, set = 0, binding = 1) readonly buffer KBuf { float k[]; };
+layout(std430, set = 0, binding = 2) readonly buffer VBuf { float v[]; };
+layout(std430, set = 0, binding = 3) writeonly buffer OutBuf { float out_val[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint seq_len;
+    uint n_head;
+    uint n_kv_head;
+    uint head_dim;
+} pcs;
+
+shared float s_scores[64];
+shared float s_max_score;
+shared float s_sum_exp;
+
+void main() {
+    uint head = gl_WorkGroupID.x;
+    uint pos = gl_WorkGroupID.y;
+    uint lane_id = gl_LocalInvocationID.x;
+
+    if (head >= pcs.n_head || pos >= pcs.seq_len) return;
+
+    uint kv_head = head * pcs.n_kv_head / pcs.n_head;
+    float scale = inversesqrt(float(pcs.head_dim));
+
+    uint q_offset = pos * pcs.n_head * pcs.head_dim + head * pcs.head_dim;
+
+    // Phase 1: Compute attention scores for positions 0..pos (causal mask)
+    if (lane_id == 0) s_max_score = -1e30;
+    barrier();
+
+    for (uint j = 0; j <= pos; j++) {
+        uint k_offset = j * pcs.n_kv_head * pcs.head_dim + kv_head * pcs.head_dim;
+        float local_dot = 0.0;
+        for (uint d = lane_id; d < pcs.head_dim; d += 32u) {
+            local_dot += q[q_offset + d] * k[k_offset + d];
+        }
+        float score = subgroupAdd(local_dot) * scale;
+        if (lane_id == 0) {
+            s_scores[j] = score;
+            s_max_score = max(s_max_score, score);
+        }
+    }
+    barrier();
+
+    // Phase 2: Softmax
+    if (lane_id == 0) {
+        float sum_e = 0.0;
+        for (uint j = 0; j <= pos; j++) {
+            s_scores[j] = exp(s_scores[j] - s_max_score);
+            sum_e += s_scores[j];
+        }
+        s_sum_exp = sum_e;
+    }
+    barrier();
+
+    float inv_sum = 1.0 / (s_sum_exp + 1e-8);
+
+    // Phase 3: Weighted sum of V
+    uint out_offset = pos * pcs.n_head * pcs.head_dim + head * pcs.head_dim;
+    for (uint d = lane_id; d < pcs.head_dim; d += 32u) {
+        float acc = 0.0;
+        for (uint j = 0; j <= pos; j++) {
+            uint v_offset = j * pcs.n_kv_head * pcs.head_dim + kv_head * pcs.head_dim;
+            acc += s_scores[j] * inv_sum * v[v_offset + d];
+        }
+        out_val[out_offset + d] = acc;
+    }
+}

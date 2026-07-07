@@ -9,9 +9,6 @@ repository = "https://github.com/washaka81/mud"
 readme = "README.md"
 default-run = "forge_llm"
 
-[[bin]]
-name = "jamba_benchmark"
-path = "tools/jamba_benchmark.rs"
 
 [[bin]]
 name = "vulkan_simulator"
@@ -50,6 +47,9 @@ comfy-table = "7.1.0"
 gguf = "0.1.2"
 candle-core = "0.10.2"
 serde = { version = "1.0.228", features = ["derive"] }
+wait-timeout = "0.2.1"
+bytemuck = "1.25.0"
+core_affinity = "0.8.3"
 
 [[bin]]
 name = "forge_llm"
@@ -79,9 +79,6 @@ path = "tools/step_inference.rs"
 name = "weight_audit"
 path = "tools/weight_audit.rs"
 
-[[bin]]
-name = "attention_audit"
-path = "tools/attention_audit.rs"
 
 [[bin]]
 name = "deep_math_audit"
@@ -95,21 +92,12 @@ path = "tools/mud_fusion.rs"
 name = "ternary_audit"
 path = "tools/ternary_audit.rs"
 
-[[bin]]
-name = "language_audit"
-path = "tools/language_audit.rs"
 
-[[bin]]
-name = "memory_benchmark"
-path = "tools/memory_benchmark.rs"
 
 [[bin]]
 name = "ptr_audit"
 path = "tools/ptr_audit.rs"
 
-[[bin]]
-name = "moe_audit"
-path = "tools/moe_audit.rs"
 
 [[bin]]
 name = "tensor_microscope"
@@ -127,9 +115,6 @@ path = "tools/universal_converter/main.rs"
 name = "interactive_validator"
 path = "tools/interactive_validator.rs"
 
-[[bin]]
-name = "cognitive_integrity"
-path = "tools/cognitive_integrity.rs"
 
 [[bin]]
 name = "embed_audit"
@@ -159,53 +144,29 @@ path = "tools/model_banner.rs"
 name = "hw_detect"
 path = "tools/hw_detect.rs"
 
-[[bin]]
-name = "propagation_probe"
-path = "tools/propagation_probe.rs"
 
 [[bin]]
 name = "wave_alignment_audit"
 path = "tools/wave_alignment_audit.rs"
 
-[[bin]]
-name = "mud_selector"
-path = "tools/mud_selector.rs"
 
 [[bin]]
 name = "recalibration_projector"
 path = "tools/recalibration_projector.rs"
 
 [[bin]]
-name = "mud_corpus_trainer"
-path = "tools/mud_corpus_trainer.rs"
+name = "run_trainer"
+path = "tools/run_trainer.rs"
 
-[[bin]]
-name = "vocab_check"
-path = "tools/vocab_check.rs"
 
-[[bin]]
-name = "chat_once"
-path = "tools/chat_once.rs"
 
-[[bin]]
-name = "repro_crash"
-path = "tools/repro_crash.rs"
 
 [[bin]]
 name = "diagnose_model"
 path = "tools/diagnose_model.rs"
 
-[[bin]]
-name = "mud_diagnostics"
-path = "tools/mud_diagnostics.rs"
 
-[[bin]]
-name = "diagnose_chat"
-path = "tools/diagnose_chat.rs"
 
-[[bin]]
-name = "diagnose_layers"
-path = "tools/diagnose_layers.rs"
 
 [[bin]]
 name = "matrix_benchmark"
@@ -226,17 +187,8 @@ panic = "abort"
 # Target CPU features should be specified during compilation (e.g. RUSTFLAGS="-C target-cpu=native")
 
 
-[[bin]]
-name = "trace_bug6"
-path = "tools/trace_bug6.rs"
 
-[[bin]]
-name = "trace_bak"
-path = "tools/trace_bak.rs"
 
-[[bin]]
-name = "mud_offsets"
-path = "tools/mud_offsets.rs"
 
 [[bin]]
 name = "mud_forge"
@@ -281,4 +233,28 @@ path = "tools/fix_metadata.rs"
 [[bin]]
 name = "ldt_audit"
 path = "tools/ldt_audit.rs"
+
+
+[[bin]]
+name = "patch_nans"
+path = "tools/patch_nans.rs"
+
+
+[[bin]]
+name = "test_norm_values"
+path = "tools/test_norm_values.rs"
+
+
+[[bin]]
+name = "train_telemetry"
+path = "tools/train_telemetry.rs"
+
+[[bin]]
+name = "check_emb"
+path = "tools/check_emb.rs"
+
+
+[[bin]]
+name = "get_row"
+path = "src/bin/get_row.rs"
 

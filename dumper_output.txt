@@ -1,2 +1,0 @@
-Dumping MUD model metadata and skill info from: models/ternary_bonsai_1.7b.mud
-Disassembly completed. See mud_disassembly.txt

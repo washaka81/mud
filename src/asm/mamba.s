@@ -1,14 +1,15 @@
 .text
 .globl mamba_scan_avx2
 
-# void mamba_scan_avx2(size_t n, size_t d_state, const float* x, const float* a_bar, const float* b_bar, const float* c, const float* dt, float* state, float* out)
+# void mamba_scan_avx2(size_t n, size_t d_state, const float* x, const float* a_bar, const float* b_bar, const float* c, float* state, float* out)
 # rdi: n (hidden_size)
 # rsi: d_state (usually 16)
 # rdx: x
 # rcx: a_bar (precomputed exp(dt*A))
 # r8:  b_bar (precomputed dt*B)
 # r9:  c
-# stack: dt (16(%rbp)), state (24(%rbp)), out (32(%rbp))
+# stack: state (16(%rbp)), out (24(%rbp))
+# Note: dt parameter was removed — a_bar and b_bar are precomputed with dt baked in.
 
 mamba_scan_avx2:
     push %rbp
@@ -20,8 +21,8 @@ mamba_scan_avx2:
     push %rbx
 
     # Arguments from stack
-    mov 24(%rbp), %r10    # state
-    mov 32(%rbp), %r11    # out
+    mov 16(%rbp), %r10    # state
+    mov 24(%rbp), %r11    # out
 
     xor %r12, %r12        # i = 0 (loop over n)
 .loop_n:
@@ -61,24 +62,10 @@ mamba_scan_avx2:
     vmovups (%rbx, %r13, 4), %ymm3            # b_bar_0
     vfmadd231ps %ymm0, %ymm3, %ymm1           # h_0 += x_0 * b_0
     vmovups %ymm1, (%r14, %r13, 4)            # store state_0
-    
-    # Channel i+1
-    # We will compute the second channel using offset addressing directly to avoid register exhaustion.
-    # relying on the CPU's Out-Of-Order execution to hide latency.
-    
-    vmovups (%r14, %r13, 4), %ymm1            # state_0
-    vmovups (%r15, %r13, 4), %ymm2            # a_bar_0
-    vmulps %ymm2, %ymm1, %ymm1
-    vmovups (%rbx, %r13, 4), %ymm3
-    vfmadd231ps %ymm0, %ymm3, %ymm1
-    vmovups %ymm1, (%r14, %r13, 4)
-    vmovups (%r9, %r13, 4), %ymm4             # c
+    vmovups (%r9, %r13, 4), %ymm4             # c (shared between channels)
     vfmadd231ps %ymm1, %ymm4, %ymm5           # sum_0
     
-    # Reload original n and out pointers just in case, but they are in rdi and r11.
-    push %r14
-    push %r15
-    push %rbx
+    # Channel i+1: adjust pointers by stride and compute
     add %rax, %r14
     add %rax, %r15
     add %rax, %rbx
@@ -89,11 +76,11 @@ mamba_scan_avx2:
     vmovups (%rbx, %r13, 4), %ymm9
     vfmadd231ps %ymm6, %ymm9, %ymm7
     vmovups %ymm7, (%r14, %r13, 4)
-    vfmadd231ps %ymm7, %ymm4, %ymm11          # sum_1 (using same c in ymm4)
+    vfmadd231ps %ymm7, %ymm4, %ymm11          # sum_1 (same c in ymm4)
     
-    pop %rbx
-    pop %r15
-    pop %r14
+    sub %rax, %r14
+    sub %rax, %r15
+    sub %rax, %rbx
     
     add $8, %r13
     jmp .loop_d_mimo
@@ -191,5 +178,16 @@ mamba_delta_fold_avx2:
     add $8, %rcx
     jmp .fold_loop
 .fold_done:
+    # Handle leftover elements when len % 8 != 0
+    # rcx has the index of the first unprocessed element
+    cmp %rdi, %rcx
+    jge .fold_all_done
+.fold_leftover:
+    vmulss (%rsi, %rcx, 4), %xmm0, %xmm1   # xmm1 = state[i] * decay (scalar)
+    vmovss %xmm1, (%rsi, %rcx, 4)           # state[i] = xmm1
+    inc %rcx
+    cmp %rdi, %rcx
+    jl .fold_leftover
+.fold_all_done:
     vzeroupper
     ret

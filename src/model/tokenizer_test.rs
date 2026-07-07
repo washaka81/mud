@@ -13,7 +13,7 @@ fn test_tokenizer_prompt() {
     let tokenizer = Tokenizer::from_gguf(&model).unwrap();
 
     let text = "def fast_fibonacci(n):";
-    let ids = tokenizer.encode(text);
+    let ids = tokenizer.encode_simple(text);
     println!("Prompt: {}", text);
     for id in ids {
         println!("  ID {}: {:?}", id, tokenizer.id_to_token[id as usize]);
@@ -39,7 +39,7 @@ fn test_auto_concordance_gpt_spaces() {
     // 0: "hello"
     // 1: "Ġworld"
     // 2: "!"
-    let decoded = tokenizer.decode(&[0, 1, 2]);
+    let decoded = tokenizer.decode_simple(&[0, 1, 2]);
     assert_eq!(decoded, "hello world!");
 }
 
@@ -62,6 +62,6 @@ fn test_auto_concordance_sp_spaces() {
     // 0: "hello"
     // 1: "\u{2581}world"
     // 2: "!"
-    let decoded = tokenizer.decode(&[0, 1, 2]);
+    let decoded = tokenizer.decode_simple(&[0, 1, 2]);
     assert_eq!(decoded, "hello world!");
 }

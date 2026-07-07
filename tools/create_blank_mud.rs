@@ -4,17 +4,17 @@ use std::collections::HashMap;
 use std::fs;
 
 fn pack_ternary(data: &[f32]) -> Vec<u8> {
-    let u32_count = data.len().div_ceil(16);
+    let u32_count = data.len().div_ceil(8);
     let mut packed = vec![0u32; u32_count];
     for i in 0..data.len() {
         let bit = if data[i] > 0.5 {
             1u32
         } else if data[i] < -0.5 {
-            2u32
+            15u32
         } else {
             0u32
         };
-        packed[i / 16] |= bit << ((i % 16) * 2);
+        packed[i / 8] |= bit << ((i % 8) * 4);
     }
     unsafe { std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4) }.to_vec()
 }
@@ -26,14 +26,18 @@ fn init_ternary_tensor(
     name: &str,
     rows: usize,
     cols: usize,
+    target_std: f32,
 ) {
     let total = rows * cols;
     let mut ternary_data = vec![0.0f32; total];
     let mut scales = vec![0.0f32; rows];
 
+    // The true variance limit of the ternary grid is approx sigma=0.86
+    // target_std = scale * 0.86  =>  scale = target_std / 0.86
+    let target_scale = (target_std / 0.86).max(1e-4);
+
     for r in 0..rows {
         let start = r * cols;
-        let mut row_abs_sum = 0.0f32;
         for j in 0..cols {
             let rv: f32 = rng.random_range(0.0..1.0);
             let val = if rv < 0.37 {
@@ -44,10 +48,8 @@ fn init_ternary_tensor(
                 0.0
             };
             ternary_data[start + j] = val;
-            row_abs_sum += val.abs();
         }
-        let s = row_abs_sum / cols as f32;
-        scales[r] = s.max(0.01);
+        scales[r] = target_scale;
     }
 
     tensors.insert(
@@ -142,6 +144,12 @@ fn main() -> anyhow::Result<()> {
     let mut tensors = HashMap::new();
     let mut rng = rand::rng();
 
+    // 🛡️ BITNET DUAL INITIALIZATION
+    // std1 = 0.025 (Primary, for embeddings and final projections)
+    // std2 = 0.025 / sqrt(2 * num_layers) (Secondary, for residual blocks to prevent variance explosion)
+    let std1 = 0.025f32;
+    let std2 = 0.025f32 / (2.0 * num_layers as f32).sqrt();
+
     println!("  🧱 Initializing Embeddings...");
     let vocab_size = 151643;
     init_ternary_tensor(
@@ -150,6 +158,7 @@ fn main() -> anyhow::Result<()> {
         "token_embd.weight",
         vocab_size,
         hidden_size,
+        std1,
     );
     init_f32_tensor(&mut tensors, "output_norm.weight", vec![hidden_size], 1.0);
     init_ternary_tensor(
@@ -158,6 +167,7 @@ fn main() -> anyhow::Result<()> {
         "output.weight",
         vocab_size,
         hidden_size,
+        std1,
     );
 
     println!("  🧱 Initializing Layers (Jamba 1:5 ratio)...");
@@ -167,6 +177,18 @@ fn main() -> anyhow::Result<()> {
             &format!("blk.{}.norm.weight", l),
             vec![hidden_size],
             1.0,
+        );
+        init_f32_tensor(
+            &mut tensors,
+            &format!("blk.{}.mhc_alpha.weight", l),
+            vec![hidden_size],
+            2.0,
+        );
+        init_f32_tensor(
+            &mut tensors,
+            &format!("blk.{}.mhc_beta.weight", l),
+            vec![hidden_size],
+            2.0,
         );
 
         if l % 6 == 0 {
@@ -182,6 +204,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.attn_q.weight", l),
                 hidden_size,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -189,6 +212,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.attn_k.weight", l),
                 num_kv_heads * head_dim,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -196,6 +220,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.attn_v.weight", l),
                 num_kv_heads * head_dim,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -203,6 +228,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.attn_output.weight", l),
                 hidden_size,
                 hidden_size,
+                std2,
             );
 
             init_ternary_tensor(
@@ -211,6 +237,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.expert.0.w1.weight", l),
                 ffn_hidden,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -218,6 +245,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.expert.0.w2.weight", l),
                 hidden_size,
                 ffn_hidden,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -225,6 +253,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.expert.0.w3.weight", l),
                 ffn_hidden,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -232,6 +261,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.gate.weight", l),
                 num_experts,
                 hidden_size,
+                std2,
             );
         } else {
             init_ternary_tensor(
@@ -240,6 +270,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.ssm_in.weight", l),
                 hidden_size * 2,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -247,6 +278,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.ssm_out.weight", l),
                 hidden_size,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -254,6 +286,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.ssm_x.weight", l),
                 32 + 2 * d_state,
                 hidden_size,
+                std2,
             );
             init_ternary_tensor(
                 &mut tensors,
@@ -261,6 +294,7 @@ fn main() -> anyhow::Result<()> {
                 &format!("blk.{}.ssm_dt.weight", l),
                 hidden_size,
                 32,
+                std2,
             );
             init_f32_tensor(
                 &mut tensors,

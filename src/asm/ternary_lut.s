@@ -63,7 +63,18 @@ ternary_gemv_lut_avx2:
     jmp .loop
 
 .leftover:
-    # (Skipping leftover logic for simplicity in this prototype)
+    test %rdi, %rdi
+    jle .done_accum
+.leftover_loop:
+    movsbl (%rsi), %eax
+    movsbl (%rdx), %ecx
+    imull %eax, %ecx
+    vmovd %ecx, %xmm3
+    vpaddd %xmm3, %xmm11, %xmm11
+    add $1, %rsi
+    add $1, %rdx
+    dec %rdi
+    jnz .leftover_loop
     
 .done_accum:
     # Combine ymm11 and ymm12

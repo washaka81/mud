@@ -18,7 +18,16 @@ NC='\x1b[0m'
 # --- CONFIGURATION ---
 # Si no se pasó MODEL_PATH por entorno, usa core_skills.mud por defecto
 if [ -z "$MODEL_PATH" ]; then
-    MODEL_PATH="models/core_skills.mud"
+    # El modelo a entrenar siempre es el latest trained
+    if ls models/*_trained.mud 1> /dev/null 2>&1; then
+        MODEL_PATH=$(ls -t models/*_trained.mud | head -n 1)
+    elif [ -f "weights/checkpoints/model_latest_checkpoint.mud" ]; then
+        MODEL_PATH="weights/checkpoints/model_latest_checkpoint.mud"
+    elif ls models/*.mud 1> /dev/null 2>&1; then
+        MODEL_PATH=$(ls -t models/*.mud | head -n 1)
+    else
+        MODEL_PATH="models/smollm2.mud"
+    fi
 fi
 CHECKPOINT_DIR="weights/checkpoints"
 export MUD_USE_VULKAN=1
@@ -73,9 +82,16 @@ case $1 in
 
     train)
         shift
-        cargo run --release --bin mud_corpus_trainer
+        # Priority 53: Auto-select model if none given
+        if [ "$MODEL_PATH" = "models/core_skills.mud" ] && [ ! -f "models/core_skills.mud" ]; then
+            if [ -f "smollm2.mud" ]; then
+                MODEL_PATH="smollm2.mud"
+            fi
+        fi
+        cargo run --release --bin run_trainer -- "$MODEL_PATH" "$@"
         ;;
     restore-iq)
+        MODEL_PATH=${2:-$MODEL_PATH}
         echo -e "${PURPLE}╭───────────────────────────────────────────────────────────────────────────────╮${NC}"
         echo -e "${PURPLE}│ 🌀 INICIANDO PIPELINE DE RESTAURACION COGNITIVA (MUD IQ-RESTORE)              │${NC}"
         echo -e "${PURPLE}╰───────────────────────────────────────────────────────────────────────────────╯${NC}"
@@ -97,7 +113,7 @@ case $1 in
         fi
 
         echo -e "${BLUE}[4/6] ALIGN: Linguistic Restoration (Deep Epoch)...${NC}"
-        cargo run --release --bin mud_corpus_trainer -- "$MODEL_PATH" --epochs "$EST_EPOCHS"
+        cargo run --release --bin run_trainer -- "$MODEL_PATH" --epochs "$EST_EPOCHS"
         
         echo -e "${BLUE}[5/6] PROJECT & TRAIN: Tier 3 PRQ Calibration...${NC}"
         cargo run --release --bin recalibration_projector -- "$MODEL_PATH" --tier3
@@ -108,7 +124,7 @@ case $1 in
         ;;
     align)
         echo -e "${PURPLE}[ALIGN] Starting Native Corpus Aligner...${NC}"
-        cargo run --release --bin mud_corpus_trainer
+        cargo run --release --bin run_trainer
         ;;
     project)
         echo -e "${PURPLE}[PROJECT] Running Recalibration Projector...${NC}"
@@ -119,12 +135,19 @@ case $1 in
         MODEL=${2:-$MODEL_PATH}
         cargo run --release --bin forge_llm -- "$MODEL"
         ;;
+    debate)
+        MODEL=${2:-$MODEL_PATH}
+        cargo run --release --bin debate_telemetry -- "$MODEL"
+        ;;
+    telemetry)
+        cargo run --release --bin train_telemetry
+        ;;
     step)
         cargo run --release --bin step_inference
         ;;
     hw|bench|audit|diag)
         echo -e "${PURPLE}[DIAGNOSTICS] Iniciando Panel Unificado de Diagnóstico MUD (AVX2 + Vulkan)...${NC}"
-        cargo run --release --bin mud_diagnostics -- "$MODEL_PATH"
+        cargo run --release --bin diagnose_model -- "$MODEL_PATH"
         ;;
     ckpt)
         echo -e "${BLUE}[CKPT] Listing available checkpoints in weights/checkpoints/:${NC}"

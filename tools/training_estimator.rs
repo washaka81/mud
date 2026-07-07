@@ -116,7 +116,7 @@ fn load_and_analyze_model(model_path: &str) -> anyhow::Result<ModelMetrics> {
         .global_metadata
         .get("hidden_size")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(896);
+        .unwrap_or(2560);
 
     let mut sigmas = Vec::new();
     let mut sparsities = Vec::new();

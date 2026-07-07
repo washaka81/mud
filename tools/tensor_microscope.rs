@@ -140,6 +140,9 @@ fn main() -> anyhow::Result<()> {
                         "   Error: Microscope currently does not support Int4 decoding natively."
                     );
                 }
+                MudTensorType::Uint8 => {
+                    println!("   Uint8 (ECC parity data, skipping)");
+                }
             }
         }
     }

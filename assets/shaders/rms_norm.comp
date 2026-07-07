@@ -1,0 +1,43 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// RMSNorm with learnable weights: y[i] = x[i] * rms_scale * w[i]
+// rms_scale = 1 / sqrt(mean(x^2) + eps)
+// Dispatch: [seq_len, 1, 1] — each workgroup handles one sequence position
+
+layout(local_size_x = 32) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputX { float x[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Weights { float w[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutputY { float y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint hidden_size;
+    uint seq_len;
+    float eps;
+    uint reserved;
+} pcs;
+
+void main() {
+    uint seq_pos = gl_WorkGroupID.x;
+    uint lane_id = gl_LocalInvocationID.x;
+
+    if (seq_pos >= pcs.seq_len) return;
+
+    uint row_start = seq_pos * pcs.hidden_size;
+
+    // Phase 1: Compute sum of squares using subgroup reduction
+    float local_sum = 0.0;
+    for (uint i = lane_id; i < pcs.hidden_size; i += 32u) {
+        float val = x[row_start + i];
+        local_sum += val * val;
+    }
+    float total_sum = subgroupAdd(local_sum);
+
+    // Phase 2: Compute RMS scale and apply normalization + weights
+    float rms_scale = inversesqrt(total_sum / float(pcs.hidden_size) + pcs.eps);
+
+    for (uint i = lane_id; i < pcs.hidden_size; i += 32u) {
+        y[row_start + i] = x[row_start + i] * rms_scale * w[i];
+    }
+}

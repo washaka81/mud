@@ -4,18 +4,22 @@ use std::env;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
-    let text = if args.len() > 1 {
+    let model_path = args
+        .iter()
+        .find(|a| a.ends_with(".mud"))
+        .cloned()
+        .unwrap_or_else(|| "models/core_skills.mud".to_string());
+
+    let text = if args.len() > 1 && !args[1].ends_with(".mud") {
         args[1..].join(" ")
+    } else if args.len() > 2 {
+        args[2..].join(" ")
     } else {
         "hola MUD engine".to_string()
     };
-
-    println!("=== MUD Tokenizer Audit ===");
-
-    let model_path = "models/core_skills.mud";
     println!("Cargando vocabulario del modelo MUD: {}...", model_path);
 
-    let mud_file = MudFile::load(model_path)?;
+    let mud_file = MudFile::load(&model_path)?;
 
     let tokens_str = mud_file
         .global_metadata
@@ -32,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     println!("\nTexto de entrada: \"{}\"", text);
     println!("--------------------------------------------------");
 
-    let tokens = tokenizer.encode(&text);
+    let tokens = tokenizer.encode_simple(&text);
 
     println!(
         "{:<10} | {:<20} | {:<20}",
@@ -46,12 +50,12 @@ fn main() -> anyhow::Result<()> {
             .get(*id as usize)
             .cloned()
             .unwrap_or_else(|| "UNKNOWN".to_string());
-        let decoded_part = tokenizer.decode(&[*id]);
+        let decoded_part = tokenizer.decode_simple(&[*id]);
         println!("{:<10} | {:<20?} | {:<20?}", id, literal, decoded_part);
     }
 
     println!("--------------------------------------------------");
-    let final_decoded = tokenizer.decode(&tokens);
+    let final_decoded = tokenizer.decode_simple(&tokens);
     println!("Texto final decodificado: \"{}\"", final_decoded);
 
     if final_decoded.to_lowercase().trim() == text.to_lowercase().trim() {

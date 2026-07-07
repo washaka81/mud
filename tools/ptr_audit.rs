@@ -2,7 +2,13 @@ use forge_llm::mud::MudFile;
 
 fn main() -> anyhow::Result<()> {
     println!("=== MUD POINTER & MEMORY AUDIT ===");
-    let model = MudFile::load("models/core_skills.mud")?;
+    let args: Vec<String> = std::env::args().collect();
+    let model_path = if args.len() > 1 {
+        &args[1]
+    } else {
+        "models/core_skills.mud"
+    };
+    let model = MudFile::load(model_path)?;
 
     let core = model.skills.get("core").expect("Core skill not found");
 

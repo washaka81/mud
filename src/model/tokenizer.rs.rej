@@ -1,0 +1,31 @@
+--- tokenizer.rs
++++ tokenizer.rs
+@@ -204,7 +204,11 @@
+                 // 3. Robust fallback
+                 if tokens.is_empty() && !part.trim().is_empty() {
+                     for b in part.as_bytes() {
+-                        buf.final_tokens.push(*b as u32);
++                        if let Some(c) = self.byte_encoder.get(b) {
++                            if let Some(&id) = self.vocab.get(&c.to_string()) {
++                                buf.final_tokens.push(id);
++                            }
++                        }
+                     }
+                 } else {
+                     buf.final_tokens.append(&mut tokens);
+@@ -282,6 +286,7 @@
+         }
+ 
+         while let Some(MergePair {
++            rank,
+             left_idx,
+             right_idx,
+             ..
+@@ -291,6 +296,7 @@
+                 || parts[right_idx].prev != left_idx as isize
+             {
+                 continue;
+             }
++            println!("Merging {:?} and {:?} (rank {})", parts[left_idx].text, parts[right_idx].text, rank);
+             let right_text = parts[right_idx].text.clone();
+             parts[left_idx].text.push_str(&right_text);

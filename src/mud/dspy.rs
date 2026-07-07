@@ -7,7 +7,7 @@ use serde::{de::DeserializeOwned, Serialize};
 pub trait DeclarativeSignature: Serialize + DeserializeOwned {
     /// The system prompt defining the persona and constraints for this signature.
     fn system_prompt() -> &'static str;
-    
+
     /// Instructions for the reasoning process
     fn instructions() -> &'static str;
 

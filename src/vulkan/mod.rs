@@ -34,6 +34,9 @@ pub struct VulkanContext {
     pub heartbeat_pipeline: Arc<ComputePipeline>,
     pub backward_pipeline: Arc<ComputePipeline>,
     pub optimizer_pipeline: Arc<ComputePipeline>,
+    pub ns_step1_pipeline: Arc<ComputePipeline>,
+    pub ns_step2_pipeline: Arc<ComputePipeline>,
+    pub telemetry_pipeline: Arc<ComputePipeline>,
     pub heartbeat_buffer: Subbuffer<[f32]>,
     pub available: bool,
 }
@@ -213,6 +216,63 @@ impl VulkanContext {
             ),
         )?;
 
+        let ns_step1_shader = newton_schulz_step1_cs::load(device.clone())?;
+        let ns_step1_entry_point = ns_step1_shader.entry_point("main").unwrap();
+        let ns_step1_pipeline = ComputePipeline::new(
+            device.clone(),
+            None,
+            vulkano::pipeline::compute::ComputePipelineCreateInfo::stage_layout(
+                vulkano::pipeline::PipelineShaderStageCreateInfo::new(ns_step1_entry_point.clone()),
+                PipelineLayout::new(
+                    device.clone(),
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages([
+                        &vulkano::pipeline::PipelineShaderStageCreateInfo::new(
+                            ns_step1_entry_point.clone(),
+                        ),
+                    ])
+                    .into_pipeline_layout_create_info(device.clone())?,
+                )?,
+            ),
+        )?;
+
+        let ns_step2_shader = newton_schulz_step2_cs::load(device.clone())?;
+        let ns_step2_entry_point = ns_step2_shader.entry_point("main").unwrap();
+        let ns_step2_pipeline = ComputePipeline::new(
+            device.clone(),
+            None,
+            vulkano::pipeline::compute::ComputePipelineCreateInfo::stage_layout(
+                vulkano::pipeline::PipelineShaderStageCreateInfo::new(ns_step2_entry_point.clone()),
+                PipelineLayout::new(
+                    device.clone(),
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages([
+                        &vulkano::pipeline::PipelineShaderStageCreateInfo::new(
+                            ns_step2_entry_point.clone(),
+                        ),
+                    ])
+                    .into_pipeline_layout_create_info(device.clone())?,
+                )?,
+            ),
+        )?;
+
+        let telemetry_shader = telemetry_cs::load(device.clone())?;
+        let telemetry_entry_point = telemetry_shader.entry_point("main").unwrap();
+        let telemetry_pipeline = ComputePipeline::new(
+            device.clone(),
+            None,
+            vulkano::pipeline::compute::ComputePipelineCreateInfo::stage_layout(
+                vulkano::pipeline::PipelineShaderStageCreateInfo::new(telemetry_entry_point.clone()),
+                PipelineLayout::new(
+                    device.clone(),
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages([
+                        &vulkano::pipeline::PipelineShaderStageCreateInfo::new(
+                            telemetry_entry_point.clone(),
+                        ),
+                    ])
+                    .into_pipeline_layout_create_info(device.clone())?,
+                )?,
+            ),
+        )?;
+
         let heartbeat_buffer = Buffer::new_slice::<f32>(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -242,6 +302,9 @@ impl VulkanContext {
             heartbeat_pipeline,
             backward_pipeline,
             optimizer_pipeline,
+            ns_step1_pipeline,
+            ns_step2_pipeline,
+            telemetry_pipeline,
             heartbeat_buffer,
             available: true,
         })
@@ -348,6 +411,24 @@ impl VulkanContext {
 
     pub fn allocate_zero_copy_buffer(&self, len: usize) -> Subbuffer<[f32]> {
         Buffer::new_slice::<f32>(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            len as u64,
+        )
+        .unwrap()
+    }
+
+    pub fn allocate_zero_copy_buffer_u32(&self, len: usize) -> Subbuffer<[u32]> {
+        Buffer::new_slice::<u32>(
             self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER,
@@ -485,6 +566,10 @@ impl VulkanContext {
                     n_in: n_in as u32,
                     n_out: n_out as u32,
                     batch_size: batch_size as u32,
+                    inv_q_scale: 1.0,
+                    do_norm: 0,
+                    single_scale: 0,
+                    scale: 1.0,
                 },
             )?
             .dispatch([n_out as u32, batch_size as u32, 1])?;
@@ -594,6 +679,10 @@ impl VulkanContext {
                     n_in: n_in as u32,
                     n_out: n_out as u32,
                     batch_size: batch_size as u32,
+                    inv_q_scale: 1.0,
+                    do_norm: 0,
+                    single_scale: 0,
+                    scale: 1.0,
                 },
             )?
             .dispatch([n_out as u32, batch_size as u32, 1])?;
@@ -803,6 +892,10 @@ impl VulkanContext {
                     n_in: hidden as u32,
                     n_out: ffn_hidden as u32,
                     batch_size: 1,
+                    inv_q_scale: 1.0,
+                    do_norm: 0,
+                    single_scale: 0,
+                    scale: 1.0,
                 },
             )?
             .dispatch([ffn_hidden as u32, 1, 1])?
@@ -819,6 +912,10 @@ impl VulkanContext {
                     n_in: hidden as u32,
                     n_out: ffn_hidden as u32,
                     batch_size: 1,
+                    inv_q_scale: 1.0,
+                    do_norm: 0,
+                    single_scale: 0,
+                    scale: 1.0,
                 },
             )?
             .dispatch([ffn_hidden as u32, 1, 1])?
@@ -834,6 +931,7 @@ impl VulkanContext {
                 0,
                 silu_cs::PushConstants {
                     size: ffn_hidden as u32,
+                    do_relu2: 0,
                 },
             )?
             .dispatch([ffn_hidden.div_ceil(256) as u32, 1, 1])?
@@ -851,6 +949,10 @@ impl VulkanContext {
                     n_in: ffn_hidden as u32,
                     n_out: hidden as u32,
                     batch_size: 1,
+                    inv_q_scale: 1.0,
+                    do_norm: 0,
+                    single_scale: 0,
+                    scale: 1.0,
                 },
             )?
             .dispatch([hidden as u32, 1, 1])?;
@@ -979,7 +1081,7 @@ impl VulkanContext {
                     weight_decay,
                 },
             )?
-            .dispatch([(total_elements as u32).div_ceil(256), 1, 1])?;
+            .dispatch([(total_elements as u32) / (cols as u32), 1, 1])?;
 
         let command_buffer = builder.build()?;
         let future = sync::now(self.device.clone())
@@ -989,12 +1091,182 @@ impl VulkanContext {
 
         Ok(())
     }
-}
 
+    /// # Safety
+    /// Caller must ensure that `updates` correctly maps to the underlying buffers and sizes.
+    pub unsafe fn run_qat_optimizer_batch(
+        &self,
+        updates: &[(usize, usize, f32, f32, vulkano::buffer::Subbuffer<[f32]>, vulkano::buffer::Subbuffer<[f32]>, vulkano::buffer::Subbuffer<[f32]>, vulkano::buffer::Subbuffer<[u32]>)]
+    ) -> anyhow::Result<()> {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &*self.command_buffer_allocator,
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )?;
+
+        let layout = self.optimizer_pipeline.layout().set_layouts().first().unwrap();
+
+        for (total_elements, cols, learning_rate, weight_decay, buffer_shadow_w, buffer_grad_w, buffer_scales, buffer_packed_w) in updates {
+            let set = PersistentDescriptorSet::new(
+                &*self.descriptor_set_allocator,
+                layout.clone(),
+                [
+                    WriteDescriptorSet::buffer(0, buffer_shadow_w.clone()),
+                    WriteDescriptorSet::buffer(1, buffer_grad_w.clone()),
+                    WriteDescriptorSet::buffer(2, buffer_scales.clone()),
+                    WriteDescriptorSet::buffer(3, buffer_packed_w.clone()),
+                ],
+                [],
+            )?;
+
+            builder
+                .bind_pipeline_compute(self.optimizer_pipeline.clone())?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.optimizer_pipeline.layout().clone(),
+                    0,
+                    set,
+                )?
+                .push_constants(
+                    self.optimizer_pipeline.layout().clone(),
+                    0,
+                    optimizer_cs::PushConstants {
+                        total_elements: *total_elements as u32,
+                        cols: *cols as u32,
+                        learning_rate: *learning_rate,
+                        weight_decay: *weight_decay,
+                    },
+                )?
+                .dispatch([(*total_elements as u32) / (*cols as u32), 1, 1])?;
+        }
+
+        let command_buffer = builder.build()?;
+        let future = sync::now(self.device.clone())
+            .then_execute(self.queue.clone(), command_buffer)?
+            .then_signal_fence_and_flush()?;
+        future.wait(None)?;
+
+        Ok(())
+    }
+
+
+    /// # Safety
+    ///
+    /// This function is unsafe because it performs a raw Vulkan compute dispatch.
+    /// The caller must ensure that the buffers have sufficient capacity for `rows * cols` elements.
+    pub unsafe fn run_newton_schulz_async(
+        &self,
+        rows: usize,
+        cols: usize,
+        n_iters: usize,
+        buffer_x: &Subbuffer<[f32]>,
+        buffer_tmp: &Subbuffer<[f32]>,
+        buffer_next_x: &Subbuffer<[f32]>,
+    ) -> anyhow::Result<()> {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &*self.command_buffer_allocator,
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )?;
+
+        let layout1 = self.ns_step1_pipeline.layout().set_layouts().first().unwrap();
+        let set1 = PersistentDescriptorSet::new(
+            &*self.descriptor_set_allocator,
+            layout1.clone(),
+            [
+                WriteDescriptorSet::buffer(0, buffer_x.clone()),
+                WriteDescriptorSet::buffer(1, buffer_tmp.clone()),
+            ],
+            [],
+        )?;
+
+        let layout2 = self.ns_step2_pipeline.layout().set_layouts().first().unwrap();
+        let set2 = PersistentDescriptorSet::new(
+            &*self.descriptor_set_allocator,
+            layout2.clone(),
+            [
+                WriteDescriptorSet::buffer(0, buffer_x.clone()),
+                WriteDescriptorSet::buffer(1, buffer_tmp.clone()),
+                WriteDescriptorSet::buffer(2, buffer_next_x.clone()),
+            ],
+            [],
+        )?;
+
+        for _ in 0..n_iters {
+            builder
+                .bind_pipeline_compute(self.ns_step1_pipeline.clone())?
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.ns_step1_pipeline.layout().clone(), 0, set1.clone())?
+                .push_constants(self.ns_step1_pipeline.layout().clone(), 0, newton_schulz_step1_cs::PushConstants { rows: rows as u32, cols: cols as u32 })?
+                .dispatch([(cols as u32).div_ceil(16), (cols as u32).div_ceil(16), 1])?;
+
+            builder
+                .bind_pipeline_compute(self.ns_step2_pipeline.clone())?
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.ns_step2_pipeline.layout().clone(), 0, set2.clone())?
+                .push_constants(self.ns_step2_pipeline.layout().clone(), 0, newton_schulz_step2_cs::PushConstants { rows: rows as u32, cols: cols as u32 })?
+                .dispatch([(cols as u32).div_ceil(16), (rows as u32).div_ceil(16), 1])?;
+
+            builder.copy_buffer(vulkano::command_buffer::CopyBufferInfo::buffers(
+                buffer_next_x.clone(),
+                buffer_x.clone(),
+            ))?;
+        }
+
+        let command_buffer = builder.build()?;
+        let future = sync::now(self.device.clone())
+            .then_execute(self.queue.clone(), command_buffer)?
+            .then_signal_fence_and_flush()?;
+        // Wait asynchronously instead of blocking strictly? For now blocking is fine to ensure completion.
+        future.wait(None)?;
+
+        Ok(())
+    }
+
+    /// # Safety
+    ///
+    /// This function is unsafe because it performs a raw Vulkan compute dispatch.
+    pub unsafe fn run_telemetry_async(
+        &self,
+        size: usize,
+        buffer_in: &Subbuffer<[f32]>,
+        buffer_out: &Subbuffer<[f32]>,
+    ) -> anyhow::Result<()> {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &*self.command_buffer_allocator,
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )?;
+
+        let layout = self.telemetry_pipeline.layout().set_layouts().first().unwrap();
+        let set = PersistentDescriptorSet::new(
+            &*self.descriptor_set_allocator,
+            layout.clone(),
+            [
+                WriteDescriptorSet::buffer(0, buffer_in.clone()),
+                WriteDescriptorSet::buffer(1, buffer_out.clone()),
+            ],
+            [],
+        )?;
+
+        builder
+            .bind_pipeline_compute(self.telemetry_pipeline.clone())?
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.telemetry_pipeline.layout().clone(), 0, set.clone())?
+            .push_constants(self.telemetry_pipeline.layout().clone(), 0, telemetry_cs::PushConstants { size: size as u32 })?
+            .dispatch([1, 1, 1])?;
+
+        let command_buffer = builder.build()?;
+        let future = sync::now(self.device.clone())
+            .then_execute(self.queue.clone(), command_buffer)?
+            .then_signal_fence_and_flush()?;
+
+        future.wait(None)?;
+
+        Ok(())
+    }
+}
 mod cs {
     vulkano_shaders::shader! {
         ty: "compute",
-        path: "assets/shaders/ternary_gemv_igpu.comp",
+        path: "assets/shaders/ternary_gemv_unified.comp",
         vulkan_version: "1.1",
     }
 }
@@ -1028,5 +1300,62 @@ pub mod optimizer_cs {
         ty: "compute",
         path: "assets/shaders/shadow_optimizer.comp",
         vulkan_version: "1.1",
+    }
+}
+
+pub mod newton_schulz_step1_cs {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "assets/shaders/newton_schulz_step1.comp",
+        vulkan_version: "1.1",
+    }
+}
+
+pub mod newton_schulz_step2_cs {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "assets/shaders/newton_schulz_step2.comp",
+        vulkan_version: "1.1",
+    }
+}
+
+pub mod telemetry_cs {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "assets/shaders/tensor_thermodynamics.comp",
+        vulkan_version: "1.1",
+    }
+}
+
+pub mod dspark_drafter_cs {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "assets/shaders/dspark_drafter.comp",
+        vulkan_version: "1.1",
+    }
+}
+
+/// DSpark Asynchronous Ring Buffer (Priority 50)
+/// Decouples the Vulkan Drafter from the CPU Verifier by running the Drafter
+/// in an independent background thread, pushing proposals to an MPSC Ring Buffer.
+pub struct DSparkRingBuffer {
+    pub receiver: std::sync::mpsc::Receiver<Vec<u32>>,
+}
+
+impl DSparkRingBuffer {
+    pub fn new(_device: std::sync::Arc<vulkano::device::Device>, _queue: std::sync::Arc<vulkano::device::Queue>) -> Self {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        
+        // Asynchronous Vulkan submission loop
+        std::thread::spawn(move || {
+            // Placeholder: this loop will continuously submit dspark_drafter.comp
+            // and push the resulting candidates (e.g. K=3 tokens) to tx.
+            // Currently yields to prevent blocking since the shader is a skeleton.
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+
+        Self { receiver: rx }
     }
 }

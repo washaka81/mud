@@ -32,159 +32,151 @@ pub fn map_llama_to_mud(t_name: &str) -> Option<(String, bool)> {
     }
 
     // Skip bias tensors except for Mamba's conv1d which is critical
-    if t_name.ends_with(".bias") && !t_name.contains("conv1d") {
+    if t_name.ends_with(".bias") && !t_name.contains("conv1d") && !t_name.contains("dt_bias") {
         return None;
     }
-    if t_name == "model.embed_tokens.weight" {
+
+    if t_name.ends_with("embed_tokens.weight") {
         return Some(("token_embd.weight".to_string(), false));
     }
-    if t_name == "model.norm.weight" {
+    if t_name.ends_with(".norm.weight")
+        && !t_name.contains("layers.")
+        && !t_name.contains("blocks.")
+    {
         return Some(("output_norm.weight".to_string(), false));
     }
-    if t_name == "lm_head.weight" {
+    if t_name.ends_with("lm_head.weight") || t_name.ends_with("output.weight") {
         return Some(("output.weight".to_string(), false)); // NEVER ternarize final logits projection
     }
 
-    // Layer mapping
-    if t_name.starts_with("model.layers.") {
-        let parts: Vec<&str> = t_name.split('.').collect();
-        if parts.len() < 4 {
+    // Layer mapping (Agnostic to 'model.', 'model.language_model.', etc.)
+    let layer_marker = if t_name.contains(".layers.") {
+        ".layers."
+    } else if t_name.contains(".blocks.") {
+        ".blocks."
+    } else {
+        return None;
+    };
+
+    let parts: Vec<&str> = t_name.split(layer_marker).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let sub_parts: Vec<&str> = parts[1].split('.').collect();
+    if sub_parts.len() < 2 {
+        return None;
+    }
+
+    let layer_idx = sub_parts[0];
+    let sub = sub_parts[1];
+    let prefix = format!("blk.{}", layer_idx);
+
+    if sub == "input_layernorm" || sub == "ln_1" || sub == "attention_norm" {
+        return Some((format!("{}.attn_norm.weight", prefix), false));
+    }
+    if sub == "post_attention_layernorm" || sub == "ln_2" || sub == "ffn_norm" {
+        return Some((format!("{}.norm.weight", prefix), false));
+    }
+
+    // Mamba / SSM Support (Jamba/Mamba/Ornith nomenclature)
+    if sub == "mamba" || sub == "mixer" || sub == "ssm" || sub == "linear_attn" {
+        if sub_parts.len() < 3 {
             return None;
         }
-        let layer_idx = parts[2];
-        let sub = parts[3];
+        let proj = sub_parts[2];
+        let is_scale = sub_parts.last() == Some(&"scale");
+        let suffix = if is_scale {
+            "scale"
+        } else {
+            sub_parts.last().unwrap_or(&"weight")
+        };
+        let ternarize = !is_scale && (proj.contains("proj")); // Proyectamos en ternario, estados/bias en f32
 
-        let prefix = format!("blk.{}", layer_idx);
+        let mapped = match proj {
+            "in_proj" | "in_proj_qkv" => format!("{}.ssm_in.{}", prefix, suffix),
+            "in_proj_a" => format!("{}.ssm_in_a.{}", prefix, suffix),
+            "in_proj_b" => format!("{}.ssm_in_b.{}", prefix, suffix),
+            "in_proj_z" => format!("{}.ssm_in_z.{}", prefix, suffix),
+            "out_proj" => format!("{}.ssm_out.{}", prefix, suffix),
+            "x_proj" => format!("{}.ssm_x.{}", prefix, suffix),
+            "dt_proj" | "dt_bias" => format!("{}.ssm_dt.{}", prefix, suffix),
+            "A_log" | "ssm_a" => format!("{}.ssm_a", prefix), // a y d no suelen tener escalas separadas
+            "D" | "ssm_d" => format!("{}.ssm_d", prefix),
+            "conv1d" => format!("{}.ssm_conv1d.{}", prefix, suffix),
+            _ => return None,
+        };
+        return Some((mapped, ternarize));
+    }
 
-        if sub == "input_layernorm" {
+    // Self-Attention
+    if sub == "self_attn" || sub == "attention" {
+        if sub_parts.len() < 3 {
+            return None;
+        }
+        let proj = sub_parts[2];
+        if proj == "norm" {
             return Some((format!("{}.attn_norm.weight", prefix), false));
         }
-        if sub == "post_attention_layernorm" {
-            return Some((format!("{}.norm.weight", prefix), false));
+        if proj == "attn_sub_norm" {
+            return Some((format!("{}.attn_sub_norm.weight", prefix), false));
+        }
+        let is_scale =
+            sub_parts.last() == Some(&"scale") || sub_parts.last() == Some(&"weight_scale");
+        let suffix = if is_scale { "prq_scale" } else { "weight" };
+        let ternarize = !is_scale; // we only ternarize the weights, not the scales!
+
+        let mapped = match proj {
+            "q_proj" | "wq" => format!("{}.attn_q.{}", prefix, suffix),
+            "k_proj" | "wk" => format!("{}.attn_k.{}", prefix, suffix),
+            "v_proj" | "wv" => format!("{}.attn_v.{}", prefix, suffix),
+            "o_proj" | "wo" | "out_proj" => format!("{}.attn_output.{}", prefix, suffix),
+            "qkv_proj" => format!("{}.attn_qkv.{}", prefix, suffix),
+            _ => return None,
+        };
+        return Some((mapped, ternarize));
+    }
+
+    // MOE & MLP
+    if sub == "mlp" || sub == "block_sparse_moe" || sub == "moe" {
+        if sub_parts.len() < 3 {
+            return None;
+        }
+        let is_moe = sub == "block_sparse_moe" || sub == "moe";
+        let is_scale =
+            sub_parts.last() == Some(&"scale") || sub_parts.last() == Some(&"weight_scale");
+        let suffix = if is_scale { "prq_scale" } else { "weight" };
+        let ternarize = !is_scale;
+
+        // Gate / Router
+        if sub_parts[2] == "gate" {
+            return Some((format!("{}.gate.weight", prefix), false));
         }
 
-        // Mamba / SSM Support (Jamba/Mamba nomenclature)
-        if sub == "mamba" || sub == "mixer" || sub == "ssm" {
-            let proj = parts[4];
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale {
-                "scale"
-            } else {
-                parts.last().unwrap_or(&"weight")
-            };
-            let ternarize = !is_scale && (proj.contains("proj")); // Proyectamos en ternario, estados/bias en f32
-
-            let mapped = match proj {
-                "in_proj" => format!("{}.ssm_in.{}", prefix, suffix),
-                "out_proj" => format!("{}.ssm_out.{}", prefix, suffix),
-                "x_proj" => format!("{}.ssm_x.{}", prefix, suffix),
-                "dt_proj" => format!("{}.ssm_dt.{}", prefix, suffix),
-                "A_log" | "ssm_a" => format!("{}.ssm_a", prefix), // a y d no suelen tener escalas separadas
-                "D" | "ssm_d" => format!("{}.ssm_d", prefix),
-                "conv1d" => format!("{}.ssm_conv1d.{}", prefix, suffix),
+        if is_moe && sub_parts[2] == "experts" {
+            if sub_parts.len() < 5 {
+                return None;
+            }
+            let expert_id = sub_parts[3];
+            let w_name = sub_parts[4];
+            let mapped = match w_name {
+                "w1" | "gate_proj" => format!("{}.expert.{}.w1.{}", prefix, expert_id, suffix),
+                "w2" | "down_proj" => format!("{}.expert.{}.w2.{}", prefix, expert_id, suffix),
+                "w3" | "up_proj" => format!("{}.expert.{}.w3.{}", prefix, expert_id, suffix),
                 _ => return None,
             };
             return Some((mapped, ternarize));
-        }
-
-        if sub == "self_attn" || sub == "attention" {
-            if parts.len() < 5 {
-                return None;
-            }
-            let proj = parts[4];
-            if proj == "norm" {
-                return Some((format!("{}.attn_norm.weight", prefix), false));
-            }
-            if proj == "attn_sub_norm" {
-                return Some((format!("{}.attn_sub_norm.weight", prefix), false));
-            }
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale { "scale" } else { "weight" };
-            let ternarize = !is_scale; // we only ternarize the weights, not the scales!
-
-            let mapped = match proj {
-                "q_proj" | "wq" => format!("{}.attn_q.{}", prefix, suffix),
-                "k_proj" | "wk" => format!("{}.attn_k.{}", prefix, suffix),
-                "v_proj" | "wv" => format!("{}.attn_v.{}", prefix, suffix),
-                "o_proj" | "wo" => format!("{}.attn_output.{}", prefix, suffix),
-                "qkv_proj" => format!("{}.attn_qkv.{}", prefix, suffix),
+        } else {
+            let w_name = sub_parts[2];
+            let mapped = match w_name {
+                "w1" | "gate_proj" => format!("{}.expert.0.w1.{}", prefix, suffix),
+                "w2" | "down_proj" => format!("{}.expert.0.w2.{}", prefix, suffix),
+                "w3" | "up_proj" => format!("{}.expert.0.w3.{}", prefix, suffix),
+                "gate_up_proj" => format!("{}.expert.0.gate_up.{}", prefix, suffix),
+                "ffn_sub_norm" => format!("{}.ffn_sub_norm.{}", prefix, suffix),
                 _ => return None,
             };
             return Some((mapped, ternarize));
-        }
-
-        // MOE & MLP (dynamic matching for LLaMA, Qwen2MoE, Mixtral, DeepSeek)
-        if sub == "mlp" || sub == "block_sparse_moe" || sub == "moe" {
-            if parts.len() < 5 {
-                return None;
-            }
-
-            let is_scale = parts.last() == Some(&"scale");
-            let suffix = if is_scale { "scale" } else { "weight" };
-            let ternarize = !is_scale;
-
-            // Check for router gate: model.layers.L.[mlp/moe/block_sparse_moe].gate.weight
-            if parts[4] == "gate" && parts.len() == 6 {
-                return Some((format!("{}.gate.{}", prefix, suffix), false)); // gates are always f32
-            }
-
-            // Check for expert weights
-            // Case A: mlp.experts.E.gate_proj/down_proj/up_proj.weight (Qwen2MoE)
-            if parts[4] == "experts" && parts.len() >= 8 {
-                let expert_idx = parts[5];
-                let proj = parts[6];
-                let mapped_proj = match proj {
-                    "gate_proj" | "w1" => "w1",
-                    "down_proj" | "w2" => "w2",
-                    "up_proj" | "w3" => "w3",
-                    _ => return None,
-                };
-                return Some((
-                    format!(
-                        "{}.expert.{}.{}.{}",
-                        prefix, expert_idx, mapped_proj, suffix
-                    ),
-                    ternarize,
-                ));
-            }
-
-            // Case B: block_sparse_moe/moe.experts.E.w1/w2/w3.weight (Mixtral / DeepSeek)
-            if parts[4] == "experts" && parts.len() >= 7 {
-                let expert_idx = parts[5];
-                let proj = parts[6];
-                let mapped_proj = match proj {
-                    "w1" | "gate_proj" => "w1",
-                    "w2" | "down_proj" => "w2",
-                    "w3" | "up_proj" => "w3",
-                    _ => return None,
-                };
-                return Some((
-                    format!(
-                        "{}.expert.{}.{}.{}",
-                        prefix, expert_idx, mapped_proj, suffix
-                    ),
-                    ternarize,
-                ));
-            }
-
-            // Case C: standard non-MoE MLP: mlp.gate_proj/down_proj/up_proj.weight (LLaMA / Qwen / Mistral)
-            if parts.len() == 6 {
-                let proj = parts[4];
-                if proj == "ffn_sub_norm" {
-                    return Some((format!("{}.ffn_sub_norm.weight", prefix), false));
-                }
-                let mapped_proj = match proj {
-                    "gate_proj" | "w1" => "w1",
-                    "down_proj" | "w2" => "w2",
-                    "up_proj" | "w3" => "w3",
-                    "gate_up_proj" => "gate_up",
-                    _ => return None,
-                };
-                return Some((
-                    format!("{}.expert.0.{}.{}", prefix, mapped_proj, suffix),
-                    ternarize,
-                ));
-            }
         }
     }
 

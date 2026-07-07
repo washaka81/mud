@@ -1,0 +1,87 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer InRegs { vec2 regs[]; };
+layout(set = 0, binding = 1) buffer OutBuffer { float out_res[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint size;
+} pc;
+
+shared float s_sum_a[256];
+shared float s_sum_b[256];
+shared float s_sum_a2[256];
+shared float s_sum_b2[256];
+shared float s_sum_ab[256];
+
+float half_to_float(uint half_val) {
+    uint sign = half_val & 0x8000u;
+    uint exp  = half_val & 0x7C00u;
+    uint mant = half_val & 0x03FFu;
+    if (exp == 0u && mant == 0u) {
+        return uintBitsToFloat(sign << 16u);
+    }
+    uint f_bits = (sign << 16u) | ((exp + 0x1C000u) << 13u) | (mant << 13u);
+    return uintBitsToFloat(f_bits);
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    
+    float a = 0.0;
+    float b = 0.0;
+    float a2 = 0.0;
+    float b2 = 0.0;
+    float ab = 0.0;
+
+    for (uint i = tid; i < pc.size; i += 256) {
+        float x = regs[i].x;
+        uint half_val = floatBitsToUint(regs[i].y) & 0xFFFFu;
+        float y = half_to_float(half_val);
+        
+        a += x;
+        b += y;
+        a2 += x * x;
+        b2 += y * y;
+        ab += x * y;
+    }
+
+    s_sum_a[tid] = a;
+    s_sum_b[tid] = b;
+    s_sum_a2[tid] = a2;
+    s_sum_b2[tid] = b2;
+    s_sum_ab[tid] = ab;
+
+    memoryBarrierShared();
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride /= 2) {
+        if (tid < stride) {
+            s_sum_a[tid] += s_sum_a[tid + stride];
+            s_sum_b[tid] += s_sum_b[tid + stride];
+            s_sum_a2[tid] += s_sum_a2[tid + stride];
+            s_sum_b2[tid] += s_sum_b2[tid + stride];
+            s_sum_ab[tid] += s_sum_ab[tid + stride];
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+
+    if (tid == 0) {
+        float n = float(pc.size);
+        float mean_a = s_sum_a[0] / n;
+        float mean_b = s_sum_b[0] / n;
+        
+        float var_a = max(0.0, (s_sum_a2[0] / n) - (mean_a * mean_a));
+        float var_b = max(0.0, (s_sum_b2[0] / n) - (mean_b * mean_b));
+        float cov_ab = (s_sum_ab[0] / n) - (mean_a * mean_b);
+        
+        float z_entropy = -log(max(1e-8, var_b / (var_b + 1.0)));
+        
+        out_res[0] = var_a;
+        out_res[1] = var_b;
+        out_res[2] = cov_ab;
+        out_res[3] = z_entropy;
+        out_res[4] = mean_b; // E_JEPA
+    }
+}

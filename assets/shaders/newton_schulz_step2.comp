@@ -1,0 +1,25 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer XBuffer { float x[]; };
+layout(set = 0, binding = 1) buffer TmpBuffer { float tmp[]; };
+layout(set = 0, binding = 2) buffer NextXBuffer { float next_x[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint rows;
+    uint cols;
+} pc;
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;
+    uint i = gl_GlobalInvocationID.y;
+    
+    if (j >= pc.cols || i >= pc.rows) return;
+    
+    float sum = 0.0;
+    for (uint k = 0; k < pc.cols; k++) {
+        sum += x[i * pc.cols + k] * tmp[k * pc.cols + j];
+    }
+    
+    next_x[i * pc.cols + j] = 1.5 * x[i * pc.cols + j] - 0.5 * sum;
+}

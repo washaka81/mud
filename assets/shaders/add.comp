@@ -1,0 +1,21 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// Simple vector addition: z[i] = x[i] + y[i]
+// Dispatch: [size / 256, 1, 1]
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputX { float x[]; };
+layout(std430, set = 0, binding = 1) readonly buffer InputY { float y[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutputZ { float z[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint size;
+} pcs;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pcs.size) return;
+    z[idx] = x[idx] + y[idx];
+}

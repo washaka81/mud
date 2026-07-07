@@ -1,7 +1,12 @@
 use forge_llm::mud::MudFile;
 
 fn main() -> anyhow::Result<()> {
-    let model_path = "models/core_skills.mud";
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: {} <path_to_mud_file>", args[0]);
+        std::process::exit(1);
+    }
+    let model_path = &args[1];
     println!("=== MUD MOE EXPERT ANATOMY: {} ===", model_path);
 
     let model = MudFile::load(model_path)?;

@@ -8,6 +8,7 @@ layout(set = 0, binding = 2) writeonly buffer OutputGate { float out_val[]; };
 
 layout(push_constant) uniform PushConstants {
     uint size;
+    uint do_relu2;
 } pcs;
 
 void main() {
@@ -15,6 +16,12 @@ void main() {
     if (idx >= pcs.size) return;
 
     float x = w1[idx];
-    float sig = 1.0 / (1.0 + exp(-x));
-    out_val[idx] = (x * sig) * w3[idx];
+    float y = w3[idx];
+    if (pcs.do_relu2 == 1u) {
+        float r = max(0.0, x);
+        out_val[idx] = (r * r) * y;
+    } else {
+        float sig = 1.0 / (1.0 + exp(-x));
+        out_val[idx] = (x * sig) * y;
+    }
 }

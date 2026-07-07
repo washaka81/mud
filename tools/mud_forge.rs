@@ -6,7 +6,7 @@ use std::env;
 use std::fs;
 
 fn pack_ternary(data: &[f32]) -> Vec<u8> {
-    let u32_count = data.len().div_ceil(16);
+    let u32_count = data.len().div_ceil(8);
     let mut packed = vec![0u32; u32_count];
     for i in 0..data.len() {
         let bit = if data[i] > 0.5 {
@@ -16,7 +16,7 @@ fn pack_ternary(data: &[f32]) -> Vec<u8> {
         } else {
             0u32
         };
-        packed[i / 16] |= bit << ((i % 16) * 2);
+        packed[i / 8] |= bit << ((i % 8) * 4);
     }
     unsafe { std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4) }.to_vec()
 }
@@ -303,6 +303,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let mut global_metadata = HashMap::new();
+    global_metadata.insert("max_position_embeddings".to_string(), "4096".to_string());
+    global_metadata.insert("rms_norm_eps".to_string(), "1e-5".to_string());
+    global_metadata.insert("rope_theta".to_string(), "10000.0".to_string());
+    global_metadata.insert("model.type".to_string(), "jamba_hybrid".to_string());
     global_metadata.insert("arch".to_string(), "jamba-hybrid-v1".to_string());
     global_metadata.insert("hidden_size".to_string(), profile.hidden_size.to_string());
     global_metadata.insert("num_layers".to_string(), profile.num_layers.to_string());
