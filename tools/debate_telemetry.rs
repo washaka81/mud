@@ -41,13 +41,14 @@ fn main() -> anyhow::Result<()> {
     // triggers run_trainer via standard output redirection, OR we add a channel.
     // Let's add a simple channel.
     let (tx, rx) = mpsc::channel::<String>();
-    
+    let stop_flag = running.clone();
+
     let model_path = std::env::args().nth(1).unwrap_or_else(|| "models/core_skills.mud".to_string());
     std::thread::spawn(move || {
         let corpus_dir = "training/corpus".to_string();
         if let Ok(mut trainer) = MudCorpusTrainer::new(model_path, corpus_dir) {
             let _ = tx.send("Starting MUD Debate Arena Session...".to_string());
-            let _ = trainer.run_debate_session(Some(tx.clone()));
+            let _ = trainer.run_debate_session(Some(tx.clone()), stop_flag.clone());
             let _ = tx.send("Debate finished.".to_string());
         }
     });

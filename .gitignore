@@ -31,6 +31,8 @@ checkpoints_vulkan/
 # --- TRAINING DATA & CORPUS ---
 training/*.txt
 training/*.bin
+training/**/*.txt
+training/**/*.bin
 !training/vocab_es_en.txt
 !training/extra_knowledge.txt
 !training/README.md
@@ -39,6 +41,8 @@ training/*.log
 training/models/
 training/logs/
 training/corpus/
+training/_stash_full/
+
 
 # --- TEST DATA ---
 tests/data/books/
@@ -91,3 +95,47 @@ forge_autograd/target/
 # --- ORCHESTRATION / AI FILES ---
 GEMINI.md
 AGENTS.md
+
+# --- SCRATCH FILES ---
+scratch*.rs
+scratch*
+test_affinity.rs
+
+# --- MERGE ARTIFACTS ---
+*.orig
+*.rej
+*.conflict
+
+# --- REASONING / THINKER TRACES ---
+# Archivos generados por el pipeline de razonamiento complejo (C-MUD).
+# Estos archivos de estado (como CMUX y sidecars JSON) actúan como el
+# "thinker", almacenando las amplitudes y fases de las capas de atención.
+*.cmud
+*.cmux
+*.thinker
+*.think
+
+# --- BUILD ARTIFACTS ---
+*.o
+*.a
+
+# --- RUNTIME LOGS (root) ---
+/mud_metrics.log
+/mud_train_metrics.log
+/crash.log
+/iter_val.log
+/output.log
+/test_output.log
+/validator.log
+
+# --- DEBUG DUMPS ---
+/dump.txt
+/bt.txt
+/out.txt
+/mud_disassembly.txt
+/tui_*.log
+/tui_*.txt
+
+# --- PYTHON ---
+*.py
+.venv/

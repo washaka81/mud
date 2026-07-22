@@ -1,17 +1,17 @@
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
-#extension GL_KHR_shader_subgroup_ballot : enable
 
-// Unified Ternary GEMV Compute Shader
-// Merges: ternary_gemv.comp, ternary_gemv_igpu.comp, ternary_gemv_zero_copy.comp
-// Select features via push constant flags to avoid shader duplication.
+// Phase B: Ternary GEMV with shared-memory activation tile + workgroup reduce.
+// ELUT 4-bit (8 weights / u32). Portable across subgroup sizes (no subgroupAdd).
+//
+// Workgroup: one output row (and one batch index).
+// Shared: s_x[SX_MAX] holds a tile of the activation vector (Iris Xe SLM-friendly).
 
 layout(local_size_x = 32) in;
 
-layout(std430, set = 0, binding = 0) buffer InputX { float x[]; };
-layout(std430, set = 0, binding = 1) buffer Weights { uint packed_w[]; };
-layout(std430, set = 0, binding = 2) buffer OutputY { float y[]; };
-layout(std430, set = 0, binding = 3) buffer Scales { float scales[]; };
+layout(std430, set = 0, binding = 0) readonly buffer InputX { float x[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Weights { uint packed_w[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutputY { float y[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Scales { float scales[]; };
 
 layout(push_constant) uniform PushConstants {
     uint n_in;
@@ -23,54 +23,113 @@ layout(push_constant) uniform PushConstants {
     float scale;
 } pcs;
 
+// 4096 f32 = 16 KiB — fits comfortably in Iris Xe shared local memory (~64 KiB).
+#define SX_MAX 4096u
+
+shared float s_x[SX_MAX];
+shared float s_partial[32];
+
 void main() {
     uint row = gl_WorkGroupID.x;
     uint batch_idx = gl_WorkGroupID.y;
+    uint lane = gl_LocalInvocationID.x;
 
     if (row >= pcs.n_out || batch_idx >= pcs.batch_size) return;
 
-    uint lane_id = gl_LocalInvocationID.x;
-    float local_sum = 0.0;
-
-    uint blocks_per_row = pcs.n_in / 16;
-    uint row_offset = row * blocks_per_row;
-    uint x_offset = batch_idx * pcs.n_in;
+    uint n_in = pcs.n_in;
+    uint x_offset = batch_idx * n_in;
     uint y_offset = batch_idx * pcs.n_out;
+    uint blocks_per_row = n_in / 8u;
+    uint row_offset = row * blocks_per_row;
 
+    // ── Optional RMS scale over full x (shared reduce) ─────────────────────
     float norm_scale = 1.0;
     if (pcs.do_norm == 1u) {
-        float sq_sum = 0.0;
-        for (uint i = lane_id; i < pcs.n_in; i += 32) {
-            sq_sum += x[x_offset + i] * x[x_offset + i];
+        float sq = 0.0;
+        for (uint i = lane; i < n_in; i += 32u) {
+            float v = x[x_offset + i];
+            sq += v * v;
         }
-        sq_sum = subgroupAdd(sq_sum);
-        norm_scale = inversesqrt(sq_sum / float(pcs.n_in) + 1e-6);
-    }
-
-    for (uint b = lane_id; b < blocks_per_row; b += 32) {
-        uint w_bits = packed_w[row_offset + b];
-        uint x_base = x_offset + b * 16;
-
-        #pragma unroll
-        for (uint i = 0; i < 16; i++) {
-            uint bits = (w_bits >> (i * 2)) & 3u;
-            if (bits != 0u) {
-                float val = x[x_base + i] * norm_scale;
-                local_sum += (bits == 1u) ? val : -val;
+        s_partial[lane] = sq;
+        barrier();
+        for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+            if (lane < stride) {
+                s_partial[lane] += s_partial[lane + stride];
             }
+            barrier();
         }
+        norm_scale = inversesqrt(s_partial[0] / float(n_in) + 1e-6);
+        barrier();
     }
 
-    float total_sum = subgroupAdd(local_sum);
+    // ── GEMV: stream x through shared tiles ────────────────────────────────
+    float local_sum = 0.0;
 
-    if (lane_id == 0) {
+    for (uint tile = 0u; tile < n_in; tile += SX_MAX) {
+        uint tile_n = min(SX_MAX, n_in - tile);
+
+        // Cooperative load of activation tile (already × norm_scale)
+        for (uint i = lane; i < tile_n; i += 32u) {
+            s_x[i] = x[x_offset + tile + i] * norm_scale;
+        }
+        barrier();
+
+        // Blocks fully contained in this tile (tile is multiple of 8 for clean indexing
+        // when n_in is multiple of 8 — required by ELUT packing).
+        uint b0 = tile / 8u;
+        uint b1 = (tile + tile_n) / 8u;
+        for (uint b = b0 + lane; b < b1; b += 32u) {
+            uint w_bits = packed_w[row_offset + b];
+            uint local_base = (b * 8u) - tile;
+
+            // Unroll 8 nibbles
+            uint bits0 = (w_bits) & 0xFu;
+            uint bits1 = (w_bits >> 4u) & 0xFu;
+            uint bits2 = (w_bits >> 8u) & 0xFu;
+            uint bits3 = (w_bits >> 12u) & 0xFu;
+            uint bits4 = (w_bits >> 16u) & 0xFu;
+            uint bits5 = (w_bits >> 20u) & 0xFu;
+            uint bits6 = (w_bits >> 24u) & 0xFu;
+            uint bits7 = (w_bits >> 28u) & 0xFu;
+
+            if (bits0 == 1u) local_sum += s_x[local_base + 0u];
+            else if (bits0 == 0xFu) local_sum -= s_x[local_base + 0u];
+            if (bits1 == 1u) local_sum += s_x[local_base + 1u];
+            else if (bits1 == 0xFu) local_sum -= s_x[local_base + 1u];
+            if (bits2 == 1u) local_sum += s_x[local_base + 2u];
+            else if (bits2 == 0xFu) local_sum -= s_x[local_base + 2u];
+            if (bits3 == 1u) local_sum += s_x[local_base + 3u];
+            else if (bits3 == 0xFu) local_sum -= s_x[local_base + 3u];
+            if (bits4 == 1u) local_sum += s_x[local_base + 4u];
+            else if (bits4 == 0xFu) local_sum -= s_x[local_base + 4u];
+            if (bits5 == 1u) local_sum += s_x[local_base + 5u];
+            else if (bits5 == 0xFu) local_sum -= s_x[local_base + 5u];
+            if (bits6 == 1u) local_sum += s_x[local_base + 6u];
+            else if (bits6 == 0xFu) local_sum -= s_x[local_base + 6u];
+            if (bits7 == 1u) local_sum += s_x[local_base + 7u];
+            else if (bits7 == 0xFu) local_sum -= s_x[local_base + 7u];
+        }
+        barrier();
+    }
+
+    // ── Workgroup reduce ───────────────────────────────────────────────────
+    s_partial[lane] = local_sum;
+    barrier();
+    for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            s_partial[lane] += s_partial[lane + stride];
+        }
+        barrier();
+    }
+
+    if (lane == 0u) {
+        float total = s_partial[0];
         float out_val;
         if (pcs.single_scale == 1u) {
-            out_val = total_sum * pcs.scale;
+            out_val = total * pcs.scale;
         } else {
-            out_val = total_sum * pcs.inv_q_scale * scales[row];
+            out_val = total * pcs.inv_q_scale * scales[row];
         }
-
         y[y_offset + row] = out_val;
     }
 }

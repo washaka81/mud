@@ -1,242 +1,295 @@
-# Forge LLM (MUD) - Project Instructions
+# Forge LLM (MUD) — Canonical Project Instructions
+
+> **Document hierarchy (2026-07-16)**
+>
+> | Document | Role | Authority |
+> |----------|------|-----------|
+> | **`GEMINI.md`** (this file) | Policies (P-#), architecture truth, priority ledger, compliance | **SSOT** for agents & humans |
+> | **`AGENTS.md`** | Session context, recent fixes, commands for AI agents | Derived from this file — must not contradict |
+> | **`VISION_ROADMAP.md`** | Product vision + Q3–Q4 2026 phases | SSOT for *direction* |
+> | **`PLAN_MAESTRO.md`** | Deep architecture narrative + MoE design | Expansion of vision; metrics table |
+>
+> If two docs disagree, **this file wins for policies/status**, and **`VISION_ROADMAP.md` wins for product direction**.
+
+---
+
+## 0. Canonical Status Snapshot (2026-07-16, post streams A–E)
+
+### What works
+- Forward + backward (STE QAT) on ternary ELUT 4-bit weights
+- `SlimeRegister` with **native `f32` `matmul_accum`** + JEPA state in workspace (`jepa_z`)
+- Forward GEMV: **AVX2 ELUT × `PCorePool(8)`** (Rayon OFF), plus **auto GPU** via `gemv_policy` (`MUD_GPU_GEMV=auto|0|1`); default `auto` in `mud.sh`. **Auto** = one-shot CPU-vs-GPU(ash) micro-bench; GPU only past break-even. On **i7-1260P + Iris Xe (ADL GT2)** the hot-path real picks **AVX2** (per-GEMV dispatch on UMA doesn't amortize for 147M; synthetic contiguous bench shows 2.5–14× GPU win). Force `0`=CPU / `1`=GPU. Vulkan backend = **ash 0.38** (`src/vulkan/ash_backend.rs`, `probe_gpu()`), also used in RMSNorm output-norm / Muon NS / heartbeat. **⚠️ Vulkan SIGSEGV on Intel Iris Xe (2026-07-18):** el driver Intel (`libvulkan_intel.so`, ADL GT2 UMA) hace SIGSEGV en `submit_and_wait` al dispatchar QKV GEMV (determinista en block 11/64). Fix: `mud.sh train` fuerza `MUD_USE_VULKAN=0`/`MUD_GPU_GEMV=0` (override `MUD_TRAIN_FORCE_VULKAN=1`). Un fallo de driver NO es capturable como `Result`. Detalle: `docs/sessions/MUD_SESSION_REPORT_2026-07-18.md` §2.
+- SiLU + attention dots + **LM head logits** on ASM (`silu_vectorial`, `dot_product`, `lm_head_logits_avx2`)
+- JEPA OU tracker + mHC residual (spring force / repulsion **removed**)
+- Sampled Softmax training objective (NCE-8 abandoned)
+- **Full-seq train** (causal windows, `MUD_TRAIN_FULL_SEQ` / `MUD_TRAIN_SEQ_LEN`) + L-10 packing
+- **Mini MoE load** from `.mud` + dense train-expert (`moe_load`, `MUD_TRAIN_EXPERT`)
+- **CSA lightning top-k** over HCA (`csa_indexer`; dense window always full; train tapes = full HCA)
+- L-13 HCA dense ring + 32k-ready policy; L-14 C-MUD math; L-15 grad checkpoint
+- Rayon removed from runtime crate; AOT corpus cache; converter `--check` / auditors
+- Compute stack: `docs/architecture/MUD_COMPUTE_STACK.md`
+- ~186 lib tests; clippy-clean target (P-06); `./mud.sh ci|audit-full`
+
+### 0.1 Status addendum (2026-07-22)
+
+- **Word fusion tokenizer fix:** Fixed AOT corpus & C-MUD data loaders (`corpus_trainer.rs`, `cmud_train.rs`) to tokenize continuous text blocks, preserving `Ġ` space prefixes across line/chunk boundaries. Added `Tokenizer::has_space_prefix` helper and unit test `test_has_space_prefix_subwords`.
+- **C-MUD Manifold & Cognition Validator (`cmud_manifold_validator` / `./mud.sh cmud-manifold`):** New standalone tool validating 5 cognitive dimensions (Léxico, Pensamiento, Coherencia, Resolución de Problemas, Resultados) with side-by-side baseline vs C-MUD comparative table and 100% verified certification.
+- **Project-wide Table Framing & Alignment:** All CLI tools and UI banners reviewed and formatted using `unicode-width` (`UnicodeWidthStr`) for pixel-perfect box borders across UTF-8 characters (`Ġ`, `Δ`, `µ`, `τ`, etc.). 257 lib tests passing, `cargo clippy --all-targets` 0 errors / 0 warnings.
+
+### 0.2 Historical Status addendum (2026-07-20)
+
+- **Model base saned:** `models/smollm2.mud` reconverted healthy (FIX D + `scale_audit`); prior-training vocabulary-collapse (PRQ scales inflated ~14–28× on last layers) fixed via `MUD_TRAIN_WCLAMP_K` shadow clamp (default 8) + `MUD_TRAIN_RESET_EPOCH=1`. See `TRAIN_TELEMETRY_FORENSIC_2026-07-20.md` §7.
+- **Live training telemetry TUI (`train_telemetry`):** parses `[TELEM]`/`[DW]` from `mud_train_metrics.log` (trainer now writes to **stderr AND file**); panels: PosLoss / VarH / VarJ / JEPA-integral / Cognitive + new **Weight Δ (bytes moved / sync)**. fixes the empty-panel bug where `[TELEM]` was stderr-only. Verified via `tmux capture-pane`.
+- **Pointer-optimized hot loops (P-00/P-01):** `apply_optimizer_cpu_step_and_pack` clamp, `dequantize_ternary_row` (LUT branchless), `unpack_ternary2bit_to_f32` (raw ptr, 8/u32), `pack_ternary_into` (8/u32 word), `pack_elut_prq` (2/byte) — zero-alloc.
+- **Debate/circuit writeback (`run_debate_session`):** now compares `hash_trained_weights` in vs out and prints ✓/⚠ NO-OP; reuses `sync_shadow_to_mud` (PRQ-scale-aware). fixes C1/C2 collapsed-writeback class (forensic §8).
+- **STE deadzone caveat:** on a converged base at default `QAT_LEARNING_RATE=0.0005` (threshold `s*0.7`) ΔW≈0 is expected, not a bug; use higher LR (e.g. `MUD_QAT_LR=0.03`) for visible weight movement.
+- **Open debt:** trainer console banner hardcodes `lr_init=3e-4` (corpus_trainer.rs:1703) while real LR=0.0005 — display-only, no functional impact.
+
+### Depth streams A–E (post-ledger, 2026-07-16) — **DONE**
+| Stream | Item |
+|--------|------|
+| **A** | Adam / SparseAdam real moments (`adam_state`, sparse zero-row skip) |
+| **B** | MoE `.mud` load + train-expert; FFN names w3=up w1=gate |
+| **C** | GPU GEMV auto-threshold (`gemv_policy`, `gemv_auto_bench`) |
+| **D** | Full-seq packed train (causal pos/KV) |
+| **E** | CSA top-k indexer over HCA |
+
+### Orbit F–L (2026-07-16)
+| Item | Reality |
+|------|---------|
+| **F QKV one CB** | **DONE** `dispatch_gemv_qkv_host_sync` |
+| **G Multi-expert STE** | **DONE** round-robin + **hash route** (`MUD_MOE_TRAIN=1\|hash`) |
+| **H Long full-seq** | **DONE** auto L-15 + **residual bank wired** in train (`MUD_GRAD_CKPT_RESIDUAL=1`) |
+| **I KV f16** | **DONE** `MUD_KV_DTYPE=f16` IEEE half packs |
+| **J CSA LSH** | **DONE** `MUD_CSA_LSH=1` SimHash prefilter |
+| **K Loss cert** | **DONE** `loss_cert` + `cert-loss` |
+| **L Converter P-13** | **DONE** canonical aliases + auditor |
+
+### Active optimizer
+**L-01 LIVE:** `select_optimizer()` → **Muon / GaLore / Chunked** preprocess then STE SGD + ELUT pack; **Adam / SparseAdam** use real moments (`adam_state` + `adam_step_avx2` when available).
+
+---
 
 ## 1. Architectural Mandates
 
-- **Pointer Mastery Mandate (Mandatory):** "El que domina los punteros domina el núcleo de la programación". Raw pointer mastery (`*mut T`, `*const T`) is the supreme truth of the engine. Abstractions must never block direct memory access.
-- **Zero-Allocation Policy:** The inference hot-loop MUST NOT perform dynamic memory allocations. Use pre-allocated fixed-size workspace buffers (now `SlimeWorkspace`).
-- **SlimeRegister Paradigm (NEW — Priority 27+):** The fundamental compute unit is `SlimeRegister` (`u32` value) mapping directly to physical registers processed in FP32 inside the AVX2 and Vulkan Iris Xe Compute Shaders. The memory representation is split: bits [15:0] carry the accumulated learned `ternary` state, and bits [31:16] are divided between the JEPA and cognitive functions (carrying the running integral and embedded derivatives). These embedded calculus/differential states are directly incrusted in the model's structural parameters and computed natively by the engine. All activations MUST flow through these registers. Storing values as IEEE f16 provides self-contained scaling and range (±65504) without fixed-point scaling, structurally bypassing i16 saturation.
-- **Jamba Hybrid Engine:** Weights are stored in 1.58-bit (ternary) format, with ELUT (4-bit nibble) packing as the new hot-path wire format for AVX2 ingestion. Supports interleaved Transformer Attention and Mamba SSM layers.
-- **O(1) Context Scaling:** Mamba layers MUST utilize the fixed-state SSM scan to ensure constant memory footprint regardless of context length.
-- **High-Fidelity Scaling (PRQ):** All ternary tensors MUST use **Per-Row Quantization**. This standard applies to both Attention and Mamba layers.
-- **Gradient Sanitization:** All gradients MUST be checked for finiteness (`is_finite()`) and clamped before being applied to shadow weights to prevent catastrophic "Zero-Sigma" matrix collapse during autonomous training.
-- **Forced Hot PRQ:** Shadow weights in FP32 MUST be explicitly scaled, rounded, and clamped to `[-1.0, 0.0, 1.0]` before being packed back into the `.mud` format.
-- **Anti-Hardcoding Mandate:** MUD must be strictly agnostic to architectural dimensions. Under NO circumstances shall network dimensions (e.g., hidden size, vocabulary size, attention heads) be hardcoded or fallback to default magic numbers. The engine and its tools must dynamically interrogate physical tensor boundaries to infer dimensions or panic explicitly. Fail-fast is mandatory over silent corruption.
-- **JEPA-Integrated Compute (Deterministic):** JEPA is a **pure deterministic system** — no trainable parameters, no gradients, no randomness. The bits [31:16] of every `SlimeRegister` carry the running JEPA integral `I` and cognitive differential functions. The attractor update `I_next = 0.99·I + 0.01·v_jepa` is a fixed low-pass filter running per-register at every block boundary to yield a smooth control gate, integrating derivatives directly embedded in the structural model weights. The underlying JEPA orbital state tracking `z` (along with its mean `mu_z` and `sigma_z`) is maintained as a raw `f32` buffer in `SlimeWorkspace.jepa_z`, avoiding direct register pollution.
-- **Ternary Compute (Statistical):** Bits [15:0] carry the accumulated result of learned ternary GEMV — stochastic, QAT-trained, PRQ-scaled. This is the statistical system.
-- **Equilibrium Mandate:** The deterministic (JEPA) and statistical (ternary) systems MUST converge to equilibrium: `E[y_final] → mu_ctx`, JEPA correction → 0, ternary weights learn to naturally center their outputs near `mu_ctx`. Every forward pass diagnostic MUST report JEPA correction magnitude per layer. Divergence is a critical bug.
-- **i16 Partial-Accumulation Mandate (DEPRECATED):** Previously, due to i16 overflow at `|accum| > 32,767`, every ELUT-AVX2 GEMV kernel was required to perform a mid-row reseat/normalize every 256 elements maximum. With the migration to the dual-f16 `SlimeRegister` (accumulating in f16/f32), this constraint is deprecated.
-- **Rust-Only Hardware Saturation Mandate (Intel Core i7-1260P Target):** No Python and no PyTorch are allowed under any circumstances. All execution paths must be implemented natively in Rust. Computation is split between handwritten x86_64 AVX2 Assembly (compiled exclusively for Performance cores / P-cores of the Intel i7-1260P CPU) and asynchronous Vulkan compute shaders running on the integrated Intel Iris Xe GPU (iGPU) to maximize memory-bandwidth and avoid E-core latency overhead.
+- **Pointer Mastery (P-00):** "El que domina los punteros domina el núcleo de la programación". Hot paths use `*mut T` / `*const T` and pre-allocated arenas. High-level slices are acceptable only outside the compute kernel.
+- **Zero-Allocation Policy (P-01):** Inference and QAT hot loops MUST NOT allocate. Use `SlimeWorkspace` (and trainer flat buffers) pre-allocated before the loop; reuse via `copy_from_slice` / `fill`.
+- **SlimeRegister (P-02 — CURRENT):** Fundamental activation cell. **Runtime truth (post 2026-06-23):** `matmul_accum: f32` (native magnitude; i16/f16 accum **deprecated** after saturation crises). JEPA orbital state lives in `SlimeWorkspace.jepa_z` (flat `f32`), not as a second packed f16 that drives the math path. Dual-f16 packing remains a historical design note, not the active accumulation contract.
+- **ELUT Wire Format (P-03):** Ternary weights on the hot path use **4-bit nibble ELUT** packing (8 weights / `u32`) + **Per-Row Quantization (PRQ)** scales.
+- **JEPA Deterministic Gate (P-05):** JEPA is deterministic (no learnable JEPA weights). Per block: z-score `y` → OU update `z` → `v_jepa` → sigmoid gate into **mHC** residual blend. Diagnostics MUST expose VarH, VarJ, gate stats.
+- **Equilibrium Mandate:** Statistical ternary path and JEPA gate should keep healthy VarH (> ~0.1 target band) and VarJ ~ O(1) after z-score. Collapse is a **critical bug**, not a tuning footnote.
+- **Anti-Hardcoding (P-13):** Network dimensions MUST come from `.mud` metadata (or explicit panic/error). No silent magic fallbacks for hidden/vocab/layers/heads.
+- **Rust-Only Hardware Target (P-07 / P-12):** No Python/PyTorch in runtime, training, conversion, or validation. Hot compute: handwritten AVX2 ASM (P-cores) and/or Vulkan compute on Iris Xe. No discrete-GPU requirement.
+- **Rayon (P-27 — CLARIFIED):** **Forbidden in the `forge_llm` runtime and tools hot path.** Custom `PCorePool` only. Exception: `forge_autograd` may still list Rayon only if unused on the training critical path; prefer removal. Do not reintroduce Rayon into `src/`.
+- **Jamba / Mamba:** Historical research track (`mamba.s` may exist). **Not** the current product spine. Current spine = dense ternary Transformer (+ future Mini MoE per vision). Do not treat Mamba as mandatory until re-prioritized in the ledger.
 
 ---
 
 ## 2. Technical Standards
 
-- **SIMD Priority:** All compute kernels MUST be implemented in AVX2 assembly (`src/asm/*.s`). Rust intrinsics are permitted only for runtime feature detection. No scalar fallback in the hot-path.
-- **No Python — Rust-only Toolchain (Mandatory):** ALL tools, converters, validators, and pipeline steps MUST be implemented in Rust. Python and PyTorch are strictly forbidden for any part of the runtime, training, validation, or conversion pipeline. The codebase must be 100% Rust.
-- **Rayon Prohibited (Mandatory):** Rayon is strictly prohibited across the entire project (including all sub-crates like `forge_autograd`). Rayon's thread pool scheduler introduces runtime thread contention and E-core latency that disrupts P-core execution pinning. All loops must run sequentially or use custom ASM/Vulkan threading.
-- **0-Error, 0-Warning Policy (Mandatory):** The Rust codebase MUST strictly maintain 0 compilation errors and 0 warnings via `cargo clippy`. Any introduced warning is treated as a critical bug and fixed immediately.
-- **Test Mandate (NEW — Mandatory):** Every new module (`*.rs`) MUST include an inline `#[cfg(test)] mod tests { ... }` block with at minimum:
-  - One unit test per public function.
-  - One edge-case test (e.g., zero-length input, max-size input, overflow boundary).
-  - Tests MUST pass under `cargo test --lib` with no panics.
-- **Benchmark Mandate (NEW — Mandatory):** Every new compute module (`asm/*.s`, `src/mud/*.rs`, `forge_autograd/*.rs`) MUST ship with a corresponding benchmark binary in `tools/` (e.g., `tools/slime_bench.rs`) registered in `Cargo.toml` as a `[[bin]]`. Benchmarks MUST report: throughput (elements/sec), latency (ns/call), and SIMD utilization (ops/cycle). Benchmarks are run via `./mud.sh bench <name>`.
-- **Dead Code Elimination Mandate (NEW — Mandatory):** Any module, function, struct, or file that is no longer referenced by any active code path MUST be deleted. Dead code is NOT archived, NOT commented out, NOT gated behind `#[allow(dead_code)]`. It is removed from the repository. `cargo clippy` with `-D dead_code` enforces this automatically. If a component is removed, its `[[bin]]` entry in `Cargo.toml` and its `./mud.sh` command MUST also be removed.
-- **Memory Safety:** Use `unsafe` blocks only when necessary for performance (AVX2 intrinsics, raw pointer arithmetic). Every `unsafe` block MUST have a `// SAFETY:` comment explaining the invariant that makes it sound.
-- **Bilingual Core:** The tokenizer and training corpus are optimized for Spanish and English.
-- **Universal Agnosticism:** Every tool and pipeline step (Conversion, Calibration, Training) must be designed to work across multiple model architectures without hardcoded dependencies. All constants MUST be mathematically justified and, where possible, derived from model metadata.
-- **Justified Constants (Mandatory):**
-    - `DEPTH_DAMPENING_FACTOR = 0.7071` (1/sqrt(2)): Dampens absmean to resolve Target Sigma paradox.
-    - `SPARSITY_THRESHOLD_RATIO = 0.7`: Maps normal distribution to the 26.0% sparsity boundary.
-    - `NEURAL_KICK_JITTER = 1e-5`: Neural Kick v2 intensity to prevent deterministic attractor collapse.
-    - `EPSILON_FLOOR = 1e-8`: Absolute numerical floor for stability-critical divisions.
-    - `JEPA_ATTRACTOR_LR = 0.01`: JEPA orbital correction rate (linear approximation, zero-EXP).
-    - `SLIME_RESEAT_STRIDE = 256`: Maximum i16 accumulation stride before mandatory partial reseat.
-- **Dynamic Context Scaling:** All buffer allocations and KV-cache dimensions MUST be derived from `max_position_embeddings` metadata to ensure universal compatibility.
+- **SIMD:** Critical GEMV/elementwise in AVX2 ASM (`src/asm/*.s`) where profiled. Scalar only for edges/tests.
+- **0-Error, 0-Warning (P-06):** `cargo clippy --all-targets` clean.
+- **Tests (P-09):** New modules ship `#[cfg(test)]` with public-fn coverage + edge case.
+- **Benchmarks (P-10):** New compute modules ship a `tools/*_bench.rs` `[[bin]]` + `./mud.sh bench` entry when applicable.
+- **Dead Code (P-08):** Delete unused modules/bins/shaders call-sites; do not comment-out or `allow(dead_code)` as storage.
+- **Memory Safety (P-16):** Every `unsafe` has `// SAFETY:`.
+- **Fail-fast (P-17):** Null / missing metadata → log + skip or hard error; never silent corruption.
+- **Justified constants (active):**
+  - `DEPTH_DAMPENING_FACTOR = 0.7071` (1/√2)
+  - `SPARSITY_THRESHOLD_RATIO = 0.7` (~26% sparsity)
+  - `NEURAL_KICK_JITTER = 1e-5` (or current equivalent micro-jitter on `z`)
+  - `EPSILON_FLOOR = 1e-8` — **single definition** in `constants.rs` only
+  - `JEPA_ATTRACTOR_LR` / OU rates: document actual rates used in `slime_jepa.rs` (currently EMA ~0.1 on `z`)
+- **Deprecated constants (do not reintroduce as mandates):**
+  - `SLIME_RESEAT_STRIDE` / i16 mid-row reseat (P-04) — obsolete after f32 accum
+- **Bilingual corpus (P-23):** ES + EN.
+- **Docs layout (P-18 — CLARIFIED):** Long-form docs under `docs/{audits,sessions,architecture,research,manuals,dumps}/`. **Allowed at repo root:** `GEMINI.md`, `AGENTS.md`, `VISION_ROADMAP.md`, `PLAN_MAESTRO.md`, `README.md`, `TREE.md`, `LICENSE`. Other root markdown is debt (move or delete).
 
 ---
 
-## 3. Calibration & Restoration Pipeline (UCP v2)
+## 3. Calibration & Restoration (UCP)
 
-Every new model converted to MUD format MUST follow the **Universal Calibration Protocol (UCP v2)**:
-1. **Convert (PRQ + ELUT):** Use `universal_converter` with depth-dampened row-wise scaling AND ELUT 4-bit nibble packing for the hot-path wire format.
-2. **Verify Conversion:** Run `conversion_verifier` to assert SQNR ≥ 10.5 dB and HiPPO eigenvalue stability (negative eigenvalues).
-3. **Verify Boundary Security:** Run `boundary_validator` to assert ternary grid conformity (no fractional weights) and scale boundary safety (all scales ≥ 10⁻⁸, scale COV < 0.12).
-4. **Estimate Workload:** Run `training_estimator` to calculate optimal hyperparameters, required alignment tokens, dynamic weight decay λ, and SGD seating steps.
-5. **Restore IQ:** Run `./mud.sh restore-iq` (Warmup + Cosine LR Schedule + STE QAT via `SlimeRegister` forward pass).
-6. **Assert Effectiveness:** Run `iteration_validator` to verify the composite score is **≥ 96%**, certifying the model for production.
+Every new model conversion SHOULD follow:
+
+1. **Convert** — `universal_converter` (PRQ + ELUT 4-bit)
+2. **Check** — `--check` / `audit-conv` (metadata + topology)
+3. **Bound** — ternary grid + scale floors
+4. **Health** — shapes / optimizer selection report
+5. **Restore IQ** — STE QAT via corpus trainer / `./mud.sh` pipeline
+6. **Validate** — iteration / composite gates when tools are available
+
+> **Converter health caveat (FIX D, 2026-07-18):** `MudFile::save` previously
+> corrupted mmap-backed tensors on the post-conversion ECC rewrite (read
+> `tensor.offset` as absolute, but it is relative to the data region). Output
+> norms/scales decoded as `~±1e38`. Fixed via `MudTensor::data_base` +
+> `data_base + offset`. `--check` only validates metadata — always
+> `diagnose_model` the converted `.mud` to confirm norms ≈ 1.0 and scales
+> in a sane band (not 1e-8 nor 1e38).
+
+Production gate targets (when validators run): SQNR ≥ 10.5 dB (conversion); composite score ≥ 96% (restore). Treat misses as blockers, not warnings.
 
 ---
 
 ## 4. Development Workflow
 
-- **Research first:** Check `docs/` and `GEMINI.md` before making architectural changes.
-- **Module checklist:** New module → test block → benchmark binary → `mud.sh` entry → doc entry. All four are mandatory.
-- **Dead code pass:** After every session, run `cargo clippy -- -D dead_code`. Remove all flagged items.
-- **Validation:** Run `boundary_validator` and `iteration_validator` after model changes or training chunks.
-- **No orphan tools:** Every `[[bin]]` in `Cargo.toml` MUST have a corresponding `./mud.sh <command>`. Orphan binaries are dead code and must be deleted.
+1. Read **this file** + `VISION_ROADMAP.md` Phase A before architectural changes.
+2. New module → tests → (bench if compute) → `mud.sh` entry → doc under `docs/`.
+3. After sessions: `cargo clippy --all-targets` (and `-D dead_code` when purging).
+4. Prefer `./mud.sh <cmd>` over raw `cargo run` for operator workflows (P-19).
+5. Do not mark a Priority **DONE** unless the **call site** is live (not just a module or shader file).
 
 ---
 
-## 5. Architectural Audits & Research Pivots
+## 5. Product Mandate (aligned with vision)
 
-- **Ternary Shock (Audit V3 & V5):** Empirical testing demonstrated that PTQ directly to 1.58-bit causes irreversible semantic aphasia despite mathematical stability (Sigma > 0.4). The models produce random BPE tokens.
-- **Current Development Focus (Audit V6 & V7 — Resolution):** The engine pivoted to **QAT via Straight-Through Estimator (STE)** inside the native corpus trainer.
-- **Statistical Health & Code Polish (Audit V8):** Enforces mathematical homeostasis using Sigma (σ), Delta (Δσ), Epsilon (ε), Lambda (λ). 0-warning/0-error policy via `cargo clippy`.
-- **Mathematical Paradox & Attention Looping (Audit V9):** Requires `1e-8` floor across all KV-caching and RMS Normalization. PRQ mandates 0.707 depth-dampening against absmean.
-- **Hybrid INT8 Pipeline — "Beast Engine" (Audit V10):** Inference integrates 1.58-bit Ternary weights with INT8 Activations via AVX2 `VPMADDUBSW`. Now superseded by the **SlimeRegister i16 accumulator** which operates natively on i16 without FP32 intermediate conversion.
-- **SlimeRegister Paradigm Shift (Audit V27 — ACTIVE):** The inference workspace is rebuilt around the dual-f16 `SlimeRegister` (`u32`). The accumulated ternary state and the JEPA integral are stored as 16-bit floats (`ternary_f16` and `integral_f16`). ELUT 4-bit nibble packing replaces 2-bit ternary pack in the AVX2 hot-path. Linear JEPA attractor (zero-EXP, 2 cycles) replaces neural JEPA module.
+**North star:** A ~2B ternary LLM (~400MB) that trains and runs on a commodity Intel laptop (e.g. i7-1260P), offline, private, with near-zero marginal cost.
 
----
+**Success is not** "beat GPT-4 on MMLU". **Success is** accessible, trainable, local intelligence (code assistant, personal fine-tunes, air-gapped devices).
 
-## 6. Architecture Roadmap: The "Fast, Efficient, Super Intelligent" Mandate
+**Engineering pillars:** *Fast* (AVX2 + optional Vulkan), *Efficient* (ternary + zero-alloc hot path), *Stable* (JEPA + mHC + sanitized grads). Intelligence gains come from QAT + data + architecture — not from marketing wording.
 
-**THE ULTIMATE MANDATE:** MUD must be *Fast* (bare-metal AVX2 + Vulkan, compute-bound), *Efficient* (SlimeRegister 32-bit dual-state, zero FP32 in hot-path), and *Super Intelligent* (JEPA orbital correction embedded per register). It MUST run locally on low-end hardware (no discrete GPU, low RAM) while outperforming multi-billion parameter Frontier LLMs in complex reasoning.
-
-### Phase 1–4: COMPLETED (Priorities 1–26)
-See session reports in `docs/sessions/`.
-
-### Phase 5: SlimeRegister Paradigm (COMPLETED — Priorities 27-31)
-27. **Priority 27: [COMPLETED] SlimeRegister Core Substrate**
-28. **Priority 28: [COMPLETED] ELUT-AVX2 Kernel (4-bit Nibble GEMV)**
-29. **Priority 29: [COMPLETED] Integrated JEPA Attractor (Linear, Zero-EXP)**
-30. **Priority 30: [COMPLETED] SlimeForward Pass**
-31. **Priority 31: [COMPLETED] Vulkan SlimeShader**
-
-### Phase 6: Code Purge (COMPLETED — Priority 32+)
-32. **Priority 32: [COMPLETED] Dead Code Purge**
-    After SlimeForward is operational: delete `src/mud/inference.rs` (old FP32 inference), `src/mud/forward.rs` (old FP32 forward), `src/mud/jepa.rs` (old neural JEPA), and all orphan tools. `cargo clippy -- -D dead_code` MUST pass clean.
-
-33. **Priority 33: [COMPLETED] Unified Agentic UI (carry-forward from Priority 19)**
-    Interactive orchestration dashboard consolidating engine logs, RLVR validations, and subagent system. Built using `crossterm` and async `mpsc` channels.
-
-### Phase 7: Lexical Resonance (Semantic Attractor)
-34. **Priority 34: [COMPLETED] JEPA Lexical Prior Initialization**
-    Instead of initializing the `jepa_packed` state to 0 at Layer 0, inject the absolute magnitude (Lexical Energy) of the token embedding. This forces the multiplicative gate to filter Ternary Shock noise against the original semantic intent of the word, effectively making Semantic Aphasia mathematically impossible and hyper-accelerating STE QAT convergence. Documented in `docs/research/JEPA_LEXICAL_RESONANCE.md`.
-
-### Phase 8: Deep QAT Thawing & Vulkan Acceleration (The Final IQ Restoration)
-35. **Priority 35: [COMPLETED] SlimeBackward (Thawing the Core)**
-    Resolve the "Identity Bypass Syndrome" by implementing the full backward pass (`SlimeBackward`) for the residual 1.58-bit layers. Currently, only the embedding table receives gradient updates. Computing partial derivatives for `attn_q.weight`, `expert.N.weight`, etc., will force the deep ternary structure to adapt to the Lexical Resonance, driving the `Avg Loss` from ~18.5 down to typical converged ranges (< 5.0).
-36. **Priority 36: [COMPLETED] Vulkan QAT Dispatcher & Compute Optimization**
-    Wired up the QAT gradient accumulation directly into the `VulkanContext`. Replaced CPU loops in `corpus_trainer.rs` with `run_qat_optimizer_async` Compute Shaders.
-    - **VRAM Ephemeral Reuse**: Avoided a catastrophic 17.5GB VRAM OOM by dynamically reusing `grad_w`, `scales`, and `packed_w` buffers based on tensor type (e.g., `attn_q`) instead of unique tensor names across all 30 layers. This drops ephemeral VRAM requirements to ~275MB.
-    - **Subgroup Math Optimization**: Rewrote `shadow_optimizer.comp` to map 1 Workgroup = 1 Row, guaranteeing perfectly coalesced memory accesses (eliminating strided accesses). Integrated `subgroupAdd` for native silicon-level parallel reductions.
-36.5. **Priority 36.5: [PROPOSED] Real-Time Regression Telemetry (TUI Graph)**
-    Build a real-time TUI regression graph using the collected metrics (`mud_train_metrics.log`) to visually study the training convergence behavior. This will allow us to observe if the `Avg Loss` projects correctly or if there are any divergence/loss spikes. This tool will integrate into the existing Agentic UI.
-37. **Priority 37: [COMPLETED] Full UCP Validation**
-    Once the core is thawed and accelerated, execute the complete Universal Calibration Protocol (UCP v2). The model passed the `iteration_validator` with a composite score of ≥ 96%, effectively completing the engine's capability to repair any Ternary Shock completely autonomously on consumer hardware.
-
-### Phase 9: Synthetic Self-Play (Autoentrenamiento Autónomo)
-38. **Priority 38: [COMPLETED] JEPA Synthetic Alignment**
-    Instead of relying strictly on an external static text corpus (`unified_corpus.txt`), use the model's own autoregressive generation (sampling) to produce high-confidence syntactic chains. These self-generated chains are then fed back into the JEPA QAT pipeline. This forces the ternary weights and the JEPA gates to align with the model's *intrinsic* latent space representations, smoothing out edge cases where the external corpus conflicts with the pre-trained structural priors.
-
-### Phase 10: DeepSeek-V4 Algorithm Integration (2026-06-28 — From arXiv:2606.19348)
-
-Research on DeepSeek-V4 identified 4 algorithms directly applicable to the MUD ternary engine. See `docs/research/DEEPSEEK_V4_TERNARY_INTEGRATION.md` for full technical analysis.
-
-39. **Priority 39: [COMPLETED] DSpark Speculative Decoding**
-    Implement a lightweight ternary "drafter" model (2–4 SlimeLayers) that proposes K token candidates. The main model verifies all K in a single forward pass. Mathematically lossless (identical output to greedy decoding). Expected throughput gain: +60–85% for inference. New module: `src/mud/speculative.rs`. Open-source reference: https://github.com/deepseek-ai/DeepSpec (MIT).
-    - **Input:** `SlimeWorkspace` state + current position
-    - **Output:** K candidate token IDs + acceptance mask
-    - **Integration:** Called from `main.rs` autoregressive loop when `--speculative` flag is set
-
-40. **Priority 40: [COMPLETED] mHC Residual — Manifold-Constrained Hyper-Connections**
-    Replace the current adaptive-clipping residual in `evaluate_slime_block` with a geometrically-bounded projection. Resolves the VarH explosion and the `safe_ceiling` hardcoding violations (P-13) documented in AGENTS.md §9.
-    - **Phase 1 & 2 (COMPLETED):** Implemented manifold-constrained residual and parameterized `alpha`/`beta` dynamic weights per layer in `slime_forward.rs`. Eliminates VarH unbounded growth structurally.
-    - **Phase 3 (learned radius) [COMPLETED]:** `radius` is a per-layer learnable scalar, loaded and trained dynamically.
-    - **Mathematical guarantee:** `∀ layer i: ||h_i|| ≤ radius_i` — eliminates VarH unbounded growth structurally.
-
-41. **Priority 41: [COMPLETED] Muon Optimizer**
-    Replace Adam (`adam_step_avx2`) with Newton-Schulz orthogonalization for weight matrix updates in QAT. Reduces training time from ~27h/epoch to an estimated ~10h/epoch. New module: `src/mud/muon.rs`.
-    - **Algorithm:** 5 iterations of `X = 1.5X − 0.5X·Xᵀ·X` on the gradient matrix, then apply as SGD
-    - **Scope:** Applied only to `attn_q/k/v/o` and `ffn_up/gate/down` (matrix parameters). Adam retained for embeddings and norm weights (vector parameters where orthogonalization is undefined).
-    - **Compatibility:** Fully compatible with STE QAT — preserves gradient direction while removing inter-parameter correlations.
-    - **P-13 compliance:** No hardcoded shapes — operates on `&[f32]` slices with runtime `rows`/`cols`.
-
-42. **Priority 42: [PROPOSED — FUTURE] CSA/HCA KV Cache Compression**
-    Implement Compressed Sparse Attention for long-context inference (32k+ tokens). Current KV cache for a typical 2B parameter model is ~10MB (5 heads × 4096 × 128 × 4B) — manageable. CSA becomes essential at 32k+ context where KV cache would reach ~1.3GB.
-    - **CSA:** Learned compression projection `W_compress` reduces KV entries before storage. Lightning Indexer selects top-K most relevant past tokens via sparse attention.
-    - **HCA:** Extreme compression + Sliding Window Attention for recent tokens.
-    - **Prerequisite:** Priority 22 (Dynamic Context Scaling from metadata) must be fully implemented first.
-
-43. **Priority 43: [COMPLETED] Tequila STE & Dynamic Optimizer**
-    - **Tequila Anti-Deadzone STE:** Custom straight-through estimator adapting gradient clipping based on JEPA variance to revive dead neurons without breaking ternary stability.
-    - **Dynamic Optimizer Selection:** Adapts between Adam, Muon, and Sparse Adam depending on matrix shape and sparsity.
-
-47. **Priority 47: [DEFERRED] Gradient Checkpointing**
-    - Attempted to implement activation recomputation per-block to reduce memory usage during QAT and increase batch size.
-    - **Status:** Deferred due to codebase stability issues during complex chunking loops inside `corpus_trainer.rs`. The focus is maintained on keeping the architecture simple and relying on Vulkan's out-of-core offloading instead.
-
-### Phase 11: Heterogeneous Multi-Processing (HMP) / Asynchronous Vulkan Offloading
-48. **Priority 48: [COMPLETED] HMP Vulkan Async Offloading on Integrated GPUs**
-    Isolate CPU P-Cores for memory-bound sequential tasks (like AVX2 GEMV) to saturate shared RAM bandwidth (e.g., DDR4-2666), and offload isolated **compute-bound (O(N³))** or **asynchronous** tasks to the Vulkan execution units on the iGPU (e.g., Intel Iris Xe) to prevent bus contention.
-    - **Muon Newton-Schulz Offload:** [COMPLETED] Shift the 5 dense orthogonalization steps of `X = 1.5X - 0.5X * X^T * X` to Vulkan.
-    - **Thermodynamic Telemetry Offload:** [COMPLETED] Use `subgroupAdd` inside Vulkan to reduce large tensors into `VarH`, `VarJ`, and `Z_Entrop` scalars asynchronously, saving CPU cycles.
-    - **DSpark Asynchronous Drafter:** [COMPLETED] Run the lightweight ternary drafter model inside the GPU while the CPU verifies the K candidate tokens.
-    See `docs/research/HMP_VULKAN_ASYNC_OFFLOAD.md` for full implementation details.
-
-### Phase 12: Advanced Homeostasis & Deep Scaling
-49. **Priority 49: [PROPOSED] Adaptive JEPA Attractor Scaling (Dynamic `jepa_alpha`)**
-    Implement an adaptive, non-linear `jepa_alpha` that scales with the derivative of `y_norm`. During a "Ternary Shock" (massive variance spike), temporarily increase `jepa_alpha` to 0.1 to instantly stabilize the dimension, then revert to 0.01 to preserve variance.
-50. **Priority 50: [PROPOSED] DSpark-Vulkan Asynchronous Ring Buffer**
-    Create a shared `VkBuffer` (Ring Buffer) with unified memory (Zero-Copy) to decouple the Vulkan Drafter from the CPU Verifier. The Drafter constantly pushes token candidates in the background, providing true zero-latency speculative decoding.
-51. **Priority 51: [PROPOSED] HCA (Hyper-Compressed Attention) for KV Cache**
-    Implement sliding window + learned compression projection `W_compress` for historical KV elements (DeepSeek-V4 algorithm). Compresses historical KV cache by 10x, enabling 32k+ context scaling on low-bandwidth memory systems without crushing the DDR4 bus.
-
-### Phase 13: Test-Time Compute (TTC) & Dynamic Inference
-52. **Priority 52: [PROPOSED] Integral Saturation Stop-Anchor (TTC)**
-    Replace the fixed depth `N_layers` inference pass with a deterministic Early-Exit/Recurrent loop. Evaluate the integral (accumulated sum) of `spring_force` (the JEPA latent derivative). Stop computation dynamically when the integral saturates (predicting diminishing returns), granting instant answers for simple tokens and deep recurring steps for complex logic.
+Full narrative: `VISION_ROADMAP.md`, `PLAN_MAESTRO.md`.
 
 ---
 
-## 7. Documentation Mandate
+## 6. Priority Ledger (monotonic — SSOT)
 
-All project documentation MUST be strictly organized within the `docs/` directory:
-- **`audits/`**: Sequential audit reports (`MUD_AUDIT_REPORT_VXX*.md`) and `MUD_AUDIT_LATEST.md`.
-- **`sessions/`**: Chronological session reports (`MUD_SESSION_REPORT_YYYY-MM-DD.md`) and technical logs.
-- **`architecture/`**: Manifestos, architecture overviews, and component specifications.
-- **`research/`**: External papers, academic research notes, and ecosystem analysis.
-- **`manuals/`**: User guides, protocols, roadmaps, and directory structure files.
-- **`dumps/`**: Raw text dumps and temporary debugging outputs.
-- **No loose files:** Documentation files placed outside `docs/` subdirectories are treated as dead code and must be moved or deleted.
+IDs below are the **only** active tracking IDs. Old "Priority N" numbers in session reports are historical; they must not be reused.
+
+### 6.1 Historical achievements (collapsed — details in `AGENTS.md` / `docs/sessions/`)
+
+Completed capability areas (not exhaustive): SlimeForward/Backward STE, ELUT 4-bit, JEPA/mHC recovery, ash migration, PCorePool HT saturation, AOT corpus cache, Sampled Softmax, embedding dequant fixes, EZOP benches (+8% certified), converter auditor, telemetry TUI, speculative drafter zero-alloc, Vulkan teardown UAF fix, many VarH/VarJ/aphasia recoveries.
+
+### 6.2 Open ledger (do these next)
+
+| ID | Title | Status | Notes |
+|----|-------|--------|-------|
+| **L-01** | Wire Muon/GaLore/Chunked/Sparse to real optimizer step | **DONE** | Muon/GaLore/Chunked + **Adam/Sparse moments (stream A)** |
+| **L-02** | Allocate + dispatch Newton-Schulz Vulkan path when strategy=Muon | **DONE** | `AshContext::dispatch_newton_schulz_sync`; hybrid in `muon.rs` |
+| **L-03** | Delete `InferenceWorkspace` + unused ASM/tool orphans | **DONE** | workspace.rs 426→~180 LOC; keep UnifiedBuffer |
+| **L-04** | FFI/call sites for high-value ASM or delete orphans | **DONE** | Purged elut/pext/lut/slime_rmsnorm/mamba/ternary_backward; 11 live `.s` |
+| **L-05** | True double-buffer CPU/GPU overlap in QAT/inference | **DONE** | `DoubleFrame`; `step_async_deferred` + flush after next backward |
+| **L-06** | Dispatch `mha.comp` + `rms_norm.comp` where profitable | **DONE** | Shared-mem shaders; output_norm GPU; `try_gpu_dense_mha` |
+| **L-07** | P-13 cleanup: no dim fallbacks; single `EPSILON_FLOOR`; pool size from policy/metadata | **DONE** | `constants::default_pcore_threads`, EPSILON SSOT, fail-fast mHC meta |
+| **L-08** | NaN guards / finite checks on remaining ASM edges | **DONE** | dot/sum_sq/rmsnorm/silu/lm_head/gemv/batch4 sanitize non-finite → 0 |
+| **L-09** | EZOP raw-pointer pass on remaining core loops | **DONE** | `mud::ezop`; TLS grad scratch; pack/dequant; zero-alloc backward branch |
+| **L-10** | Sequence packing (no pad) | **DONE** | `sequence_pack`; full-chunk pairs; tail kept; no EOS cross |
+| **L-11** | Mini MoE bus (ExpertBus mount/unmount) | **DONE** | + **stream B** `moe_load` / train-expert product path |
+| **L-12** | P-13 property tests + CI health battery | **DONE** | `mud::p13`; `./mud.sh ci`; `.github/workflows/ci.yml` |
+| **L-13** | CSA/HCA KV / 32k context | **DONE** | Dense ring + HCA; **stream E** top-k lightning indexer |
+| **L-14** | C-MUD complex registers | **DONE** | `mud::cmud` math kernel; opt-in `MUD_CMUD_THINK=1` |
+| **L-15** | Gradient checkpointing | **DONE** | `MUD_GRAD_CKPT=1` recompute-on-reverse; segment policy |
+| **F1** | Trainable mHC α/β (dense f32 SGD) | **DONE** | `mhc_scale_sgd_step`; CPU+ash paths; clamp [0,4]; finite-diff test |
+| **F2** | STP trajectory loss (JEPA→geodesic aux) | **DONE** | `stp_loss`; `MUD_TRAIN_STP=1` (default ON in `./mud.sh train`); `λ`=`MUD_TRAIN_STP_LAMBDA` |
+| **UI** | Unified trainer console format | **DONE** | `src/mud/trainer_ui.rs`; single box, `note()` tags, no emoji/stderr noise |
+| **F3** | RLVR debate: juez + reward/penalty + aprendizaje | **DONE** | `arena_judge.rs` (Verifiable/Rust/Text/Professor, no-API); `run_game` infinito hasta basta; `TextJudge` local cosine; `MUD_DEBATE_LEARN` default OFF |
+| **F3+** | Seed-driven Training Circuit (`--circuit`) | **DONE** | `corpus_trainer::run_training_circuit`; rota baterías por semilla (align/debate/games/professor) con LCG sin RNG; time-box por fase; telemetría unificada + `logs/circuit.log` (ver con `tail -f logs/circuit.log`); guarda al `quit`. **`./mud.sh circuit` lanza TUI `circuit_telemetry`** (Juez + J\|A/B, +Profesor/Alumno, event-log; Ctrl-C/q stop&save). **Honors-mode eval:** `circuit_eval_integrity` (structural gate: tensors present/non-null + **norm-weights no-cero** post-`materialize_writable`; NO per-weight nibble-skew flag) + `circuit_benchmark_games` win-rate vs baseline; rollback a `.bak_circuit` si falla. CPU caveat: benchmark puede dar 0 matches → solo integridad guarda. **Health-check previo:** modelo colapsado (`attn_norm.weight`=0) es rechazado con error claro (no panic en worker thread de PCorePool). **⚠️ REQUISITO:** usar `.mud` sano. `models/smollm2.mud` fue **reconvertido sano** (2026-07-18, FIX D) desde `models/smollm2/` y ya NO está colapsado; `weights/checkpoints/model_latest_checkpoint.mud` es el checkpoint vivo del trainer (25 épocas CPU en curso, 0 crashes). `models/ternary_bonsai_1.7b.mud` sigue siendo alternativa sana. Ver `docs/research/MUD_PLAN_CIRCUIT_ALGORITHMS.md`. |
+| **TLM** | Live training telemetry TUI (key-parse + ΔW panel + `[TELEM]`→log) | **DONE** | `train_telemetry.rs` `kv_f64`; `[DW]` every sync; trainer writes stderr+file; verified via tmux capture |
+| **G+** | Multi-expert STE joint (SlimeX Dynamic Stack / ShadowExpertBus) | **WIP** | `slime_x.rs` PoC with zero-alloc `SlimeXSlot` + `ShadowExpertBus` created (2026-07-20). Ready for forward/backward wire into `corpus_trainer.rs` for joint training of top-k experts. Future vision: Hybrid GPU/CPU hot-mounting. |
+
+### 6.3 Phase mapping (see also `VISION_ROADMAP.md`)
+
+| Phase | When | Ledger focus |
+|-------|------|----------------|
+| **A — Close debt** | Jul 2026 | L-01 … L-08 |
+| **B — Extreme perf** | Aug 2026 | ASM/GPU tiling, further prefetch (lm_head logits already live) |
+| **C — Modular** | Sep 2026 | L-09–L-11 (EZOP, packing, Mini MoE) |
+| **D — Scale train** | Oct 2026 | 4-pillar efficiency, bf16 shadows |
+| **E — Maturity** | Nov–Dec 2026 | L-12–L-13, CI benches, docs |
+
+### 6.4 Next session handoff
+
+**Ledger L-01…L-15 + streams A–E + F1/F2/UI/F3/F3+ + TLM CLOSED. Launch countdown T-0 = GO (2026-07-16).**  
+
+**2026-07-20 addendum:** model base reconverted sane; live telemetry TUI fixed (`[TELEM]`→log + key parser + Weight Δ panel); hot loops pointer-optimized (P-00/P-01). Open: trainer banner LR hardcoded `3e-4` (corpus_trainer.rs:1703). STE deadzone: converged base at default LR → ΔW≈0 is expected.
+See `docs/manuals/LAUNCH_COUNTDOWN.md`.
+
+**F1/F2/UI verification (2026-07-17):** `docs/architecture/MUD_TRAINER_TERNARY_JEPA_MHC.md` §9–§10; plan `docs/research/MUD_PLAN_MHC_STP_TRAINABLE.md`. Trainer default now project-adapted corpus + STP on + 64 steps/chunk (`mud.sh train`).
+
+| Order | Action |
+|-------|--------|
+| 1 | **Orbit F–L foundations DONE** — see `MUD_IMPROVEMENTS_POST_AE.md` remaining depth (router BPTT, residual-bank wire, nightly cert) |
+| 2 | Residuals — `docs/research/MUD_GAP_ANALYSIS_POST_L15.md` |
+| 3 | Keep green: `./mud.sh ci` · `audit-full` · `gemv_auto_bench` |
+
+**Read first:** this §0 · `LAUNCH_COUNTDOWN.md` · `MUD_IMPROVEMENTS_POST_AE.md`.
 
 ---
 
-## 8. Orchestration Mandate (mud.sh v3.1 Optimized)
+## 7. Documentation Mandate (P-18)
 
-`mud.sh` is the **single canonical entry point** for all tool binaries. Rules:
-- **No raw `cargo run`**: Every tool invocation goes through `./mud.sh <command>`.
-- **Section discipline**: 9 color-coded sections — Recovery, Training, Conversion, Diagnostics, Benchmarks, Audits, Interaction, Safety, Meta.
-- **Consolidation**: Commands MUST be logically grouped into domain namespaces (e.g., `audit [type]`, `bench [type]`, `diag [tool]`, `util [tool]`) instead of polluting the menu with flat command lists.
-- **Auto-Selection**: The `select_model()` helper MUST prioritize existing trained checkpoints (`weights/checkpoints/model_latest_checkpoint.mud` or `*trained*.mud`) to bypass interactive prompts and reduce UX friction for everyday workflows like `chat` or `train`.
-- **UCP v2 ordering**: `restore-iq` MUST execute: Bound → Estimate → L-QAT → Full-QAT → Project → Validate in strict order.
-- **Discoverability**: `./mud.sh tools` prints a symptom-driven catalog.
-- **Safety**: Destructive actions (`deep-clean`, `restore`) MUST require explicit user confirmation.
-- **No orphan commands**: Any `./mud.sh` subcommand without a corresponding `[[bin]]` in `Cargo.toml` is dead code and must be removed.
+| Path | Content |
+|------|---------|
+| `docs/audits/` | `MUD_AUDIT_REPORT_VXX*.md`, `MUD_AUDIT_LATEST.md` |
+| `docs/sessions/` | `MUD_SESSION_REPORT_YYYY-MM-DD.md` |
+| `docs/architecture/` | Specs, manifests |
+| `docs/research/` | Papers, gap analysis, **MUD_IMPROVEMENTS_POST_AE.md** (F+) |
+| `docs/manuals/` | User/protocol guides + **LAUNCH_COUNTDOWN.md** |
+| `docs/STATUS_REPORT.md` | Logros vs deuda (moved from root P-18) |
+| `docs/dumps/` | Temporary dumps |
 
----
-
-## 9. Complete Policy Index (Quick Reference)
-
-| ID | Policy | Severity |
-|----|--------|----------|
-| P-01 | Zero-Allocation hot-loop (SlimeWorkspace) | CRITICAL |
-| P-02 | SlimeRegister [f16 / f16] (dual-f16 u32 layout) as fundamental compute unit | CRITICAL |
-| P-03 | ELUT 4-bit nibble packing for AVX2 hot-path | CRITICAL |
-| P-04 | [DEPRECATED] i16 partial reseat every ≤256 elements | DEPRECATED |
-| P-05 | JEPA attractor linear (zero-EXP) at every block boundary | CRITICAL |
-| P-06 | 0-Error, 0-Warning (cargo clippy) | CRITICAL |
-| P-07 | Rust-only toolchain — No Python, No PyTorch | CRITICAL |
-| P-08 | Dead code MUST be deleted (not archived, not commented) | CRITICAL |
-| P-09 | Every module MUST have inline unit tests | MANDATORY |
-| P-10 | Every compute module MUST have a benchmark binary | MANDATORY |
-| P-11 | Every [[bin]] MUST have a ./mud.sh entry | MANDATORY |
-| P-12 | x86_64 ASM optimized for P-cores & Vulkan shaders for iGPU (no E-core/scalar hot-path) | MANDATORY |
-| P-13 | Anti-hardcoding — no magic dimension constants | MANDATORY |
-| P-14 | Gradient sanitization (is_finite + clamp) | MANDATORY |
-| P-15 | Forced Hot PRQ clamp to [-1, 0, 1] | MANDATORY |
-| P-16 | SAFETY: comment on every unsafe block | MANDATORY |
-| P-17 | Fail-fast over silent corruption | MANDATORY |
-| P-18 | Documentation in docs/ subdirectories only | MANDATORY |
-| P-19 | mud.sh single entry point — no raw cargo run | MANDATORY |
-| P-20 | UCP v2 ordering for restore-iq pipeline | MANDATORY |
-| P-21 | Universal agnosticism (no architecture-specific hardcodes) | MANDATORY |
-| P-22 | Dynamic Context Scaling from max_position_embeddings | MANDATORY |
-| P-23 | Bilingual corpus (Spanish + English) | STANDARD |
-| P-24 | PRQ Per-Row Quantization on all ternary tensors | CRITICAL |
-| P-25 | SQNR ≥ 10.5 dB on conversion verification | CRITICAL |
-| P-26 | iteration_validator composite score ≥ 96% for production cert | CRITICAL |
-| P-27 | Prohibición absoluta de Rayon (Scheduler e hilos de fondo interfieren con el pinning de P-cores) | CRITICAL |
+Root exceptions listed in §2. Update **this file's §0 and §6** when status changes — do not invent parallel status sections in other root files.
 
 ---
 
-*MUD: Bare-Metal, Ternary, SlimeRegister, High-Fidelity.*
+## 8. Orchestration Mandate (`mud.sh`)
+
+- Prefer `./mud.sh <command>` as operator entry (P-19).
+- Group commands by domain; no orphan menu entries without `[[bin]]`.
+- Destructive ops require confirmation.
+- Auto-select trained checkpoints when present for chat/train.
+
+---
+
+## 9. Complete Policy Index
+
+| ID | Policy | Severity | Notes |
+|----|--------|----------|-------|
+| **P-00** | Raw pointer mastery in hot path | CRITICAL | |
+| **P-01** | Zero-allocation hot-loop (`SlimeWorkspace`) | CRITICAL | |
+| **P-02** | `SlimeRegister` / activation contract | CRITICAL | **f32 matmul_accum** is current truth |
+| **P-03** | ELUT 4-bit nibble packing | CRITICAL | |
+| **P-04** | i16 partial reseat ≤256 | **DEPRECATED** | |
+| **P-05** | JEPA gate + mHC at block boundaries | CRITICAL | |
+| **P-06** | 0-error 0-warning clippy | CRITICAL | |
+| **P-07** | Rust-only — no Python/PyTorch | CRITICAL | |
+| **P-08** | Dead code deleted | CRITICAL | L-03 InferenceWorkspace purged |
+| **P-09** | Inline unit tests per module | MANDATORY | |
+| **P-10** | Benchmark binary for compute modules | MANDATORY | |
+| **P-11** | Every `[[bin]]` has `./mud.sh` entry | MANDATORY | |
+| **P-12** | AVX2 P-cores + optional Vulkan iGPU | MANDATORY | |
+| **P-13** | Anti-hardcoding dimensions | MANDATORY | Open cleanup L-07 |
+| **P-14** | Gradient finite + clamp | MANDATORY | |
+| **P-15** | Hot PRQ clamp to ternary grid | MANDATORY | sparsity 0.7·s |
+| **P-16** | `// SAFETY:` on every unsafe | MANDATORY | |
+| **P-17** | Fail-fast over silent corruption | MANDATORY | |
+| **P-18** | Docs under `docs/` + root exceptions | MANDATORY | §2 |
+| **P-19** | `mud.sh` preferred entry | MANDATORY | |
+| **P-20** | UCP ordering for restore pipeline | MANDATORY | |
+| **P-21** | Universal agnosticism (multi-arch metadata) | MANDATORY | |
+| **P-22** | Dynamic context from `max_position_embeddings` | MANDATORY | |
+| **P-23** | Bilingual ES+EN corpus | STANDARD | |
+| **P-24** | PRQ on all ternary tensors | CRITICAL | |
+| **P-25** | SQNR ≥ 10.5 dB conversion | CRITICAL | |
+| **P-26** | iteration_validator ≥ 96% prod cert | CRITICAL | |
+| **P-27** | No Rayon in runtime hot path | CRITICAL | §1 clarification |
+
+---
+
+## 10. Architecture Facts (engine)
+
+- **Format:** `.mud` (`MUD\x01`) Ternary2Bit ELUT + `prq_scale` + norms; optional expert tensors
+- **Forward (`evaluate_slime_block` / `_moe`):** RMSNorm → QKV GEMV → SDPA/GQA (HCA+CSA) → O → Residual+JEPA/mHC → FFN/ExpertBus → Residual+JEPA/mHC
+- **Training:** STE QAT; full-seq windows (default); Sampled Softmax (~512); Adam/Muon/GaLore/Chunked LIVE
+- **Threading:** `PCorePool` via `default_pcore_threads()` / `MUD_PCORE_THREADS`
+- **Device:** GEMV auto (`gemv_policy`); NS/MHA/RMSNorm GPU helpers when profitable
+
+```
+fn select_optimizer(rows, cols) -> Strategy  // LIVE on step (L-01 + stream A)
+```
+
+**Next improvements:** `docs/research/MUD_IMPROVEMENTS_POST_AE.md`.
+
+---
+
+*MUD: Bare-metal ternary engine. Policies live here. Vision lives in VISION_ROADMAP.md. Session detail lives in AGENTS.md.*

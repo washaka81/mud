@@ -61,14 +61,17 @@ impl SubagentManager {
         let agents_clone = Arc::clone(&self.agents);
         let role_clone = role.to_string();
         let prompt_clone = prompt.to_string();
-        
+
         thread::spawn(move || {
             // Change status to running
             {
                 let mut guard = agents_clone.lock().unwrap();
                 if let Some(agent) = guard.get_mut(&id) {
                     agent.status = AgentStatus::Running;
-                    agent.outbox.push(format!("[Agent {} - {}] Acknowledged: {}", id, role_clone, prompt_clone));
+                    agent.outbox.push(format!(
+                        "[Agent {} - {}] Acknowledged: {}",
+                        id, role_clone, prompt_clone
+                    ));
                 }
             }
 
@@ -77,19 +80,25 @@ impl SubagentManager {
             let report = match workspace_res {
                 Ok(ws) => {
                     let files = ws.scan_project_map();
-                    format!("Successfully mapped workspace. Found {} files.", files.len())
+                    format!(
+                        "Successfully mapped workspace. Found {} files.",
+                        files.len()
+                    )
                 }
                 Err(e) => {
                     format!("Failed to mount workspace: {}", e)
                 }
             };
-            
+
             thread::sleep(Duration::from_secs(2)); // Simulate inference compute time
-            
+
             let mut guard = agents_clone.lock().unwrap();
             if let Some(agent) = guard.get_mut(&id) {
                 agent.status = AgentStatus::Completed;
-                agent.outbox.push(format!("[Agent {} - {}] Execution Report: {}", id, role_clone, report));
+                agent.outbox.push(format!(
+                    "[Agent {} - {}] Execution Report: {}",
+                    id, role_clone, report
+                ));
             }
         });
 

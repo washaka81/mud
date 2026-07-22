@@ -17,7 +17,7 @@ pub struct MemoryRecord {
     pub content: String,
     pub timestamp: u64,
     // In a full implementation, this would contain a compressed KV-cache state or embedding vector
-    // pub vector: Vec<f32>, 
+    // pub vector: Vec<f32>,
 }
 
 impl MemoryBank {
@@ -83,11 +83,14 @@ impl MemoryBank {
                 let timestamp = parts[1].parse::<u64>().unwrap_or(0);
                 let content = parts[2].replace("\\n", "\n");
 
-                self.memories.insert(id.clone(), MemoryRecord {
-                    id,
-                    content,
-                    timestamp,
-                });
+                self.memories.insert(
+                    id.clone(),
+                    MemoryRecord {
+                        id,
+                        content,
+                        timestamp,
+                    },
+                );
             }
         }
         Ok(())

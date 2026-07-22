@@ -17,7 +17,7 @@ When reviewing code, evaluating architectures, or writing AVX2/Rust implementati
 
 ## Core Philosophical Tenets
 
-1. **Static is Safe:** Dynamic allocations in the hot-loop are failures. Every byte must be pre-allocated in the `InferenceWorkspace`.
+1. **Static is Safe:** Dynamic allocations in the hot-loop are failures. Every byte must be pre-allocated in the `SlimeWorkspace`.
 2. **Ternary is the Truth:** We do not approximate ternary; we live in it. Weights are either `-1`, `0`, or `1`. Anything else is a boundary violation.
 3. **Math is Immutable:** Constants like `DEPTH_DAMPENING_FACTOR` are derived from the Target Sigma paradox and must not be changed without a formal mathematical audit.
 

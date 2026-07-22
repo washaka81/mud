@@ -207,7 +207,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: {} <input.safetensors> <output.mud> [--ternarize-emb]",
+            "Usage: {} <input.safetensors|dir> <output.mud> [--ternarize-emb] [--untie-emb]",
             args[0]
         );
         std::process::exit(1);
@@ -543,33 +543,50 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // UNTIE EMBEDDINGS check (will add later in the list)
+                // LM-head: only emit separate output.weight when embeddings are NOT tied
+                // (HF tie_word_embeddings=true → share token_embd at inference).
+                // Force-untie: --untie-emb  |  Force ternary head: --ternarize-emb
                 if name == "model.embed_tokens.weight" {
-                    plan.push(MudTensorPlan {
-                        name: "output.weight".to_string(),
-                        source_name: Some(name.clone()),
-                        shape: original_shape.clone(),
-                        t_type: if ternarize_emb {
-                            MudTensorType::Ternary2Bit
-                        } else {
-                            MudTensorType::Float32
-                        },
-                        should_ternarize: ternarize_emb,
-                        sub_range: None,
-                        owned_data: None,
-                        source_file_idx: Some(f_idx),
-                    });
-                    if ternarize_emb {
+                    let tie = config_meta
+                        .get("tie_word_embeddings")
+                        .map(|s| s == "true" || s == "1")
+                        .unwrap_or(true);
+                    let force_untie = args.iter().any(|a| a == "--untie-emb");
+                    if !tie || force_untie || ternarize_emb {
+                        println!(
+                            "  [convert] emitting separate output.weight (tie={} force_untie={} ternarize_emb={})",
+                            tie, force_untie, ternarize_emb
+                        );
                         plan.push(MudTensorPlan {
-                            name: "output.prq_scale".to_string(),
-                            source_name: None,
-                            shape: vec![original_shape[0]],
-                            t_type: MudTensorType::Float32,
-                            should_ternarize: false,
+                            name: "output.weight".to_string(),
+                            source_name: Some(name.clone()),
+                            shape: original_shape.clone(),
+                            t_type: if ternarize_emb {
+                                MudTensorType::Ternary2Bit
+                            } else {
+                                MudTensorType::Float32
+                            },
+                            should_ternarize: ternarize_emb,
                             sub_range: None,
                             owned_data: None,
-                            source_file_idx: None,
+                            source_file_idx: Some(f_idx),
                         });
+                        if ternarize_emb {
+                            plan.push(MudTensorPlan {
+                                name: "output.prq_scale".to_string(),
+                                source_name: None,
+                                shape: vec![original_shape[0]],
+                                t_type: MudTensorType::Float32,
+                                should_ternarize: false,
+                                sub_range: None,
+                                owned_data: None,
+                                source_file_idx: None,
+                            });
+                        }
+                    } else {
+                        println!(
+                            "  [convert] tied embeddings — no separate output.weight (use token_embd)"
+                        );
                     }
                 }
             }
@@ -635,6 +652,60 @@ fn main() -> anyhow::Result<()> {
                 source_file_idx: None,
             });
         }
+
+        let mhc_alpha_name = format!("blk.{}.mhc_alpha.weight", l);
+        if !plan.iter().any(|p| p.name == mhc_alpha_name) {
+            let mut data = Vec::with_capacity(hidden_size * 4);
+            for _ in 0..hidden_size {
+                data.extend_from_slice(&0.85f32.to_le_bytes());
+            }
+            plan.push(MudTensorPlan {
+                name: mhc_alpha_name,
+                source_name: None,
+                shape: vec![hidden_size],
+                t_type: MudTensorType::Float32,
+                should_ternarize: false,
+                sub_range: None,
+                owned_data: Some(data),
+                source_file_idx: None,
+            });
+        }
+
+        let mhc_beta_name = format!("blk.{}.mhc_beta.weight", l);
+        if !plan.iter().any(|p| p.name == mhc_beta_name) {
+            let mut data = Vec::with_capacity(hidden_size * 4);
+            for _ in 0..hidden_size {
+                data.extend_from_slice(&0.15f32.to_le_bytes());
+            }
+            plan.push(MudTensorPlan {
+                name: mhc_beta_name,
+                source_name: None,
+                shape: vec![hidden_size],
+                t_type: MudTensorType::Float32,
+                should_ternarize: false,
+                sub_range: None,
+                owned_data: Some(data),
+                source_file_idx: None,
+            });
+        }
+
+        let mhc_radius_name = format!("blk.{}.mhc_radius.weight", l);
+        if !plan.iter().any(|p| p.name == mhc_radius_name) {
+            let mut data = Vec::with_capacity(4);
+            // Dynamic limit based on sqrt(hidden) scaled arbitrarily, defaulting to 1000.0 if unknown
+            let rad = (hidden_size as f32).sqrt() * 5.0; // Moderate start
+            data.extend_from_slice(&rad.to_le_bytes());
+            plan.push(MudTensorPlan {
+                name: mhc_radius_name,
+                source_name: None,
+                shape: vec![1],
+                t_type: MudTensorType::Float32,
+                should_ternarize: false,
+                sub_range: None,
+                owned_data: Some(data),
+                source_file_idx: None,
+            });
+        }
     }
 
     // Step 3: Finalize Metadata
@@ -680,8 +751,34 @@ fn main() -> anyhow::Result<()> {
     }
     global_metadata.insert("arch".to_string(), "mud-ternary-moe-v1-master".to_string());
     global_metadata.insert("num_layers".to_string(), num_layers.to_string());
+    global_metadata.insert("num_hidden_layers".to_string(), num_layers.to_string());
     global_metadata.insert("num_experts".to_string(), num_experts.to_string());
     global_metadata.insert("top_k".to_string(), top_k.to_string());
+    // Stream L: mirror alternate key names from config into canonical set
+    if let Some(v) = config_meta.get("intermediate_size") {
+        global_metadata
+            .entry("intermediate_size".into())
+            .or_insert_with(|| v.clone());
+        global_metadata
+            .entry("ffn_hidden".into())
+            .or_insert_with(|| v.clone());
+    }
+    if let Some(v) = config_meta.get("num_attention_heads") {
+        global_metadata
+            .entry("num_attention_heads".into())
+            .or_insert_with(|| v.clone());
+        global_metadata
+            .entry("num_heads".into())
+            .or_insert_with(|| v.clone());
+    }
+    if let Some(v) = config_meta.get("num_key_value_heads") {
+        global_metadata
+            .entry("num_key_value_heads".into())
+            .or_insert_with(|| v.clone());
+        global_metadata
+            .entry("num_kv_heads".into())
+            .or_insert_with(|| v.clone());
+    }
 
     // Tokenizer logic (abbreviated, same as before but into global_metadata)
     let expected_vocab_size = config_meta
@@ -707,6 +804,13 @@ fn main() -> anyhow::Result<()> {
         if let Some(merges_str) = extract_merges_from_json(tokenizer_path.to_str().unwrap()) {
             global_metadata.insert("tokenizer.merges".to_string(), merges_str);
         }
+    }
+
+    // Stream L: fill canonical P-13 aliases so healthcheck/auditor always resolve dims
+    if let Err(e) = forge_llm::mud::p13::ensure_canonical_metadata_aliases(&mut global_metadata) {
+        eprintln!("[P-13] warning: could not fully normalize metadata: {e}");
+    } else if let Err(e) = forge_llm::mud::p13::validate_converter_emit(&global_metadata) {
+        eprintln!("[P-13] warning: emit incomplete: {e}");
     }
 
     // Pass 2: Writing & Quantizing
@@ -799,6 +903,18 @@ fn main() -> anyhow::Result<()> {
                     writer.write_tensor_data(&packed)?;
                 } else {
                     let n_rows = f32_data.len() / p.shape[1];
+                    // H1-08 ternary: apply 1/√H to output.weight *before* pack (was float-only).
+                    // Without this, untied emb→output copy has wrong logit magnitude vs HF.
+                    if p.name == "output.weight" {
+                        let hidden = p.shape[1].max(1);
+                        let logit_scale = 1.0 / (hidden as f32).sqrt();
+                        for f in &mut f32_data {
+                            *f *= logit_scale;
+                        }
+                        println!(
+                            "  [convert] output.weight × 1/√H ({logit_scale:.5}) before ternary pack"
+                        );
+                    }
                     let (packed, mut scales) =
                         quantizer::ternarize_f32_and_pack(&f32_data, n_rows, p.shape[1], bitnet_s);
                     if !is_native_ternary {
@@ -859,8 +975,15 @@ fn main() -> anyhow::Result<()> {
     if args.iter().any(|a| a == "--check" || a == "--validate") {
         println!("🔍 Validating MUD metadata...");
         if let Ok(mud) = forge_llm::mud::MudFile::load(output_path) {
-            let required_keys = ["hidden_size", "num_layers", "num_heads",
-                "num_kv_heads", "ffn_hidden", "vocab_size", "rms_norm_eps"];
+            let required_keys = [
+                "hidden_size",
+                "num_layers",
+                "num_heads",
+                "num_kv_heads",
+                "ffn_hidden",
+                "vocab_size",
+                "rms_norm_eps",
+            ];
             let mut ok = true;
             for k in &required_keys {
                 if !mud.global_metadata.contains_key(*k) {
@@ -869,9 +992,21 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             if ok {
-                let h = mud.global_metadata.get("hidden_size").cloned().unwrap_or_default();
-                let l = mud.global_metadata.get("num_layers").cloned().unwrap_or_default();
-                let v = mud.global_metadata.get("vocab_size").cloned().unwrap_or_default();
+                let h = mud
+                    .global_metadata
+                    .get("hidden_size")
+                    .cloned()
+                    .unwrap_or_default();
+                let l = mud
+                    .global_metadata
+                    .get("num_layers")
+                    .cloned()
+                    .unwrap_or_default();
+                let v = mud
+                    .global_metadata
+                    .get("vocab_size")
+                    .cloned()
+                    .unwrap_or_default();
                 println!("  ✅ Metadata OK: hidden={}, layers={}, vocab={}", h, l, v);
                 println!("  ✅ Ready for engine + trainer (P-13: no hardcoded dims)");
             }

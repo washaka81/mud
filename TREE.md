@@ -1,88 +1,67 @@
 # MUD Project Tree
 
+> P-18 root: only SSOT + entry docs. Everything else under `docs/`.  
+> Updated: 2026-07-17 (F1/F2 trainable mHC+STP, unified trainer UI, project-adapted `mud.sh train`).
+
 ```
-├── AGENTS.md                  # AI agent project context (P-# rules, fixes, architecture)
-├── Cargo.toml                 # Rust workspace root
-├── mud.sh                     # Orchestrator CLI
-├── README.md
+├── GEMINI.md                  # SSOT: policies (P-#), status, ledger L-## + F1/F2/UI
+├── AGENTS.md                  # Agent context (derived; must not contradict GEMINI)
+├── VISION_ROADMAP.md          # Product vision + Q3–Q4 phases
+├── PLAN_MAESTRO.md            # Deep architecture narrative + MoE
+├── README.md                  # Public project intro
+├── TREE.md                    # This file
+├── LICENSE
+├── Cargo.toml / build.rs / mud.sh   # mud.sh: `train` = project-adapted corpus + STP on + 64 steps/chunk
 │
-├── src/                       # ── Core Engine ──
-│   ├── main.rs                # TUI dashboard + autoregressive inference
-│   ├── lib.rs                 # Library root
-│   ├── hardware.rs            # CPU feature detection
-│   │
-│   ├── asm/                   # AVX2 assembly kernels
-│   │   ├── ternary_gemv.s     # Main FP32 GEMV
-│   │   ├── rmsnorm.s          # RMS normalization
-│   │   ├── silu.s             # SiLU activation
-│   │   ├── adam_step.s        # Adam optimizer step
-│   │   └── ...
-│   │
-│   ├── mud/                   # ── MUD Engine Modules ──
-│   │   ├── slime.rs           # SlimeRegister (i16 + u16), SlimeWorkspace, init_from_embed
-│   │   ├── slime_forward.rs   # evaluate_slime_block, mhc_residual, apply_output_norm
-│   │   ├── slime_backward.rs  # Backward pass (STE gradients)
-│   │   ├── slime_jepa.rs      # jepa_stabilizer, check_tensor_health
-│   │   ├── corpus_trainer.rs  # MudCorpusTrainer (QAT training loop)
-│   │   ├── speculative.rs     # DSpark drafter
-│   │   ├── self_play.rs       # Synthetic self-play
-│   │   ├── muon.rs            # Muon optimizer (Newton-Schulz)
-│   │   ├── galore.rs          # GaLore optimizer
-│   │   ├── qat_dispatcher.rs  # Vulkan QAT dispatcher
-│   │   ├── ecc.rs             # Error-correcting codes
-│   │   ├── workspace.rs       # Workspace meta-layer
-│   │   ├── rlvr.rs            # RLVR metrics
-│   │   └── ...
-│   │
-│   ├── model/                 # Tokenizer + model loading
-│   ├── gguf/                  # GGUF converter
-│   └── vulkan/                # Vulkan backend (HMP offloading)
+├── src/
+│   ├── asm/                   # AVX2 kernels (11 live)
+│   ├── mud/
+│   │   ├── trainer_ui.rs      # [NEW] unified box/notes console formatting (P-06 clean)
+│   │   ├── stp_loss.rs        # [NEW] F2: STP geodesic trajectory aux loss (AVX2, TLS scratch)
+│   │   ├── arena_judge.rs     # [NEW] F3: RLVR judge (Verifiable/Rust/Text/Professor, no-API, local cosine)
+│   │   ├── slime_forward.rs    # mHC residual + tape capture for α/β grads
+│   │   ├── slime_backward.rs   # SlimeLayerGradients.mhc_{alpha,beta}_grad + backward
+│   │   ├── corpus_trainer.rs   # train_on_sequence; STP hook; mHC SGD writeback (CPU+ash)
+│   │   └── …                   # slime, MoE, CSA, packing, JEPA…
+│   ├── vulkan/                # ash backend + gemv_policy
+│   ├── main.rs                # Inference CLI
+│   └── …
 │
-├── tools/                     # ── CLI Utilities ──
-│   ├── step_inference.rs      # Non-interactive inference (headless)
-│   ├── run_trainer.rs         # Training launcher
-│   ├── universal_converter/   # safetensors → .mud conversion
-│   ├── diagnose_model.rs      # Model diagnostic
-│   ├── mud_calibrator.rs      # Calibration
-│   └── ... (40+ tools)
+├── tools/                     # Bins: run_trainer, audit, converter, benches…
+├── assets/shaders/            # GLSL + spirv
+├── training/corpus/           # .txt/.md + project_corpus.txt (assembled by mud.sh train)
+├── models/                    # .mud checkpoints
+├── forge_autograd/            # Isolated autograd crate (avx_math.rs reused by STP)
 │
-├── docs/                      # ── Documentation ──
-│   ├── README.md              # Documentation index
-│   ├── architecture/          # Engine specs, manifestos, plans
-│   ├── audits/                # V1-V33 audit reports
-│   ├── research/              # Papers, theoretical analysis
-│   ├── sessions/              # Daily session reports
-│   │   └── MUD_SESSION_REPORT_2026-07-01.md  # Latest: JEPA Gate Rewire
-│   ├── manuals/               # User guides, protocols
-│   └── dumps/                 # Disassembly, debug logs
-│
-├── models/
-│   ├── smollm2/               # SmolLM2-135M (active training model)
-│   │   ├── smollm2.mud        # 282 MB — converted ternary model
-│   │   └── model.safetensors  # Original HuggingFace weights
-│   └── phi-4-mini/            # Phi-4-mini (not yet converted)
-│
-├── forge_autograd/            # Standalone autograd lib
-├── playground/                # C++ calculus playground
-├── training/corpus/           # Training corpus
-├── weights/checkpoints/       # Saved checkpoints
-│   └── model_latest_checkpoint.mud
-│
-├── assets/shaders/            # Vulkan compute shaders (.comp + .spv)
-└── .cargo/config.toml         # RUSTFLAGS with target CPU features
+└── docs/
+    ├── README.md              # Docs index
+    ├── STATUS_REPORT.md       # Logros vs deuda (was root)
+    ├── architecture/
+    │   ├── MUD_TRAINER_TERNARY_JEPA_MHC.md   # §9 F1/F2 verified · §10 unified UI
+    │   ├── MUD_COMPUTE_STACK.md
+    │   └── …
+    ├── research/
+    │   ├── MUD_PLAN_MHC_STP_TRAINABLE.md     # F1/F2 plan (Phase 1+2 DONE; Phase 3 n=2 deferred)
+    │   ├── MUD_GAP_ANALYSIS_POST_L15.md
+    │   ├── MUD_IMPROVEMENTS_POST_AE.md       # F+ backlog
+    │   └── …
+    ├── audits/  ├── sessions/  ├── manuals/  └── dumps/
 ```
 
-## Key Files Changed (2026-07-01 Session)
+## Recent work (2026-07-17)
 
-| File | Change |
-|------|--------|
-| `src/mud/slime.rs` | Added `jepa_z` field to workspace; added `init_from_embed()` |
-| `src/mud/slime_jepa.rs` | `jepa_stabilizer` reads/writes `z` from `z_buf`, stores `v_jepa` in `jepa_energy` + tape |
-| `src/mud/slime_forward.rs` | `mhc_residual` applies `sigmoid(v_jepa)` gate; passes `z_buf` to stabilizer |
-| `src/mud/corpus_trainer.rs` | Embedding init uses `init_from_embed`; P-13 fallbacks → `.expect()` |
-| `src/main.rs` | Embedding init uses `init_from_embed`; enhanced telemetry |
-| `src/mud/speculative.rs` | Embedding init uses `init_from_embed` |
-| `src/mud/self_play.rs` | Embedding init uses `init_from_embed` |
-| `AGENTS.md` | Updated for JEPA Gate Rewire, `jepa_z`, `SlimeRegister` format |
-| `docs/README.md` | Latest session reference updated |
-| `docs/sessions/MUD_SESSION_REPORT_2026-07-01.md` | Sections 5-8 added |
+| Item | File | Status |
+|------|------|--------|
+| F1 trainable mHC α/β | `src/mud/stp_loss.rs` cross-ref · `slime_backward.rs` · `corpus_trainer.rs` | DONE + verified |
+| F2 STP trajectory loss | `src/mud/stp_loss.rs` | DONE + verified (`MUD_TRAIN_STP`) |
+| Unified trainer console | `src/mud/trainer_ui.rs` | DONE (one box, `note()` tags, no emoji) |
+| F3 RLVR debate (juez + reward/penalty + aprendizaje) | `src/mud/arena_judge.rs` · `debate_trainer.rs` · `arena_games.rs` | DONE (no-API TextJudge/ProfessorJudge; `run_game` infinito hasta basta; `MUD_DEBATE_LEARN` default OFF) |
+| F3+ Seed-driven Training Circuit | `corpus_trainer::run_training_circuit` · `mud.sh circuit` | DONE (baterías por semilla vía LCG; align/debate/games/professor; time-box por fase; telemetría + logs/circuit.log; guarda al quit; honores = `circuit_eval_integrity` estructural + `circuit_benchmark_games` win-rate vs baseline, rollback `.bak_circuit`) |
+| Project-adapted `mud.sh train` | `mud.sh` (`build_project_corpus`, `compute_project_chunks`) | DONE (STP on, 64 steps/chunk, corpus = docs+src+ES/EN) |
+
+## Root policy (P-18)
+
+**Allowed at repo root:** `GEMINI.md`, `AGENTS.md`, `VISION_ROADMAP.md`, `PLAN_MAESTRO.md`, `README.md`, `TREE.md`, `LICENSE`.
+
+**Moved 2026-07-16:** status report, ASM/Vulkan plans, audits, housekeeping → `docs/`.
+

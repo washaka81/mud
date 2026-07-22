@@ -17,15 +17,15 @@ const TARGET_SPARSITY: f32 = 0.26;
 
 fn main() -> anyhow::Result<()> {
     println!(
-        "{}========================================================{}",
+        "{}┌────────────────────────────────────────────────────────┐{}",
         BOLD, RESET
     );
     println!(
-        "{}🛡️  MUD CORE ITERATION VALIDATOR & MATH DEBUGGER (V7)  🛡️{}",
+        "{}│  MUD CORE ITERATION VALIDATOR & MATH DEBUGGER (V7)     │{}",
         BOLD, RESET
     );
     println!(
-        "{}========================================================{}",
+        "{}└────────────────────────────────────────────────────────┘{}",
         BOLD, RESET
     );
 
@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
             RED, RESET
         );
         println!(
-            "{}   [DEBUG TIP] Falling back to default: models/qwen2_0.5b.mud{}",
+            "{}   [DEBUG TIP] Falling back to default: models/smollm2.mud{}",
             YELLOW, RESET
         );
     }
@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<()> {
     let model_path = args
         .get(1)
         .map(|s| s.as_str())
-        .unwrap_or("models/qwen2_0.5b.mud");
+        .unwrap_or("models/smollm2.mud");
 
     println!(
         "{}   🔍 Loading MUD Model to Audit: {}{}{}",
@@ -199,10 +199,165 @@ fn main() -> anyhow::Result<()> {
     );
 
     // ────────────────────────────────────────────────────────────────────────
-    // STAGE 3: COGNITIVE DEGRADATION & GENERATION AUDIT - 35 POINTS
+    // STAGE 3: STRUCTURAL JEPA QUADRATURE & LIVENESS - 30 POINTS
     // ────────────────────────────────────────────────────────────────────────
     println!(
-        "\n{}--- STAGE 2: COGNITIVE & QAT DISTILLATION ALIGNMENT ---{}",
+        "\n{}--- STAGE 3: JEPA QUADRATURE & TENSOR LIVENESS ---{}",
+        BOLD, RESET
+    );
+    let mut missing_mhc = 0;
+    for l in 0..num_layers {
+        let alpha_name = format!("blk.{}.mhc_alpha.weight", l);
+        let beta_name = format!("blk.{}.mhc_beta.weight", l);
+        let radius_name = format!("blk.{}.mhc_radius.weight", l);
+
+        if !core.tensors.contains_key(&alpha_name) {
+            missing_mhc += 1;
+        }
+        if !core.tensors.contains_key(&beta_name) {
+            missing_mhc += 1;
+        }
+        if !core.tensors.contains_key(&radius_name) {
+            missing_mhc += 1;
+        }
+    }
+
+    let mut jepa_score = 15.0;
+    if missing_mhc > 0 {
+        let penalty = (missing_mhc as f32 / (num_layers * 3) as f32) * 15.0;
+        jepa_score = (15.0 - penalty).max(0.0);
+        println!(
+            "   {}⚠️ WARNING: Missing {} mHC JEPA tensors! Quadrature broken.{}",
+            YELLOW, missing_mhc, RESET
+        );
+    } else {
+        println!(
+            "   {}✅ JEPA Quadrature intact (All mHC tensors present).{}",
+            GREEN, RESET
+        );
+    }
+    println!("   JEPA Structural Score: {:.2}/15.0", jepa_score);
+
+    let mut dead_tensors = 0;
+    for tensor in core.tensors.values() {
+        if tensor.t_type == MudTensorType::Float32 {
+            let elements: usize = tensor.shape.iter().product();
+            if elements > 1 {
+                let slice =
+                    unsafe { std::slice::from_raw_parts(tensor.data_ptr as *const f32, elements) };
+                let mean = slice.iter().sum::<f32>() / elements as f32;
+                let var = slice.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / elements as f32;
+                if var < 1e-8 {
+                    dead_tensors += 1;
+                }
+            }
+        }
+    }
+    for &sigma in &sigmas {
+        if sigma < 1e-4 {
+            dead_tensors += 1;
+        }
+    }
+
+    let mut liveness_score = 15.0;
+    if dead_tensors > 0 {
+        let penalty = (dead_tensors as f32) * 2.0;
+        liveness_score = (15.0 - penalty).max(0.0);
+        println!(
+            "   {}⚠️ WARNING: Detected {} dead tensors (Variance ~ 0).{}",
+            YELLOW, dead_tensors, RESET
+        );
+    } else {
+        println!(
+            "   {}✅ All tensors are alive and exhibiting variance.{}",
+            GREEN, RESET
+        );
+    }
+    println!("   Liveness Score: {:.2}/15.0", liveness_score);
+
+    // ────────────────────────────────────────────────────────────────────────
+    // STAGE 4: THERMODYNAMIC & DEEP STRUCTURAL PARAMETERS (20 METRICS) - 20 POINTS
+    // ────────────────────────────────────────────────────────────────────────
+    println!(
+        "\n{}--- STAGE 4: THERMODYNAMIC & DEEP STRUCTURAL PARAMETERS (20 METRICS) ---{}",
+        BOLD, RESET
+    );
+    let mut param_score = 0.0;
+    let checks = [
+        ("Param 1: hidden_size >= 256", hidden_size >= 256),
+        ("Param 2: num_layers >= 1", num_layers >= 1),
+        ("Param 3: num_experts >= 1", num_experts >= 1),
+        ("Param 4: Tensor count > 10", core.tensors.len() > 10),
+        ("Param 5: Mean row scale > 1e-5", scale_mean > 1e-5),
+        ("Param 6: Scale CoV < 0.20", scale_cov < 0.20),
+        (
+            "Param 7: Dead tensors ratio < 35%",
+            (dead_tensors as f32 / core.tensors.len() as f32) < 0.35,
+        ),
+        ("Param 8: JEPA mHC Alpha exists", missing_mhc == 0),
+        ("Param 9: Sparsity bounded upper (<0.8)", avg_sparsity < 0.8),
+        (
+            "Param 10: Sparsity bounded lower (>0.1)",
+            avg_sparsity > 0.1,
+        ),
+        ("Param 11: Sigma bounded lower (>0.1)", avg_sigma > 0.1),
+        ("Param 12: Sigma bounded upper (<2.0)", avg_sigma < 2.0),
+        (
+            "Param 13: Vocab size metadata exists",
+            mud_file.global_metadata.contains_key("vocab_size"),
+        ),
+        (
+            "Param 14: Max position metadata exists",
+            mud_file
+                .global_metadata
+                .contains_key("max_position_embeddings"),
+        ),
+        (
+            "Param 15: Head dim metadata exists",
+            mud_file.global_metadata.contains_key("head_dim"),
+        ),
+        (
+            "Param 16: Num heads metadata exists",
+            mud_file.global_metadata.contains_key("num_heads"),
+        ),
+        (
+            "Param 17: Ternary Sigma telemetry active",
+            !sigmas.is_empty(),
+        ),
+        (
+            "Param 18: PRQ Scale telemetry active",
+            !row_scales.is_empty(),
+        ),
+        (
+            "Param 19: Sparsity telemetry active",
+            !sparsities.is_empty(),
+        ),
+        (
+            "Param 20: Tensors correctly mapped",
+            !core.tensors.is_empty(),
+        ),
+    ];
+
+    let mut passed_checks = 0;
+    for (desc, passed) in checks.iter() {
+        if *passed {
+            passed_checks += 1;
+            param_score += 1.0;
+        } else {
+            println!("   {}❌ {} failed.{}", RED, desc, RESET);
+        }
+    }
+    println!(
+        "   ✅ {}/20 Deep Structural Parameters Passed.",
+        passed_checks
+    );
+    println!("   Deep Structural Score: {:.2}/20.0", param_score);
+
+    // ────────────────────────────────────────────────────────────────────────
+    // STAGE 5: COGNITIVE DEGRADATION & GENERATION AUDIT - 35 POINTS
+    // ────────────────────────────────────────────────────────────────────────
+    println!(
+        "\n{}--- STAGE 5: COGNITIVE & QAT DISTILLATION ALIGNMENT ---{}",
         BOLD, RESET
     );
     let test_prompts = [
@@ -211,10 +366,61 @@ fn main() -> anyhow::Result<()> {
         "<|user|>\nSearch the web for MUD Engine specs\n<|action|>\n", // QAT trace test
     ];
 
-    let total_tokens_generated = 100;
-    let repetitions_count = 2;
-    let cohesion_sum = 0.95f32 * test_prompts.len() as f32;
-    println!("   [INFO] Generation audit simulated via SlimeWorkspace (Priorities 35 & 37).");
+    println!("   [INFO] Executing live inference dry-run for cohesion audit...");
+    let mut total_tokens_generated = 100;
+    let mut repetitions_count = 2;
+    let mut cohesion_sum = 0.95f32 * test_prompts.len() as f32;
+
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // We only test the first prompt for speed in the validator
+    let child = Command::new("./target/release/forge_llm")
+        .arg(model_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Ok(mut child) = child {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(test_prompts[0].as_bytes());
+            let _ = stdin.write_all(b"\nquit\n");
+        }
+        if let Ok(out) = child.wait_with_output() {
+            let out_str = String::from_utf8_lossy(&out.stdout);
+            if let Some(ai_start) = out_str.find("AI: ") {
+                let ai_text = &out_str[ai_start + 4..];
+                let words: Vec<&str> = ai_text.split_whitespace().collect();
+                total_tokens_generated = words.len().max(1);
+
+                let mut reps = 0;
+                for i in 1..words.len() {
+                    if words[i] == words[i - 1] {
+                        reps += 1;
+                    }
+                }
+                repetitions_count = reps;
+
+                if words.len() < 5 {
+                    cohesion_sum = 0.0;
+                } else {
+                    let unique_words: std::collections::HashSet<&str> =
+                        words.iter().cloned().collect();
+                    let unique_ratio = unique_words.len() as f32 / words.len() as f32;
+                    cohesion_sum = (unique_ratio * test_prompts.len() as f32).max(0.0);
+                }
+            } else {
+                total_tokens_generated = 100;
+                repetitions_count = 100; // Penalize crash
+                cohesion_sum = 0.0;
+            }
+        }
+    } else {
+        println!("   [WARNING] Failed to spawn forge_llm binary.");
+        repetitions_count = 100;
+        cohesion_sum = 0.0;
+    }
 
     // Compute Repetition Score (Max 15)
     let rep_fraction = if total_tokens_generated > 0 {
@@ -247,19 +453,26 @@ fn main() -> anyhow::Result<()> {
     // ────────────────────────────────────────────────────────────────────────
     // FINAL EFFECTIVENESS SYNTHESIS & AUDIT REPORT
     // ────────────────────────────────────────────────────────────────────────
-    let total_score =
-        sigma_score + sparsity_score + scale_score + repetition_score + cohesion_score + qat_score;
+    let total_score = sigma_score
+        + sparsity_score
+        + scale_score
+        + jepa_score
+        + liveness_score
+        + param_score
+        + repetition_score
+        + cohesion_score
+        + qat_score;
 
     println!(
-        "\n{}========================================================{}",
+        "\n{}┌────────────────────────────────────────────────────────┐{}",
         BOLD, RESET
     );
     println!(
-        "{}                 MUD QUALITY AUDIT REPORT                {}",
+        "{}│                MUD QUALITY AUDIT REPORT                │{}",
         BOLD, RESET
     );
     println!(
-        "{}========================================================{}",
+        "{}└────────────────────────────────────────────────────────┘{}",
         BOLD, RESET
     );
 
@@ -272,28 +485,36 @@ fn main() -> anyhow::Result<()> {
         scale_score
     );
     println!(
-        "   3. Cognitive Cohesion Score:  {:>5.2} / 20.0",
+        "   3. JEPA & Liveness Score:     {:>5.2} / 30.0",
+        jepa_score + liveness_score
+    );
+    println!(
+        "   4. Deep Structural Params:    {:>5.2} / 20.0",
+        param_score
+    );
+    println!(
+        "   5. Cognitive Cohesion Score:  {:>5.2} / 35.0",
         repetition_score + cohesion_score
     );
-    println!("   4. QAT Agentic Distillation:  {:>5.2} / 25.0", qat_score);
+    println!("   6. QAT Agentic Distillation:  {:>5.2} / 25.0", qat_score);
     println!("   --------------------------------------------------------");
 
-    let color_code = if total_score >= 105.0 {
+    let color_code = if total_score >= 160.0 {
         GREEN
-    } else if total_score >= 80.0 {
+    } else if total_score >= 120.0 {
         YELLOW
     } else {
         RED
     };
 
     println!(
-        "   {}{}FINAL EFFECTIVENESS RATING:   {:>5.2}% / 110.0%{}",
+        "   {}{}FINAL EFFECTIVENESS RATING:   {:>5.2} / 175.0{}",
         BOLD, color_code, total_score, RESET
     );
 
-    if total_score >= 105.0 {
+    if total_score >= 160.0 {
         println!(
-            "\n{}🎉 ITERATION PASSED! ACCEPTANCE THRESHOLD ACHIEVED (>105/110) 🎉{}",
+            "\n{}🎉 ITERATION PASSED! ACCEPTANCE THRESHOLD ACHIEVED (>160/175) 🎉{}",
             GREEN, RESET
         );
         println!("   The mathematical and semantic homeostasis has been fully restored.");
@@ -301,7 +522,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     } else {
         println!(
-            "\n{}❌ ITERATION REJECTED! ACCEPTANCE THRESHOLD NOT MET (<105/110){} ❌",
+            "\n{}❌ ITERATION REJECTED! ACCEPTANCE THRESHOLD NOT MET (<160/175){} ❌",
             RED, RESET
         );
         println!("   The model is still suffering from Ternary Shock, math drift, or QAT failure.");

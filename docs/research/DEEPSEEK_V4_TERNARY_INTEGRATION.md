@@ -283,18 +283,20 @@ attn_out = softmax(Q @ K[top_k_indices].T) @ V[top_k_indices]
 
 Versión extrema de CSA: KV entries comprimidas a dimensión mínima + Sliding Window Attention para tokens recientes.
 
-### Relevancia para MUD
+### Relevancia para MUD (actualizado 2026-07-16)
 
-Nuestro KV cache actual:
-```rust
-// workspace.rs
-kv_cache: vec![0.0f32; n_kv_heads * max_pos * head_dim]
-v_cache:  vec![0.0f32; n_kv_heads * max_pos * head_dim]
-```
+| Pieza DeepSeek | Estado MUD |
+|----------------|------------|
+| HCA mean-pool + sliding window | **LIVE** L-13 (`kv_context`, dense ring + HCA slots) |
+| CSA lightning top-k | **LIVE v1** stream E (`csa_indexer`: coarse dim prefix + top-k ∪ tail; dense full; train = full HCA) |
+| W_compress learned / 1M LSH | **OPEN** backlog **J** — `MUD_IMPROVEMENTS_POST_AE.md` |
+| Muon | **LIVE** L-01/L-02 |
+| mHC | **LIVE** residual path |
+| DSpark | Partial / speculative drafter (not full DeepSpec) |
 
-Para BitNet b1.58-2B-4T: `5 × 4096 × 128 × 4 bytes = 10 MB` — manejable. CSA es más relevante cuando expandamos a contextos de 32k+.
+KV layout is no longer naive `O(max_pos)` dense: L-13 uses dense ring + compressed slots (≤512). CSA v1 cuts softmax/V-mix on large HCA; index still O(N·d_idx).
 
-**Aplicabilidad futura:** Priority 41 propuesta — KV Compression para contextos largos.
+**Next research:** stream **J** (W_compress / LSH) and **I** (KV bf16) after product needs long-context quality data.
 
 ---
 

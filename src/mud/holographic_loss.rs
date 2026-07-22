@@ -76,7 +76,7 @@ pub unsafe fn compute_phase_gradients_avx2(
 
     // Gradient of Cosine Phase Loss with respect to x_ideal
     // dL/dx_ideal_j = - (x_quant_j / denominator) + (cos_sim * x_ideal_j / norm_ideal_sq)
-    
+
     let grad_coeff_quant = -lambda / denominator;
     let grad_coeff_ideal = lambda * cos_sim / norm_ideal_sq;
 
@@ -93,7 +93,7 @@ pub unsafe fn compute_phase_gradients_avx2(
         let term1 = _mm256_mul_ps(grad_coeff_quant_v, qu);
         // term2 = grad_coeff_ideal * x_ideal
         let term2 = _mm256_mul_ps(grad_coeff_ideal_v, id);
-        
+
         let grad_phase = _mm256_add_ps(term1, term2);
         g = _mm256_add_ps(g, grad_phase);
 
@@ -125,32 +125,32 @@ pub fn compute_phase_gradients(
             return unsafe { compute_phase_gradients_avx2(x_ideal, x_quant, grad_out, lambda) };
         }
     }
-    
+
     // Scalar generic fallback
     let mut dot_sum = 0.0;
     let mut norm_ideal_sq = 0.0;
     let mut norm_quant_sq = 0.0;
-    
+
     let n = x_ideal.len();
     for i in 0..n {
         dot_sum += x_ideal[i] * x_quant[i];
         norm_ideal_sq += x_ideal[i] * x_ideal[i];
         norm_quant_sq += x_quant[i] * x_quant[i];
     }
-    
+
     let norm_ideal = norm_ideal_sq.sqrt().max(1e-8);
     let norm_quant = norm_quant_sq.sqrt().max(1e-8);
     let denominator = norm_ideal * norm_quant;
-    
+
     let cos_sim = dot_sum / denominator;
     let grad_coeff_quant = -lambda / denominator;
     let grad_coeff_ideal = lambda * cos_sim / norm_ideal_sq;
-    
+
     for i in 0..n {
         let d_phase = (grad_coeff_quant * x_quant[i]) + (grad_coeff_ideal * x_ideal[i]);
         grad_out[i] += d_phase;
     }
-    
+
     1.0 - cos_sim
 }
 
@@ -172,10 +172,14 @@ pub unsafe fn compute_vicreg_variance_gradients_avx2(
 ) -> f32 {
     let n = v_jepa.len();
     assert_eq!(n, grad_v_jepa.len());
-    if n == 0 { return 0.0; }
+    if n == 0 {
+        return 0.0;
+    }
 
     let mut sum = 0.0;
-    for &v in v_jepa { sum += v; }
+    for &v in v_jepa {
+        sum += v;
+    }
     let mu = sum / n as f32;
 
     let mut var_sum = 0.0;
@@ -195,7 +199,7 @@ pub unsafe fn compute_vicreg_variance_gradients_avx2(
     // L_V = gamma - std_dev
     // dL/dv_i = -1 * (1 / (2 * std_dev)) * (2 * (v_i - mu) / n)
     //         = -(v_i - mu) / (n * std_dev)
-    
+
     let grad_coeff = -lambda / (n as f32 * std_dev);
 
     // Add to grad_v_jepa

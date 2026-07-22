@@ -75,14 +75,14 @@ fn test_dot_product_avx2() {
 /// Packs 16 ternary values (-1, 0, 1) into a u32 for testing.
 fn pack_ternary_row(values: &[i8]) -> Vec<u32> {
     let n = values.len();
-    let mut packed = vec![0u32; n.div_ceil(16)];
+    let mut packed = vec![0u32; n.div_ceil(8)];
     for (i, &v) in values.iter().enumerate() {
         let bits = match v {
             1 => 1u32,
-            -1 => 2u32,
+            -1 => 15u32,
             _ => 0u32,
         };
-        packed[i / 16] |= bits << ((i % 16) * 2);
+        packed[i / 8] |= bits << ((i % 8) * 4);
     }
     packed
 }
@@ -237,7 +237,7 @@ fn test_ternary_gemv_4rows_avx2() {
     let mut rng = rand::rng();
     let x: Vec<f32> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
     let scale = 0.5f32;
-    let stride = n / 16;
+    let stride = n / 8;
 
     let mut raw_weights = Vec::new();
     let mut packed_weights = Vec::new();
@@ -278,55 +278,192 @@ fn test_ternary_gemv_4rows_avx2() {
 }
 
 #[test]
+fn test_ternary_gemv_8rows_avx2() {
+    let n = 256;
+    let mut rng = rand::rng();
+    let x: Vec<f32> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
+    let scale = 0.5f32;
+    let stride = n / 8;
+
+    let mut raw_weights = Vec::new();
+    let mut packed_weights = Vec::new();
+
+    for _ in 0..8 {
+        let row: Vec<i8> = (0..n).map(|_| rng.random_range(-1..=1)).collect();
+        packed_weights.extend(pack_ternary_row(&row));
+        raw_weights.push(row);
+    }
+
+    let mut out_asm = vec![0.0f32; 8];
+    unsafe {
+        ternary_gemv_8rows(
+            n,
+            x.as_ptr(),
+            packed_weights.as_ptr(),
+            out_asm.as_mut_ptr(),
+            scale,
+            stride,
+        );
+    }
+
+    for i in 0..8 {
+        let mut out_rust = 0.0f32;
+        for j in 0..n {
+            out_rust += x[j] * raw_weights[i][j] as f32;
+        }
+        out_rust *= scale;
+
+        assert!(
+            (out_rust - out_asm[i]).abs() < 1e-4,
+            "8row Row {} mismatch: rust {} vs asm {}",
+            i,
+            out_rust,
+            out_asm[i]
+        );
+    }
+}
+
+#[test]
+fn test_ternary_gemv_8rows_matches_4rows() {
+    // Same matrix, 8-row vs two×4-row must agree (scale=1).
+    let n: usize = 320; // not multiple of 64 — exercise 16+8 tails
+    let mut rng = rand::rng();
+    let x: Vec<f32> = (0..n).map(|_| rng.random_range(-2.0..2.0)).collect();
+    let stride = n.div_ceil(8);
+    let mut packed = Vec::new();
+    for _ in 0..8 {
+        let row: Vec<i8> = (0..n).map(|_| rng.random_range(-1..=1)).collect();
+        let mut p = pack_ternary_row(&row);
+        p.resize(stride, 0);
+        packed.extend(p);
+    }
+    let mut out8 = vec![0.0f32; 8];
+    let mut out4 = vec![0.0f32; 8];
+    unsafe {
+        ternary_gemv_8rows(
+            n,
+            x.as_ptr(),
+            packed.as_ptr(),
+            out8.as_mut_ptr(),
+            1.0,
+            stride,
+        );
+        ternary_gemv_4rows(
+            n,
+            x.as_ptr(),
+            packed.as_ptr(),
+            out4.as_mut_ptr(),
+            1.0,
+            stride,
+        );
+        ternary_gemv_4rows(
+            n,
+            x.as_ptr(),
+            packed.as_ptr().add(4 * stride),
+            out4.as_mut_ptr().add(4),
+            1.0,
+            stride,
+        );
+    }
+    for i in 0..8 {
+        assert!(
+            (out8[i] - out4[i]).abs() < 1e-4,
+            "row {i}: 8rows={} 4rows={}",
+            out8[i],
+            out4[i]
+        );
+    }
+}
+
+#[test]
 fn bench_ternary_gemv_comparison() {
     let n = 2048;
     let x = vec![1.0f32; n];
-    let stride = n / 16;
+    let stride = n / 8;
     let scale = 1.0f32;
+    const N_ROWS: usize = 1024;
 
     let mut packed_weights = Vec::new();
-    for _ in 0..1024 {
+    for _ in 0..N_ROWS {
         packed_weights.extend(vec![0x55555555u32; stride]);
     }
 
-    let mut out = vec![0.0f32; 1024];
+    let mut out = vec![0.0f32; N_ROWS];
 
-    // Benchmark single-row
+    const REPS: usize = 32;
+    // Warmup (bring turbo + L2 to steady state)
+    for _ in 0..4 {
+        for i in (0..N_ROWS).step_by(8) {
+            unsafe {
+                ternary_gemv_8rows(
+                    n,
+                    x.as_ptr(),
+                    packed_weights.as_ptr().add(i * stride),
+                    out.as_mut_ptr().add(i),
+                    scale,
+                    stride,
+                );
+            }
+        }
+    }
+
     let start_single = std::time::Instant::now();
-    for (i, out_val) in out.iter_mut().enumerate().take(1024) {
-        unsafe {
-            ternary_gemv(
-                n,
-                x.as_ptr(),
-                packed_weights.as_ptr().add(i * stride),
-                out_val,
-                scale,
-            );
+    for _ in 0..REPS {
+        for (i, out_val) in out.iter_mut().enumerate().take(N_ROWS) {
+            unsafe {
+                ternary_gemv(
+                    n,
+                    x.as_ptr(),
+                    packed_weights.as_ptr().add(i * stride),
+                    out_val,
+                    scale,
+                );
+            }
         }
     }
     let duration_single = start_single.elapsed();
-    println!("Single-row GEMV (1024 rows): {:?}", duration_single);
+    println!("Single-row GEMV ({N_ROWS}×{REPS}): {duration_single:?}");
 
-    // Benchmark 4-rows
-    out.fill(0.0);
-    let start_multi = std::time::Instant::now();
-    for i in (0..1024).step_by(4) {
-        unsafe {
-            ternary_gemv_4rows(
-                n,
-                x.as_ptr(),
-                packed_weights.as_ptr().add(i * stride),
-                out.as_mut_ptr().add(i),
-                scale,
-                stride,
-            );
+    let start_4 = std::time::Instant::now();
+    for _ in 0..REPS {
+        for i in (0..N_ROWS).step_by(4) {
+            unsafe {
+                ternary_gemv_4rows(
+                    n,
+                    x.as_ptr(),
+                    packed_weights.as_ptr().add(i * stride),
+                    out.as_mut_ptr().add(i),
+                    scale,
+                    stride,
+                );
+            }
         }
     }
-    let duration_multi = start_multi.elapsed();
-    println!("Multi-row GEMV (1024 rows): {:?}", duration_multi);
+    let duration_4 = start_4.elapsed();
+    println!("4-row GEMV ({N_ROWS}×{REPS}): {duration_4:?}");
 
-    let speedup = duration_single.as_secs_f64() / duration_multi.as_secs_f64();
-    println!("Speedup: {:.2}x", speedup);
+    let start_8 = std::time::Instant::now();
+    for _ in 0..REPS {
+        for i in (0..N_ROWS).step_by(8) {
+            unsafe {
+                ternary_gemv_8rows(
+                    n,
+                    x.as_ptr(),
+                    packed_weights.as_ptr().add(i * stride),
+                    out.as_mut_ptr().add(i),
+                    scale,
+                    stride,
+                );
+            }
+        }
+    }
+    let duration_8 = start_8.elapsed();
+    println!("8-row GEMV ({N_ROWS}×{REPS}): {duration_8:?}");
+
+    let sp4 = duration_single.as_secs_f64() / duration_4.as_secs_f64();
+    let sp8 = duration_single.as_secs_f64() / duration_8.as_secs_f64();
+    let sp8v4 = duration_4.as_secs_f64() / duration_8.as_secs_f64();
+    println!("Speedup 4r/1r={sp4:.2}x  8r/1r={sp8:.2}x  8r/4r={sp8v4:.2}x");
 }
 
 #[test]
@@ -475,6 +612,77 @@ fn test_ternary_gemm_batch4_known_pattern() {
 }
 
 #[test]
+fn test_lm_head_avx2_argmax() {
+    let hidden = 64usize;
+    let vocab = 32usize;
+    let regs: Vec<f32> = (0..hidden).map(|i| (i as f32) * 0.01).collect();
+    // weights[v * hidden + j]; make row 7 the best match (identical to regs)
+    let mut weights = vec![0.0f32; vocab * hidden];
+    for v in 0..vocab {
+        for j in 0..hidden {
+            weights[v * hidden + j] = if v == 7 { regs[j] } else { (v as f32) * 0.001 };
+        }
+    }
+    let best = unsafe { lm_head_avx2(vocab, hidden, regs.as_ptr(), weights.as_ptr()) };
+    assert_eq!(best, 7, "lm_head argmax expected row 7, got {best}");
+}
+
+#[test]
+fn test_lm_head_logits_avx2_vs_scalar() {
+    let hidden = 48usize;
+    let vocab = 16usize;
+    let mut rng = rand::rng();
+    let regs: Vec<f32> = (0..hidden).map(|_| rng.random_range(-1.0..1.0)).collect();
+    let weights: Vec<f32> = (0..vocab * hidden)
+        .map(|_| rng.random_range(-1.0..1.0))
+        .collect();
+    let mut out = vec![0.0f32; vocab];
+    unsafe {
+        lm_head_logits_avx2(
+            vocab,
+            hidden,
+            regs.as_ptr(),
+            weights.as_ptr(),
+            out.as_mut_ptr(),
+        );
+    }
+    for v in 0..vocab {
+        let mut expected = 0.0f32;
+        for j in 0..hidden {
+            expected += regs[j] * weights[v * hidden + j];
+        }
+        assert!(
+            (out[v] - expected).abs() < 1e-3,
+            "logit[{v}]: asm {} vs scalar {}, delta {}",
+            out[v],
+            expected,
+            (out[v] - expected).abs()
+        );
+    }
+}
+
+#[test]
+fn test_silu_vectorial_smoke() {
+    let n = 32usize;
+    let src: Vec<f32> = (0..n).map(|i| (i as f32) * 0.1 - 1.5).collect();
+    let mut dst = vec![0.0f32; n];
+    unsafe {
+        silu_vectorial_avx2(n, src.as_ptr(), dst.as_mut_ptr());
+    }
+    for i in 0..n {
+        let x = src[i];
+        let expected = x / (1.0 + (-x).exp());
+        let err = (dst[i] - expected).abs();
+        assert!(
+            err < 2e-3,
+            "silu[{i}]: got {} expected {} err {err}",
+            dst[i],
+            expected
+        );
+    }
+}
+
+#[test]
 fn test_sgemm_abt_avx2() {
     let m = 4;
     let n = 4;
@@ -548,4 +756,3 @@ fn test_sgemm_avx2() {
         );
     }
 }
-

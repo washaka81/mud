@@ -33,8 +33,13 @@ pub enum Op {
     /// Q: [seq_len, n_head * head_dim], K/V: [seq_len, n_kv_head * head_dim], mask: [seq_len, seq_len]
     /// Output: [seq_len, n_head * head_dim]
     MultiHeadAttention {
-        q: NodeId, k: NodeId, v: NodeId, mask: NodeId,
-        n_head: usize, n_kv_head: usize, head_dim: usize,
+        q: NodeId,
+        k: NodeId,
+        v: NodeId,
+        mask: NodeId,
+        n_head: usize,
+        n_kv_head: usize,
+        head_dim: usize,
     },
     /// VICReg: Variance-Invariance-Covariance Regularization (TRAIN-03).
     /// Input: [seq_len, hidden]. Output: scalar loss.
@@ -47,7 +52,13 @@ pub enum Op {
     KLDivDirect(NodeId, NodeId),
     /// TernaryLinear: Z = X * W_ternary^T * diag(scales) for frozen layers.
     /// No FP32 dequant. packed_w: [n_out * ceil(n_in/16)] u32. scales: [n_out] f32.
-    TernaryLinear { x: NodeId, packed_w: Vec<u32>, scales: Vec<f32>, n_in: usize, n_out: usize },
+    TernaryLinear {
+        x: NodeId,
+        packed_w: Vec<u32>,
+        scales: Vec<f32>,
+        n_in: usize,
+        n_out: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -71,15 +82,23 @@ pub struct Tape {
 
 impl Tape {
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), abort: None }
+        Self {
+            nodes: Vec::new(),
+            abort: None,
+        }
     }
 
     pub fn with_abort(abort: Arc<AtomicBool>) -> Self {
-        Self { nodes: Vec::new(), abort: Some(abort) }
+        Self {
+            nodes: Vec::new(),
+            abort: Some(abort),
+        }
     }
 
     fn should_abort(&self) -> bool {
-        self.abort.as_ref().map_or(false, |a| a.load(Ordering::Relaxed))
+        self.abort
+            .as_ref()
+            .map_or(false, |a| a.load(Ordering::Relaxed))
     }
 
     pub fn zero_grad(&mut self) {
@@ -99,7 +118,13 @@ impl Tape {
     pub fn push_leaf(&mut self, data: Vec<f32>, shape: Vec<usize>) -> NodeId {
         let len = data.len();
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape,             op: Op::Leaf, extra: None });
+        self.nodes.push(Node {
+            data: std::sync::Arc::new(data),
+            grad: vec![0.0; len],
+            shape,
+            op: Op::Leaf,
+            extra: None,
+        });
         id
     }
 
@@ -107,17 +132,26 @@ impl Tape {
     pub fn push_leaf_arc(&mut self, data: std::sync::Arc<Vec<f32>>, shape: Vec<usize>) -> NodeId {
         let len = data.len();
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data, grad: vec![0.0; len], shape,             op: Op::Leaf, extra: None });
+        self.nodes.push(Node {
+            data,
+            grad: vec![0.0; len],
+            shape,
+            op: Op::Leaf,
+            extra: None,
+        });
         id
     }
 
     /// Suma dos tensores elemento por elemento
     pub fn add(&mut self, lhs: NodeId, rhs: NodeId) -> NodeId {
         let (lhs_node, rhs_node) = self.get_two(lhs, rhs);
-        assert_eq!(lhs_node.shape, rhs_node.shape, "Las formas deben coincidir para Add");
+        assert_eq!(
+            lhs_node.shape, rhs_node.shape,
+            "Las formas deben coincidir para Add"
+        );
         let len = lhs_node.data.len();
         let mut data = vec![0.0; len];
-        
+
         unsafe {
             // z = x + y equivalente a z = 1.0 * x + y
             data.copy_from_slice(&rhs_node.data);
@@ -125,23 +159,38 @@ impl Tape {
         }
 
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Add(lhs, rhs), extra: None });
+        self.nodes.push(Node {
+            data: std::sync::Arc::new(data),
+            grad: vec![0.0; len],
+            shape: lhs_node.shape.clone(),
+            op: Op::Add(lhs, rhs),
+            extra: None,
+        });
         id
     }
 
     /// Multiplica dos tensores elemento a elemento
     pub fn mul(&mut self, lhs: NodeId, rhs: NodeId) -> NodeId {
         let (lhs_node, rhs_node) = self.get_two(lhs, rhs);
-        assert_eq!(lhs_node.shape, rhs_node.shape, "Las formas deben coincidir para Mul");
+        assert_eq!(
+            lhs_node.shape, rhs_node.shape,
+            "Las formas deben coincidir para Mul"
+        );
         let len = lhs_node.data.len();
         let mut data = vec![0.0; len];
-        
+
         for i in 0..len {
             data[i] = lhs_node.data[i] * rhs_node.data[i];
         }
 
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data: std::sync::Arc::new(data), grad: vec![0.0; len], shape: lhs_node.shape.clone(), op: Op::Mul(lhs, rhs), extra: None });
+        self.nodes.push(Node {
+            data: std::sync::Arc::new(data),
+            grad: vec![0.0; len],
+            shape: lhs_node.shape.clone(),
+            op: Op::Mul(lhs, rhs),
+            extra: None,
+        });
         id
     }
 
@@ -150,7 +199,7 @@ impl Tape {
     pub fn linear(&mut self, x_id: NodeId, w_id: NodeId) -> NodeId {
         let x_node = &self.nodes[x_id.0];
         let w_node = &self.nodes[w_id.0];
-        
+
         let m = x_node.shape[0];
         let k = x_node.shape[1];
         let n = w_node.shape[0];
@@ -159,8 +208,11 @@ impl Tape {
         let mut z_data = vec![0.0; m * n];
 
         #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
-            unsafe { avx_math::sgemm_abt_avx2(m, n, k, &x_node.data, &w_node.data, &mut z_data); }
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
+            unsafe {
+                avx_math::sgemm_abt_avx2(m, n, k, &x_node.data, &w_node.data, &mut z_data);
+            }
         } else {
             for i in 0..m {
                 for j in 0..n {
@@ -186,10 +238,10 @@ impl Tape {
         }
 
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { 
-            data: std::sync::Arc::new(z_data), 
-            grad: vec![0.0; m * n], 
-            shape: vec![m, n], 
+        self.nodes.push(Node {
+            data: std::sync::Arc::new(z_data),
+            grad: vec![0.0; m * n],
+            shape: vec![m, n],
             op: Op::MatMul(x_id, w_id),
             extra: None,
         });
@@ -199,7 +251,14 @@ impl Tape {
     /// Frozen-layer linear: Z = X * W_ternary^T * diag(scales).
     /// packed_w: [n_out * ceil(n_in/16)] u32 (2-bit packed ternary).
     /// scales: [n_out] f32 (PRQ per-row scales).
-    pub fn ternary_linear(&mut self, x_id: NodeId, packed_w: Vec<u32>, scales: Vec<f32>, n_in: usize, n_out: usize) -> NodeId {
+    pub fn ternary_linear(
+        &mut self,
+        x_id: NodeId,
+        packed_w: Vec<u32>,
+        scales: Vec<f32>,
+        n_in: usize,
+        n_out: usize,
+    ) -> NodeId {
         let x_node = &self.nodes[x_id.0];
         let m = x_node.shape[0];
         assert_eq!(x_node.shape[1], n_in);
@@ -233,7 +292,13 @@ impl Tape {
             data: std::sync::Arc::new(z_data),
             grad: vec![0.0; m * n_out],
             shape: vec![m, n_out],
-            op: Op::TernaryLinear { x: x_id, packed_w, scales, n_in, n_out },
+            op: Op::TernaryLinear {
+                x: x_id,
+                packed_w,
+                scales,
+                n_in,
+                n_out,
+            },
             extra: None,
         });
         id
@@ -245,8 +310,11 @@ impl Tape {
         let mut z_data = vec![0.0; x_node.data.len()];
 
         #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
-            unsafe { avx_math::silu_avx2(&x_node.data, &mut z_data); }
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
+            unsafe {
+                avx_math::silu_avx2(&x_node.data, &mut z_data);
+            }
         } else {
             for i in 0..x_node.data.len() {
                 let x = x_node.data[i];
@@ -304,13 +372,18 @@ impl Tape {
         let w_node = &self.nodes[w_id.0];
         let n = w_node.data.len();
         let total_elements = x_node.data.len();
-        assert_eq!(total_elements % n, 0, "RMSNorm input debe ser múltiplo de la dimensión del peso");
-        
+        assert_eq!(
+            total_elements % n,
+            0,
+            "RMSNorm input debe ser múltiplo de la dimensión del peso"
+        );
+
         let m = total_elements / n;
         let mut z_data = vec![0.0; total_elements];
 
         #[cfg(target_arch = "x86_64")]
-        let has_avx2 = std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma");
+        let has_avx2 = std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma");
 
         for i in 0..m {
             let row_start = i * n;
@@ -318,9 +391,19 @@ impl Tape {
 
             let rms_scale = {
                 #[cfg(target_arch = "x86_64")]
-                { if has_avx2 { unsafe { avx_math::rms_norm_scale_avx2(row, eps) } } else { let sum_sq: f32 = row.iter().map(|v| v * v).sum(); 1.0 / ((sum_sq / n as f32) + eps).sqrt() } }
+                {
+                    if has_avx2 {
+                        unsafe { avx_math::rms_norm_scale_avx2(row, eps) }
+                    } else {
+                        let sum_sq: f32 = row.iter().map(|v| v * v).sum();
+                        1.0 / ((sum_sq / n as f32) + eps).sqrt()
+                    }
+                }
                 #[cfg(not(target_arch = "x86_64"))]
-                { let sum_sq: f32 = row.iter().map(|v| v * v).sum(); 1.0 / ((sum_sq / n as f32) + eps).sqrt() }
+                {
+                    let sum_sq: f32 = row.iter().map(|v| v * v).sum();
+                    1.0 / ((sum_sq / n as f32) + eps).sqrt()
+                }
             };
 
             for j in 0..n {
@@ -346,13 +429,24 @@ impl Tape {
         let len = x_node.data.len();
         let mut z_data = vec![0.0; len];
 
-        let inner = if x_node.shape.len() >= 2 { x_node.shape[1] } else { x_node.shape[0] };
-        let outer = if x_node.shape.len() >= 2 { x_node.shape[0] } else { 1 };
+        let inner = if x_node.shape.len() >= 2 {
+            x_node.shape[1]
+        } else {
+            x_node.shape[0]
+        };
+        let outer = if x_node.shape.len() >= 2 {
+            x_node.shape[0]
+        } else {
+            1
+        };
 
         for i in 0..outer {
             let start = i * inner;
             let end = start + inner;
-            let max_val = x_node.data[start..end].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let max_val = x_node.data[start..end]
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             let mut sum_exp = 0.0;
             for j in start..end {
                 let e = (x_node.data[j] - max_val).exp();
@@ -381,7 +475,10 @@ impl Tape {
         let x_node = &self.nodes[x_id.0];
         let old_len: usize = x_node.shape.iter().product();
         let new_len: usize = new_shape.iter().product();
-        assert_eq!(old_len, new_len, "Reshape: número de elementos debe coincidir");
+        assert_eq!(
+            old_len, new_len,
+            "Reshape: número de elementos debe coincidir"
+        );
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
             data: x_node.data.clone(),
@@ -419,8 +516,13 @@ impl Tape {
     /// Multi-Head Causal Self-Attention con GQA.
     pub fn mha(
         &mut self,
-        q_id: NodeId, k_id: NodeId, v_id: NodeId, mask_id: NodeId,
-        n_head: usize, n_kv_head: usize, head_dim: usize,
+        q_id: NodeId,
+        k_id: NodeId,
+        v_id: NodeId,
+        mask_id: NodeId,
+        n_head: usize,
+        n_kv_head: usize,
+        head_dim: usize,
     ) -> NodeId {
         let q_node = &self.nodes[q_id.0];
         let k_node = &self.nodes[k_id.0];
@@ -518,7 +620,9 @@ impl Tape {
                         scores[base + s2] + mask_node.data[s1 * seq_len + s2]
                     };
                     attn[base + s2] = masked;
-                    if masked > max_val { max_val = masked; }
+                    if masked > max_val {
+                        max_val = masked;
+                    }
                 }
                 // Softmax
                 let mut sum_exp = 0.0;
@@ -544,7 +648,8 @@ impl Tape {
                     // Wait no: V[h, s2, d] - each s2 has its own V
                     // attn_base + s2 is the weight for V[h, s2, d]
                     for s2 in 0..seq_len {
-                        sum += attn[attn_base + s2] * v_expanded[h * seq_len * head_dim + s2 * head_dim + d];
+                        sum += attn[attn_base + s2]
+                            * v_expanded[h * seq_len * head_dim + s2 * head_dim + d];
                     }
                     out_3d[h * seq_len * head_dim + s1 * head_dim + d] = sum;
                 }
@@ -568,8 +673,13 @@ impl Tape {
             grad: vec![0.0; seq_len * n_head * head_dim],
             shape: vec![seq_len, n_head * head_dim],
             op: Op::MultiHeadAttention {
-                q: q_id, k: k_id, v: v_id, mask: mask_id,
-                n_head, n_kv_head, head_dim,
+                q: q_id,
+                k: k_id,
+                v: v_id,
+                mask: mask_id,
+                n_head,
+                n_kv_head,
+                head_dim,
             },
             extra: Some(std::sync::Arc::new(attn)),
         });
@@ -580,7 +690,10 @@ impl Tape {
     pub fn select_row(&mut self, x_id: NodeId, row_idx: usize) -> NodeId {
         let x_node = &self.nodes[x_id.0];
         assert_eq!(x_node.shape.len(), 2, "SelectRow requiere shape 2D");
-        assert!(row_idx < x_node.shape[0], "SelectRow: row_idx fuera de rango");
+        assert!(
+            row_idx < x_node.shape[0],
+            "SelectRow: row_idx fuera de rango"
+        );
         let d = x_node.shape[1];
         let data = x_node.data[row_idx * d..(row_idx + 1) * d].to_vec();
         let id = NodeId(self.nodes.len());
@@ -681,11 +794,19 @@ impl Tape {
     pub fn kl_div(&mut self, student_id: NodeId, teacher_id: NodeId, temperature: f32) -> NodeId {
         let s_node = &self.nodes[student_id.0];
         let t_node = &self.nodes[teacher_id.0];
-        assert_eq!(s_node.data.len(), t_node.data.len(), "Student y teacher deben tener mismas dimensiones");
+        assert_eq!(
+            s_node.data.len(),
+            t_node.data.len(),
+            "Student y teacher deben tener mismas dimensiones"
+        );
         let n = s_node.data.len();
 
         // Softmax con temperatura para student
-        let s_max = s_node.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let s_max = s_node
+            .data
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
         let mut s_exp = vec![0.0; n];
         let mut s_sum = 0.0;
         for i in 0..n {
@@ -695,7 +816,11 @@ impl Tape {
         }
 
         // Softmax con temperatura para teacher (teacher se considera constante, sin gradiente)
-        let t_max = t_node.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let t_max = t_node
+            .data
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
         let mut t_exp = vec![0.0; n];
         let mut t_sum = 0.0;
         for i in 0..n {
@@ -755,7 +880,11 @@ impl Tape {
         let logits_node = &self.nodes[logits_id.0];
         assert!(logits_node.data.len() > target, "Target fuera de rango");
 
-        let max_logit = logits_node.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = logits_node
+            .data
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
         let mut sum_exp = 0.0;
         let mut exps = vec![0.0; logits_node.data.len()];
         for i in 0..logits_node.data.len() {
@@ -785,9 +914,13 @@ impl Tape {
         }
 
         for i in (0..=root.0).rev() {
-            if i & 15 == 0 && self.should_abort() { return; }
+            if i & 15 == 0 && self.should_abort() {
+                return;
+            }
             let op = self.nodes[i].op.clone();
-            if matches!(op, Op::Leaf) { continue; }
+            if matches!(op, Op::Leaf) {
+                continue;
+            }
 
             match op {
                 Op::Add(lhs, rhs) => {
@@ -814,40 +947,54 @@ impl Tape {
                     // dX = dZ * W   donde dZ: [M, N], W: [N, K] -> dX: [M, K]
                     // dW = dZ^T * X donde dZ: [M, N], X: [M, K] -> dW: [N, K]
                     let z = self.nodes[i].clone();
-                    
+
                     let (x_node, w_node) = self.get_two_mut(x_id, w_id);
                     let m = z.shape[0];
                     let n = z.shape[1];
                     let k = x_node.shape[1];
 
                     // 1. dX = dZ * W
-                    x_node.grad.chunks_mut(k).enumerate().for_each(|(i_m, x_grad_row)| {
-                        for j_n in 0..n {
-                            let dz_val = z.grad[i_m * n + j_n];
-                            if dz_val != 0.0 {
-                                let w_data_row = &w_node.data[j_n * k .. (j_n + 1) * k];
-                                unsafe { avx_math::axpy_avx2(x_grad_row, dz_val, w_data_row); }
+                    x_node
+                        .grad
+                        .chunks_mut(k)
+                        .enumerate()
+                        .for_each(|(i_m, x_grad_row)| {
+                            for j_n in 0..n {
+                                let dz_val = z.grad[i_m * n + j_n];
+                                if dz_val != 0.0 {
+                                    let w_data_row = &w_node.data[j_n * k..(j_n + 1) * k];
+                                    unsafe {
+                                        avx_math::axpy_avx2(x_grad_row, dz_val, w_data_row);
+                                    }
+                                }
                             }
-                        }
-                    });
+                        });
 
                     // 2. dW = dZ^T * X
-                    w_node.grad.chunks_mut(k).enumerate().for_each(|(j_n, w_grad_row)| {
-                        for i_m in 0..m {
-                            let dz_val = z.grad[i_m * n + j_n];
-                            if dz_val != 0.0 {
-                                let x_data_row = &x_node.data[i_m * k .. (i_m + 1) * k];
-                                unsafe { avx_math::axpy_avx2(w_grad_row, dz_val, x_data_row); }
+                    w_node
+                        .grad
+                        .chunks_mut(k)
+                        .enumerate()
+                        .for_each(|(j_n, w_grad_row)| {
+                            for i_m in 0..m {
+                                let dz_val = z.grad[i_m * n + j_n];
+                                if dz_val != 0.0 {
+                                    let x_data_row = &x_node.data[i_m * k..(i_m + 1) * k];
+                                    unsafe {
+                                        avx_math::axpy_avx2(w_grad_row, dz_val, x_data_row);
+                                    }
+                                }
                             }
-                        }
-                    });
+                        });
                 }
                 Op::SiLU(x_id) => {
                     let z = self.nodes[i].clone();
                     let x_node = &mut self.nodes[x_id.0];
                     for j in 0..z.data.len() {
                         let dz = z.grad[j];
-                        if dz == 0.0 { continue; }
+                        if dz == 0.0 {
+                            continue;
+                        }
                         let x = x_node.data[j];
                         let sig = 1.0 / (1.0 + (-x).exp());
                         // d(x * sig)/dx = sig + x * sig * (1 - sig)
@@ -858,8 +1005,12 @@ impl Tape {
                 Op::CrossEntropy(logits_id, target) => {
                     let z = self.nodes[i].clone();
                     let logits_node = &mut self.nodes[logits_id.0];
-                    
-                    let max_logit = logits_node.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+                    let max_logit = logits_node
+                        .data
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
                     let mut sum_exp = 0.0;
                     let mut exps = vec![0.0; logits_node.data.len()];
                     for j in 0..logits_node.data.len() {
@@ -900,7 +1051,7 @@ impl Tape {
                             sum_sq += v * v;
                         }
                         let rms_scale = 1.0 / ((sum_sq / n as f32) + eps).sqrt();
-                        
+
                         let mut sum_dz_w_x = 0.0;
                         for k in 0..n {
                             let dz_val = z.grad[row_start + k];
@@ -913,7 +1064,7 @@ impl Tape {
                             let dz_val = z.grad[idx];
                             x_node.grad[idx] += dz_val * w_node.data[j] * rms_scale
                                 - w_node.data[j] * x_node.data[idx] * scale_correction;
-                            
+
                             w_node.grad[j] += dz_val * x_node.data[idx] * rms_scale;
                         }
                     }
@@ -988,7 +1139,11 @@ impl Tape {
                     // dL/dx_i = softmax_i * (dL/ds_i - sum_j dL/ds_j * softmax_j)
                     let z = self.nodes[i].clone();
                     let x_node = &mut self.nodes[x_id.0];
-                    let inner = if z.shape.len() >= 2 { z.shape[1] } else { z.shape[0] };
+                    let inner = if z.shape.len() >= 2 {
+                        z.shape[1]
+                    } else {
+                        z.shape[0]
+                    };
                     let outer = if z.shape.len() >= 2 { z.shape[0] } else { 1 };
 
                     for batch in 0..outer {
@@ -1024,7 +1179,15 @@ impl Tape {
                         }
                     }
                 }
-                Op::MultiHeadAttention { q, k, v, mask: _, n_head, n_kv_head, head_dim } => {
+                Op::MultiHeadAttention {
+                    q,
+                    k,
+                    v,
+                    mask: _,
+                    n_head,
+                    n_kv_head,
+                    head_dim,
+                } => {
                     let z = self.nodes[i].clone();
                     let seq_len = z.shape[0];
                     let repeat = n_head / n_kv_head;
@@ -1103,9 +1266,15 @@ impl Tape {
                             // Causal mask + softmax
                             let mut max_val = f32::NEG_INFINITY;
                             for s2 in 0..seq_len {
-                                let masked = if s2 > s1 { scores[s2] - 1e9 } else { scores[s2] };
+                                let masked = if s2 > s1 {
+                                    scores[s2] - 1e9
+                                } else {
+                                    scores[s2]
+                                };
                                 attn[base + s2] = masked;
-                                if masked > max_val { max_val = masked; }
+                                if masked > max_val {
+                                    max_val = masked;
+                                }
                             }
                             let mut sum_exp = 0.0;
                             for s2 in 0..seq_len {
@@ -1158,7 +1327,8 @@ impl Tape {
                                 sum_attn_dattn += attn[base + s2] * d_attn[base + s2];
                             }
                             for s2 in 0..seq_len {
-                                d_scores[base + s2] = attn[base + s2] * (d_attn[base + s2] - sum_attn_dattn);
+                                d_scores[base + s2] =
+                                    attn[base + s2] * (d_attn[base + s2] - sum_attn_dattn);
                             }
                         }
                     }
@@ -1171,9 +1341,11 @@ impl Tape {
                                 let mut sum = 0.0;
                                 let base = h * seq_len * seq_len + s1 * seq_len;
                                 for s2 in 0..seq_len {
-                                    sum += d_scores[base + s2] * k_exp[h * seq_len * head_dim + s2 * head_dim + d];
+                                    sum += d_scores[base + s2]
+                                        * k_exp[h * seq_len * head_dim + s2 * head_dim + d];
                                 }
-                                d_q_3d[h * seq_len * head_dim + s1 * head_dim + d] = sum * inv_sqrt_d;
+                                d_q_3d[h * seq_len * head_dim + s1 * head_dim + d] =
+                                    sum * inv_sqrt_d;
                             }
                         }
                     }
@@ -1188,7 +1360,8 @@ impl Tape {
                                     sum += d_scores[h * seq_len * seq_len + s1 * seq_len + s2]
                                         * q_3d[h * seq_len * head_dim + s1 * head_dim + d];
                                 }
-                                d_k_exp[h * seq_len * head_dim + s2 * head_dim + d] = sum * inv_sqrt_d;
+                                d_k_exp[h * seq_len * head_dim + s2 * head_dim + d] =
+                                    sum * inv_sqrt_d;
                             }
                         }
                     }
@@ -1330,7 +1503,13 @@ impl Tape {
                         x_node.grad[start + j] += z.grad[j];
                     }
                 }
-                Op::TernaryLinear { x: x_id, ref packed_w, ref scales, n_in, n_out } => {
+                Op::TernaryLinear {
+                    x: x_id,
+                    ref packed_w,
+                    ref scales,
+                    n_in,
+                    n_out,
+                } => {
                     let z = self.nodes[i].clone();
                     let x_node = &mut self.nodes[x_id.0];
                     let m = z.shape[0];
@@ -1340,7 +1519,9 @@ impl Tape {
                     for row in 0..m {
                         for j in 0..n_out {
                             let dy_val = z.grad[row * n_out + j] * scales[j];
-                            if dy_val == 0.0 { continue; }
+                            if dy_val == 0.0 {
+                                continue;
+                            }
                             let w_off = j * blocks_per_row;
                             for b in 0..blocks_per_row {
                                 let block = packed_w[w_off + b];
@@ -1348,7 +1529,11 @@ impl Tape {
                                 let limit = (n_in - base).min(16);
                                 for bit in 0..limit {
                                     let bits = (block >> (bit * 2)) & 3;
-                                    let w_val: f32 = match bits { 1 => 1.0, 2 => -1.0, _ => 0.0 };
+                                    let w_val: f32 = match bits {
+                                        1 => 1.0,
+                                        2 => -1.0,
+                                        _ => 0.0,
+                                    };
                                     x_node.grad[row * n_in + base + bit] += dy_val * w_val;
                                 }
                             }
@@ -1402,20 +1587,33 @@ impl Tape {
 
     // AG-01: get_two_mut/get_three_mut with bounds check to prevent UB.
     fn get_two_mut(&mut self, id1: NodeId, id2: NodeId) -> (&mut Node, &mut Node) {
-        assert!(id1.0 < self.nodes.len() && id2.0 < self.nodes.len(), "NodeId out of bounds");
+        assert!(
+            id1.0 < self.nodes.len() && id2.0 < self.nodes.len(),
+            "NodeId out of bounds"
+        );
         assert!(id1.0 != id2.0);
         let ptr = self.nodes.as_mut_ptr();
-        unsafe {
-            (&mut *ptr.add(id1.0), &mut *ptr.add(id2.0))
-        }
+        unsafe { (&mut *ptr.add(id1.0), &mut *ptr.add(id2.0)) }
     }
 
-    fn get_three_mut(&mut self, id1: NodeId, id2: NodeId, id3: NodeId) -> (&mut Node, &mut Node, &mut Node) {
-        assert!(id1.0 < self.nodes.len() && id2.0 < self.nodes.len() && id3.0 < self.nodes.len(), "NodeId out of bounds");
+    fn get_three_mut(
+        &mut self,
+        id1: NodeId,
+        id2: NodeId,
+        id3: NodeId,
+    ) -> (&mut Node, &mut Node, &mut Node) {
+        assert!(
+            id1.0 < self.nodes.len() && id2.0 < self.nodes.len() && id3.0 < self.nodes.len(),
+            "NodeId out of bounds"
+        );
         assert!(id1.0 != id2.0 && id1.0 != id3.0 && id2.0 != id3.0);
         let ptr = self.nodes.as_mut_ptr();
         unsafe {
-            (&mut *ptr.add(id1.0), &mut *ptr.add(id2.0), &mut *ptr.add(id3.0))
+            (
+                &mut *ptr.add(id1.0),
+                &mut *ptr.add(id2.0),
+                &mut *ptr.add(id3.0),
+            )
         }
     }
 }
@@ -1432,13 +1630,12 @@ mod tests {
         let x = tape.push_leaf(x_data, vec![1, 3]);
 
         // W: [2, 3] (Para Linear layer, out_features=2, in_features=3)
-        let w_data = vec![0.5, 0.5, 0.5, 
-                          1.0, 1.0, 1.0];
+        let w_data = vec![0.5, 0.5, 0.5, 1.0, 1.0, 1.0];
         let w = tape.push_leaf(w_data, vec![2, 3]);
 
         // Z = X * W^T => [1, 2]
         let z = tape.linear(x, w);
-        
+
         // Z[0] = 1*0.5 + 2*0.5 + 3*0.5 = 3.0
         // Z[1] = 1*1 + 2*1 + 3*1 = 6.0
         assert_eq!(tape.nodes[z.0].data.as_ref(), &vec![3.0, 6.0]);
@@ -1461,7 +1658,7 @@ mod tests {
         // Prueba con X = 0.0 (esperamos f(0) = 0.0, df/dx = 0.5)
         let x = tape.push_leaf(vec![0.0], vec![1]);
         let z = tape.silu(x);
-        
+
         assert_eq!(tape.nodes[z.0].data[0], 0.0);
         tape.backward(z);
         // sigmoid(0) = 0.5. SiLU'(0) = 0.5 + 0 * ... = 0.5.
@@ -1503,7 +1700,11 @@ mod tests {
         // Quantized: round(x/1).clamp(-1,1)*1 = [0, -1, 1, 0, 0, 1]
         let q = tape.ste_quantize(x, s);
         let expected: Vec<f32> = vec![0.0, -1.0, 1.0, 0.0, 0.0, 1.0];
-        assert_eq!(tape.nodes[q.0].data.as_ref(), &expected, "STE forward falló");
+        assert_eq!(
+            tape.nodes[q.0].data.as_ref(),
+            &expected,
+            "STE forward falló"
+        );
 
         // Construir loss = q[0] + q[1] + q[2] + q[3] + q[4] + q[5] usando Add
         // Add trabaja elemento a elemento, así que pairwise sum hasta 1 escalar
@@ -1522,7 +1723,7 @@ mod tests {
 
         // Necesitamos conectar loss con q explícitamente en el grafo.
         // Enfoque: loss usa los valores de q como leaves (no como nodos),
-        // así que loss no está conectado al grafo de q. 
+        // así que loss no está conectado al grafo de q.
         // Reparamos: creamos Add(q, zeros) y luego sumamos elementos individuales.
         tape.reset();
 
@@ -1541,8 +1742,11 @@ mod tests {
 
         tape.backward(loss2);
         // dLoss2/dq2 = w = 1.0, STE: dLoss2/dx2 = dLoss2/dq2 = 1.0
-        assert!((tape.nodes[x2.0].grad[0] - 1.0).abs() < 1e-5, 
-            "STE backward: grad debe ser 1.0, got {}", tape.nodes[x2.0].grad[0]);
+        assert!(
+            (tape.nodes[x2.0].grad[0] - 1.0).abs() < 1e-5,
+            "STE backward: grad debe ser 1.0, got {}",
+            tape.nodes[x2.0].grad[0]
+        );
     }
 
     #[test]
@@ -1561,9 +1765,18 @@ mod tests {
         let y_data = tape.nodes[y.0].data.as_ref();
         let sum_sq: f32 = 1.0 + 4.0 + 9.0;
         let rms_scale = 1.0 / ((sum_sq / 3.0) + eps).sqrt();
-        assert!((y_data[0] - 1.0 * rms_scale).abs() < 1e-4, "RMSNorm forward x0 falló");
-        assert!((y_data[1] - 2.0 * rms_scale).abs() < 1e-4, "RMSNorm forward x1 falló");
-        assert!((y_data[2] - 3.0 * rms_scale).abs() < 1e-4, "RMSNorm forward x2 falló");
+        assert!(
+            (y_data[0] - 1.0 * rms_scale).abs() < 1e-4,
+            "RMSNorm forward x0 falló"
+        );
+        assert!(
+            (y_data[1] - 2.0 * rms_scale).abs() < 1e-4,
+            "RMSNorm forward x1 falló"
+        );
+        assert!(
+            (y_data[2] - 3.0 * rms_scale).abs() < 1e-4,
+            "RMSNorm forward x2 falló"
+        );
 
         // loss = sum(y)
         let ones = tape.push_leaf(vec![1.0; 3], vec![3]);
@@ -1571,8 +1784,14 @@ mod tests {
         tape.backward(loss);
 
         // Solo verificamos que los gradientes son finitos (correctitud numérica)
-        assert!(tape.nodes[x.0].grad.iter().all(|g| g.is_finite()), "RMSNorm x grad no finito");
-        assert!(tape.nodes[w.0].grad.iter().all(|g| g.is_finite()), "RMSNorm w grad no finito");
+        assert!(
+            tape.nodes[x.0].grad.iter().all(|g| g.is_finite()),
+            "RMSNorm x grad no finito"
+        );
+        assert!(
+            tape.nodes[w.0].grad.iter().all(|g| g.is_finite()),
+            "RMSNorm w grad no finito"
+        );
     }
 
     #[test]
@@ -1678,13 +1897,24 @@ mod tests {
         let kl = tape.kl_div(s, t, temp);
         // KL >= 0, debe ser finito
         let kl_val = tape.nodes[kl.0].data[0];
-        assert!(kl_val.is_finite() && kl_val >= 0.0, "KL debe ser >= 0, got {}", kl_val);
+        assert!(
+            kl_val.is_finite() && kl_val >= 0.0,
+            "KL debe ser >= 0, got {}",
+            kl_val
+        );
 
         tape.backward(kl);
         // Gradientes deben ser finitos
-        assert!(tape.nodes[s.0].grad.iter().all(|g| g.is_finite()), "KL student grad no finito");
+        assert!(
+            tape.nodes[s.0].grad.iter().all(|g| g.is_finite()),
+            "KL student grad no finito"
+        );
         // Teacher no debe tener gradiente (es constante en el forward)
-        assert_eq!(tape.nodes[t.0].grad.iter().all(|&g| g == 0.0), true, "Teacher no debe tener gradiente");
+        assert_eq!(
+            tape.nodes[t.0].grad.iter().all(|&g| g == 0.0),
+            true,
+            "Teacher no debe tener gradiente"
+        );
     }
 
     #[test]
@@ -1698,8 +1928,12 @@ mod tests {
 
         // Q: [3, 8], K/V: [3, 4]
         let q_data: Vec<f32> = (0..seq_len * hd).map(|i| i as f32 * 0.1).collect();
-        let k_data: Vec<f32> = (0..seq_len * n_kv_head * head_dim).map(|i| i as f32 * 0.05).collect();
-        let v_data: Vec<f32> = (0..seq_len * n_kv_head * head_dim).map(|i| i as f32 * 0.02 + 0.5).collect();
+        let k_data: Vec<f32> = (0..seq_len * n_kv_head * head_dim)
+            .map(|i| i as f32 * 0.05)
+            .collect();
+        let v_data: Vec<f32> = (0..seq_len * n_kv_head * head_dim)
+            .map(|i| i as f32 * 0.02 + 0.5)
+            .collect();
         let mask = vec![0.0; seq_len * seq_len]; // zero mask, but causal masking is built-in
 
         let q = tape.push_leaf(q_data, vec![seq_len, hd]);
@@ -1709,16 +1943,28 @@ mod tests {
 
         let out = tape.mha(q, k, v, m, n_head, n_kv_head, head_dim);
         assert_eq!(tape.nodes[out.0].shape, vec![seq_len, hd]);
-        assert!(tape.nodes[out.0].data.iter().all(|&v| v.is_finite()), "MHA forward debe ser finito");
+        assert!(
+            tape.nodes[out.0].data.iter().all(|&v| v.is_finite()),
+            "MHA forward debe ser finito"
+        );
 
         // loss = sum of output
         let ones = tape.push_leaf(vec![1.0; seq_len * hd], vec![seq_len, hd]);
         let loss = tape.mul(out, ones);
         tape.backward(loss);
 
-        assert!(tape.nodes[q.0].grad.iter().all(|&g| g.is_finite()), "MHA Q grad finito");
-        assert!(tape.nodes[k.0].grad.iter().all(|&g| g.is_finite()), "MHA K grad finito");
-        assert!(tape.nodes[v.0].grad.iter().all(|&g| g.is_finite()), "MHA V grad finito");
+        assert!(
+            tape.nodes[q.0].grad.iter().all(|&g| g.is_finite()),
+            "MHA Q grad finito"
+        );
+        assert!(
+            tape.nodes[k.0].grad.iter().all(|&g| g.is_finite()),
+            "MHA K grad finito"
+        );
+        assert!(
+            tape.nodes[v.0].grad.iter().all(|&g| g.is_finite()),
+            "MHA V grad finito"
+        );
 
         assert_eq!(tape.nodes[q.0].grad.len(), seq_len * hd);
         assert_eq!(tape.nodes[k.0].grad.len(), seq_len * n_kv_head * head_dim);
@@ -1742,13 +1988,19 @@ mod tests {
         let loss = tape.vicreg(z, coeff);
         let loss_val = tape.nodes[loss.0].data[0];
         // VICReg loss debe ser > 0 porque la varianza es muy baja
-        assert!(loss_val > 0.0, "VICReg loss debe ser positivo para baja varianza");
+        assert!(
+            loss_val > 0.0,
+            "VICReg loss debe ser positivo para baja varianza"
+        );
         // loss debe ser finito
         assert!(loss_val.is_finite(), "VICReg loss finito");
 
         tape.backward(loss);
         // Gradientes deben ser finitos
-        assert!(tape.nodes[z.0].grad.iter().all(|&g| g.is_finite()), "VICReg grad finito");
+        assert!(
+            tape.nodes[z.0].grad.iter().all(|&g| g.is_finite()),
+            "VICReg grad finito"
+        );
         // La forma de los gradientes debe coincidir
         assert_eq!(tape.nodes[z.0].grad.len(), seq_len * dim);
 
@@ -1760,16 +2012,20 @@ mod tests {
         let loss2 = tape.vicreg(z2, coeff);
         let loss2_val = tape.nodes[loss2.0].data[0];
         // var=1.25 → sqrt(var+1)=1.5 > 1 → sin penalty de varianza. Sin covarianza (dim=1). loss=0.
-        assert!(loss2_val.abs() < 1e-5, "VICReg dim=1 var>1 debe tener loss 0, got {}", loss2_val);
+        assert!(
+            loss2_val.abs() < 1e-5,
+            "VICReg dim=1 var>1 debe tener loss 0, got {}",
+            loss2_val
+        );
     }
 
     #[test]
     fn audit_select_row_forward_backward() {
         let mut tape = Tape::new();
         // [3, 4] tensor
-        let data = vec![1.0, 2.0, 3.0, 4.0,
-                        5.0, 6.0, 7.0, 8.0,
-                        9.0, 10.0, 11.0, 12.0];
+        let data = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ];
         let x = tape.push_leaf(data, vec![3, 4]);
 
         // Seleccionar fila 1
@@ -1783,9 +2039,7 @@ mod tests {
         tape.backward(loss);
 
         // Solo la fila 1 debe tener gradiente = 1.0
-        let expected_grad = vec![0.0, 0.0, 0.0, 0.0,
-                                 1.0, 1.0, 1.0, 1.0,
-                                 0.0, 0.0, 0.0, 0.0];
+        let expected_grad = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         assert_eq!(tape.nodes[x.0].grad, expected_grad);
     }
 }

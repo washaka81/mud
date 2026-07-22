@@ -19,7 +19,8 @@ impl MemoryProfiler {
     }
 
     pub fn set_limit_mb(&self, limit_mb: f64) {
-        self.hard_limit_mb.store(limit_mb.to_bits(), Ordering::SeqCst);
+        self.hard_limit_mb
+            .store(limit_mb.to_bits(), Ordering::SeqCst);
     }
 
     pub fn register_allocation(&self, bytes: usize) {

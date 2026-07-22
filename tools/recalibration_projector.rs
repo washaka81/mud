@@ -24,14 +24,14 @@ fn main() -> anyhow::Result<()> {
             if tensor.t_type == MudTensorType::Ternary2Bit {
                 let elements: usize = tensor.shape.iter().product();
                 ternary_weights += elements;
-                let u32_count = elements.div_ceil(16);
+                let u32_count = elements.div_ceil(8);
                 let ptr = tensor.data_ptr as *const u32;
                 let sample_size = u32_count.min(1000);
                 let mut local_zero = 0;
                 for i in 0..sample_size {
                     let val = unsafe { *ptr.add(i) };
-                    for j in 0..16 {
-                        if (val >> (j * 2)) & 3 == 0 {
+                    for j in 0..8 {
+                        if (val >> (j * 4)) & 0xF == 0 {
                             local_zero += 1;
                         }
                     }

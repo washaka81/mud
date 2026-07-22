@@ -1,7 +1,7 @@
 # Forge LLM (MUD) Technical Specifications
 
 ## 1. Architectural Mandates
-- **Zero-Allocation Policy:** The inference hot-loop MUST NOT perform dynamic memory allocations. Use `InferenceWorkspace` pre-allocated buffers.
+- **Zero-Allocation Policy:** The inference hot-loop MUST NOT perform dynamic memory allocations. Use `SlimeWorkspace` pre-allocated buffers.
 - **Jamba Hybrid Engine:** Weights are stored in 1.58-bit (ternary) format. Support for interleaved Transformer Attention and Mamba SSM layers.
 - **O(1) Context Scaling:** Mamba layers MUST utilize the fixed-state SSM scan to ensure constant memory footprint regardless of context length.
 - **High-Fidelity Scaling (PRQ):** All ternary tensors MUST use **Per-Row Quantization**. This standard applies to both Attention and Mamba layers.

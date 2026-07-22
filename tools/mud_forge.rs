@@ -59,6 +59,7 @@ fn init_ternary_tensor(
             shape: vec![rows, cols],
             data_ptr: std::ptr::null(),
             offset: 0,
+            data_base: 0,
             mmap: None,
             owned_data: Some(pack_ternary(&ternary_data)),
         },
@@ -73,6 +74,7 @@ fn init_ternary_tensor(
             shape: vec![rows],
             data_ptr: std::ptr::null(),
             offset: 0,
+            data_base: 0,
             mmap: None,
             owned_data: Some(scales.iter().flat_map(|s| s.to_le_bytes()).collect()),
         },
@@ -95,6 +97,7 @@ fn init_f32_tensor(
             shape,
             data_ptr: std::ptr::null(),
             offset: 0,
+            data_base: 0,
             mmap: None,
             owned_data: Some(data.iter().flat_map(|v| v.to_le_bytes()).collect()),
         },
@@ -302,6 +305,8 @@ fn main() -> anyhow::Result<()> {
         profile.num_layers, profile.hidden_size, profile.num_heads
     );
 
+    let vocab_size = 151643; // Default to Qwen/Llama size
+
     let mut global_metadata = HashMap::new();
     global_metadata.insert("max_position_embeddings".to_string(), "4096".to_string());
     global_metadata.insert("rms_norm_eps".to_string(), "1e-5".to_string());
@@ -309,14 +314,27 @@ fn main() -> anyhow::Result<()> {
     global_metadata.insert("model.type".to_string(), "jamba_hybrid".to_string());
     global_metadata.insert("arch".to_string(), "jamba-hybrid-v1".to_string());
     global_metadata.insert("hidden_size".to_string(), profile.hidden_size.to_string());
-    global_metadata.insert("num_layers".to_string(), profile.num_layers.to_string());
-    global_metadata.insert("num_heads".to_string(), profile.num_heads.to_string());
-    global_metadata.insert("num_kv_heads".to_string(), profile.num_kv_heads.to_string());
+    global_metadata.insert(
+        "num_hidden_layers".to_string(),
+        profile.num_layers.to_string(),
+    );
+    global_metadata.insert(
+        "num_attention_heads".to_string(),
+        profile.num_heads.to_string(),
+    );
+    global_metadata.insert(
+        "num_key_value_heads".to_string(),
+        profile.num_kv_heads.to_string(),
+    );
     global_metadata.insert("head_dim".to_string(), profile.head_dim.to_string());
     global_metadata.insert("d_state".to_string(), profile.d_state.to_string());
     global_metadata.insert("d_conv".to_string(), profile.d_conv.to_string());
-    global_metadata.insert("ffn_hidden".to_string(), profile.ffn_hidden.to_string());
+    global_metadata.insert(
+        "intermediate_size".to_string(),
+        profile.ffn_hidden.to_string(),
+    );
     global_metadata.insert("num_experts".to_string(), profile.num_experts.to_string());
+    global_metadata.insert("vocab_size".to_string(), vocab_size.to_string());
     global_metadata.insert("top_k".to_string(), "1".to_string());
 
     let tokenizer_path = format!("{}/tokenizer.json", tokenizer_dir);
@@ -340,7 +358,6 @@ fn main() -> anyhow::Result<()> {
     let mut rng = rand::rng();
 
     // Default to Qwen/Llama size if we don't parse it
-    let vocab_size = 151643;
     println!("  🧱 Initializing Embeddings (Vocab: {})...", vocab_size);
 
     init_ternary_tensor(

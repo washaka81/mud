@@ -8,13 +8,12 @@ The MUD engine discards conventional matrix paradigms in favor of raw pointer ma
 
 *"He who masters the pointers, masters the core of the machine."*
 
+**Canonical docs:** policies → [`GEMINI.md`](./GEMINI.md) · agents → [`AGENTS.md`](./AGENTS.md) · vision → [`VISION_ROADMAP.md`](./VISION_ROADMAP.md) · compute → [`docs/architecture/MUD_COMPUTE_STACK.md`](./docs/architecture/MUD_COMPUTE_STACK.md) · launch → [`docs/manuals/LAUNCH_COUNTDOWN.md`](./docs/manuals/LAUNCH_COUNTDOWN.md) · improvements → [`docs/research/MUD_IMPROVEMENTS_POST_AE.md`](./docs/research/MUD_IMPROVEMENTS_POST_AE.md) · index → [`docs/README.md`](./docs/README.md)
+
 ## 🧬 Architectural Pillars
 
 ### 1. The SlimeRegister Paradigm
-The fundamental compute unit is the `SlimeRegister`, a radical memory structure that hijacks standard 32-bit registers (`u32`). It transparently splits the register into two distinct 16-bit floats (`f16`):
-- **Lower 16-bits (Statistical State):** Accumulates the core ternary matrix multiplications (GEMV).
-- **Upper 16-bits (Deterministic Attractor):** Carries embedded running integrals and differential logic for real-time statistical homeostasis.
-This allows the engine to compute two concurrent mathematical systems simultaneously within a single AVX2 pass, without needing complex data structures.
+The fundamental compute unit is the `SlimeRegister`, a high-efficiency memory structure using native FP32 registers (`matmul_accum: f32`, `jepa_energy: f32`). It transparently combines GEMV ternary matrix accumulation with running JEPA integrals, enabling real-time statistical homeostasis without conversion overhead.
 
 ### 2. Bare-Metal AVX2 Vectorization
 All critical ternary matrix multiplications are executed via handwritten x86_64 Assembly (`src/asm/*.s`). Ternary matrices are compressed using **ELUT (4-bit Nibble)** packing, allowing the CPU to ingest and process dense mathematical states at theoretical memory-bandwidth limits.
@@ -37,19 +36,19 @@ MUD enforces a draconian development standard to ensure absolute stability and s
 ## 🚀 Building & Running
 
 **Prerequisites:**
-- Rust Nightly toolchain
+- Rust toolchain
 - Intel CPU with AVX2 support (optimized for i7-1260P P-Cores)
 - Vulkan SDK (for iGPU acceleration)
 
 ```bash
-# 1. Verify code integrity
-cargo clippy --all-targets
+# 1. Verify code integrity & test battery (257 tests)
+./mud.sh ci
 
-# 2. Run test suite
-cargo test
+# 2. Run C-MUD Manifold & Cognition Audit
+./mud.sh cmud-manifold models/smollm2.mud
 
-# 3. Compile for maximum performance
-cargo build --release
+# 3. Launch interactive circuit training
+./mud.sh circuit models/smollm2.mud
 ```
 
 ## 📜 Repository Structure

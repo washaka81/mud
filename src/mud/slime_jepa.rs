@@ -1,7 +1,7 @@
 use crate::mud::slime::SlimeRegister;
 
-/// Minimum epsilon for variance inversion (shared constant, P-13 compliant)
-pub const EPSILON_FLOOR: f32 = 1e-8;
+// P-13 / L-07: re-export SSOT from constants
+pub use crate::mud::constants::EPSILON_FLOOR;
 
 /// Per-layer tensor health diagnostics reported after each forward block.
 /// Used by the TUI trainer and thermodynamic telemetry.
@@ -26,12 +26,8 @@ pub struct TensorDiagnostics {
 }
 
 /// Compute tensor health statistics from registers.
-/// Reads ternary accumulation (f16 lower bits) and JEPA integral (f16 upper bits).
-pub fn check_tensor_health(
-    registers: &[SlimeRegister],
-    gamma: f32,
-    _iscale: f32, // kept for API compat; not used (f16 is self-scaled)
-) -> TensorDiagnostics {
+/// Reads ternary accumulation (native f32) and JEPA integral (native f32).
+pub fn check_tensor_health(registers: &[SlimeRegister], gamma: f32) -> TensorDiagnostics {
     let mut jepa_zeros = 0;
     let mut hard_zeros = 0;
     let mut saturated = 0usize;
@@ -55,9 +51,9 @@ pub fn check_tensor_health(
         let hard_i32 = hard.round() as i32;
         *freqs.entry(hard_i32).or_insert(0) += 1;
 
-        // JEPA integral: upper 16 bits
-        let integral = reg.read_integral();
-        if (reg.0 >> 16) & 0x7FFF == 0 {
+        // JEPA integral zero check
+        let integral = reg.jepa_energy;
+        if integral == 0.0 {
             jepa_zeros += 1;
         }
 
@@ -76,7 +72,7 @@ pub fn check_tensor_health(
 
     for reg in registers {
         let a = reg.read_accum() as f64;
-        let b = reg.read_integral() as f64;
+        let b = reg.jepa_energy as f64;
 
         let diff_a = a - mean_a;
         let diff_b = b - mean_b;
@@ -179,11 +175,20 @@ pub fn jepa_stabilizer(
         let z = z_buf[i];
         let y_norm = (block_out[i] - mean_y_f32) / rms;
 
+        // Adaptive jepa_alpha (Priority 49): scale with y_norm derivative
+        let delta = (y_norm - z).abs();
+        let jepa_alpha = if delta > 2.0 {
+            0.01 + 0.09 * ((delta - 2.0) / 5.0).min(1.0)
+        } else {
+            0.01
+        };
+
         // Minimal jitter to prevent deterministic collapse (OU process heat)
         let jitter = (((i * 1_234_567) % 1000) as f32 / 500.0) - 1.0;
 
-        // Pure OU tracker — no spring force, no repulsion
-        let z_next = (z * 0.9 + 0.1 * y_norm + jitter * 1e-4).clamp(-50_000.0, 50_000.0);
+        // OU tracker with adaptive jepa_alpha
+        let z_next = (z * (1.0 - jepa_alpha) + jepa_alpha * y_norm + jitter * 1e-4)
+            .clamp(-50_000.0, 50_000.0);
         z_buf[i] = z_next;
 
         sum_z += z as f64;
@@ -209,10 +214,10 @@ pub fn jepa_stabilizer(
     // ── Compute v_jepa and update integral in each register ─────────────────
     // I-controller: I[t] = 0.99·I[t-1] + 0.01·v_jepa[t]
     // At equilibrium (v_jepa=const), I → v_jepa (DC gain = 1).
-    // Transient noise is low-pass filtered by the 0.99 decay.
+    // Transient noise is low-pass filtered.
     for i in 0..registers.len() {
         let v_jepa = (z_buf[i] - *mu_ctx) * (*inv_sigma_ctx);
-        registers[i].write_integral(v_jepa);
+        registers[i].update_integral(v_jepa);
     }
 
     // Write v_jepa to tape for backward pass (not the integral itself)
@@ -290,11 +295,14 @@ mod tests {
         );
 
         // After one step, integral should be non-zero
-        let i0 = registers[0].read_integral();
+        let i0 = registers[0].jepa_energy;
         assert!(i0.is_finite(), "Integral must be finite");
         // Gate should be near 0.5 for small v_jepa
         let gate = registers[0].gate();
-        assert!(gate > 0.0 && gate < 1.0, "Gate must be in (0,1): got {gate}");
+        assert!(
+            gate > 0.0 && gate < 1.0,
+            "Gate must be in (0,1): got {gate}"
+        );
     }
 
     #[test]
@@ -316,7 +324,7 @@ mod tests {
             None,
         );
 
-        let i = registers[0].read_integral();
+        let i = registers[0].jepa_energy;
         assert!(i.is_finite(), "JEPA integral must be finite");
         assert!(mu.is_finite(), "JEPA mu must be finite");
     }
@@ -344,8 +352,11 @@ mod tests {
 
         // tape should contain v_jepa = (z - mu) * inv_sigma
         // integral = 0.01 * v_jepa (one step from 0)
-        let i0 = registers[0].read_integral();
+        let i0 = registers[0].jepa_energy;
         let t0 = tape[0];
-        assert!((i0 - t0).abs() < 0.01, "integral = v_jepa at t=1, got i0={i0} t0={t0}");
+        assert!(
+            (i0 - t0).abs() < 0.01,
+            "integral = v_jepa at t=1, got i0={i0} t0={t0}"
+        );
     }
 }

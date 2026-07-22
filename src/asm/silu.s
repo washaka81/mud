@@ -11,8 +11,15 @@ c3:         .float 0.05550411, 0.05550411, 0.05550411, 0.05550411, 0.05550411, 0
 c4:         .float 0.00961812, 0.00961812, 0.00961812, 0.00961812, 0.00961812, 0.00961812, 0.00961812, 0.00961812
 i127:       .long 127, 127, 127, 127, 127, 127, 127, 127
 neg_zero:   .float -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0
+two:        .float 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0
+clamp_lo:   .float -20.0, -20.0, -20.0, -20.0, -20.0, -20.0, -20.0, -20.0
+clamp_hi:   .float 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0
+.align 32
+exp_mask:   .long 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000
 
 # silu_vectorial_avx2(n: usize, src: *const f32, dst: *mut f32)
+# SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+# Polish: clamp x for exp domain, prefetch, vrcpps + 1 NR instead of vdivps
 silu_vectorial_avx2:
     push %rbp
     mov %rsp, %rbp
@@ -30,12 +37,17 @@ silu_vectorial_avx2:
 .loop:
     cmp $8, %rdi
     jl .leftover
+
+    prefetcht0 256(%rsi)
+    prefetcht0 256(%rdx)
     
-    # Load 8 floats
-    vmovups (%rsi), %ymm0   # ymm0 = x
+    # Load 8 floats; clamp for stable exp
+    vmovups (%rsi), %ymm0   # ymm0 = x (true, unclamped for final mul)
+    vmaxps clamp_lo(%rip), %ymm0, %ymm1
+    vminps clamp_hi(%rip), %ymm1, %ymm1  # ymm1 = x_clamped for exp path
     
-    # t = -x
-    vxorps %ymm15, %ymm0, %ymm1 # ymm1 = t = -x
+    # t = -x_clamped
+    vxorps %ymm15, %ymm1, %ymm1 # ymm1 = t = -x
     
     # y = t * log2e
     vmulps %ymm8, %ymm1, %ymm2 # ymm2 = y
@@ -69,8 +81,20 @@ silu_vectorial_avx2:
     # d = 1.0 + exp(-x)
     vaddps %ymm13, %ymm5, %ymm5 # ymm5 = d
     
-    # silu(x) = x / d
-    vdivps %ymm5, %ymm0, %ymm7 # ymm7 = silu(x)
+    # inv_d ≈ rcp(d); one Newton-Raphson: r = r*(2 - d*r)
+    vrcpps %ymm5, %ymm6
+    vmulps %ymm6, %ymm5, %ymm7
+    vmovups two(%rip), %ymm4
+    vsubps %ymm7, %ymm4, %ymm7
+    vmulps %ymm7, %ymm6, %ymm6   # ymm6 = 1/d refined
+    # silu = x * inv_d  (use original unclamped x)
+    vmulps %ymm6, %ymm0, %ymm7
+
+    # L-08: NaN/Inf lanes → 0
+    vmovdqa exp_mask(%rip), %ymm1
+    vpand %ymm1, %ymm7, %ymm2
+    vpcmpeqd %ymm1, %ymm2, %ymm2
+    vpandn %ymm7, %ymm2, %ymm7
     
     # Store 8 floats
     vmovups %ymm7, (%rdx)
@@ -84,10 +108,12 @@ silu_vectorial_avx2:
     cmp $4, %rdi
     jl .leftover_1
     
-    # Process 4 floats at a time using xmm
+    # Process 4 floats at a time using xmm (clamp + div path)
     vmovups (%rsi), %xmm0
+    vmaxps clamp_lo(%rip), %xmm0, %xmm1
+    vminps clamp_hi(%rip), %xmm1, %xmm1
     
-    vxorps %xmm15, %xmm0, %xmm1     # t = -x
+    vxorps %xmm15, %xmm1, %xmm1     # t = -x_clamped
     vmulps %xmm8, %xmm1, %xmm2       # y = t * log2e
     vroundps $0, %xmm2, %xmm3        # n = round(y)
     vsubps %xmm3, %xmm2, %xmm4       # f = y - n
@@ -104,7 +130,13 @@ silu_vectorial_avx2:
     
     vmulps %xmm6, %xmm5, %xmm5        # exp(-x)
     vaddps %xmm13, %xmm5, %xmm5       # d = 1 + exp(-x)
-    vdivps %xmm5, %xmm0, %xmm7        # silu(x) = x / d
+    vdivps %xmm5, %xmm0, %xmm7        # silu = x_orig / d
+
+    # L-08 sanitize xmm
+    vmovdqa exp_mask(%rip), %xmm1
+    vpand %xmm1, %xmm7, %xmm2
+    vpcmpeqd %xmm1, %xmm2, %xmm2
+    vpandn %xmm7, %xmm2, %xmm7
     
     vmovups %xmm7, (%rdx)
     
@@ -119,8 +151,10 @@ silu_vectorial_avx2:
     
     # Scalar fallback for 1-3 remaining elements
     vmovss (%rsi), %xmm0
+    vmaxss clamp_lo(%rip), %xmm0, %xmm1
+    vminss clamp_hi(%rip), %xmm1, %xmm1
     
-    vxorps %xmm15, %xmm0, %xmm1
+    vxorps %xmm15, %xmm1, %xmm1
     vmulss %xmm8, %xmm1, %xmm2
     vroundss $0, %xmm2, %xmm2, %xmm3
     vsubss %xmm3, %xmm2, %xmm4
@@ -139,7 +173,14 @@ silu_vectorial_avx2:
     vmulss %xmm6, %xmm5, %xmm5
     vaddss %xmm13, %xmm5, %xmm5
     vdivss %xmm5, %xmm0, %xmm7
-    
+
+    # L-08 scalar finite kill
+    vmovd %xmm7, %eax
+    andl $0x7F800000, %eax
+    cmpl $0x7F800000, %eax
+    jne 1f
+    vxorps %xmm7, %xmm7, %xmm7
+1:
     vmovss %xmm7, (%rdx)
     
     add $4, %rsi

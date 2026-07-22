@@ -71,7 +71,7 @@ impl MctsArena {
         let idx = self.next_free;
         self.next_free += 1;
         self.nodes[idx].parent_idx = parent_idx;
-        
+
         if let Some(p) = parent_idx {
             let parent = &mut self.nodes[p];
             if parent.num_children < 8 {
@@ -113,7 +113,7 @@ impl LdtMicroModel {
                     policy_factor += p;
                 }
                 policy_factor /= p_len as f32;
-                
+
                 // Add minor directional pull towards the optimal state (Slow Thinking drift)
                 for w in wave.iter_mut() {
                     *w += policy_factor * 0.01;
@@ -172,7 +172,7 @@ impl LdtMicroModel {
 
         let var_sum: f32 = scores.iter().take(g).map(|&s| (s - mean).powi(2)).sum();
         let variance = var_sum / (g as f32);
-        let std_dev = (variance + 1e-8).sqrt(); // EPSILON_FLOOR for stability (Mandate)
+        let std_dev = (variance + crate::mud::constants::EPSILON_FLOOR).sqrt();
 
         // 3. Calculate Relative Advantages & update policy weights (EMA of per-wave rewards)
         let mut best_idx = 0;
@@ -249,14 +249,19 @@ impl LdtMicroModel {
                 let mut best_score = f32::NEG_INFINITY;
                 let mut best_child = current;
                 let parent_visits = (arena.nodes[current].visits as f32).max(1.0);
-                
+
                 for i in 0..arena.nodes[current].num_children {
                     let child_idx = arena.nodes[current].children_indices[i];
                     let child = &arena.nodes[child_idx];
-                    let exploitation = if child.visits > 0 { child.total_value / child.visits as f32 } else { 0.0 };
-                    let exploration = 1.414 * ((parent_visits.ln()) / (child.visits as f32).max(1.0)).sqrt();
+                    let exploitation = if child.visits > 0 {
+                        child.total_value / child.visits as f32
+                    } else {
+                        0.0
+                    };
+                    let exploration =
+                        1.414 * ((parent_visits.ln()) / (child.visits as f32).max(1.0)).sqrt();
                     let ucb1 = exploitation + exploration;
-                    
+
                     if ucb1 > best_score {
                         best_score = ucb1;
                         best_child = child_idx;
@@ -275,12 +280,12 @@ impl LdtMicroModel {
                         let n = active_len.min(src.len()).min(dst.len());
                         dst[..n].copy_from_slice(&src[..n]);
                     }
-                    
+
                     // Simular un paso LDT (Reflection step)
                     {
                         let mut wave_guard = arena.states[new_child].write();
                         self.apply_lattice_constraints(&mut wave_guard);
-                        
+
                         // Jitter para bifurcación (Neural Kick)
                         for w in wave_guard.iter_mut().take(active_len) {
                             *w += (rand::random::<f32>() - 0.5) * 0.05; // pequeña perturbación de rama

@@ -1,162 +1,153 @@
-/* adam_step_avx2 — Adam optimizer step kernel (AVX2 + FMA)
- * ─────────────────────────────────────────────────────────────────────────
+/* adam_step_avx2 — Adam optimizer step (AVX2 + FMA), AT&T syntax
+ *
  * void adam_step_avx2(
- *   size_t  n,          rdi   number of elements
- *   float*  w,          rsi   master weights (in/out)
- *   float*  m,          rdx   first moment   (in/out)
- *   float*  v,          rcx   second moment  (in/out)
- *   float*  grads,      r8    raw gradients  (read-only)
- *   float   clip_coef,  xmm0  gradient clip coefficient
- *   float   wd,         xmm1  weight decay
- *   float   b1,         xmm2  beta1
- *   float   b2,         xmm3  beta2
- *   float   lr_bc1,     xmm4  lr / (1 - beta1^t)  pre-computed
- *   float   inv_bc2,    xmm5  1 / (1 - beta2^t)   pre-computed
- *   float   eps         xmm6  epsilon floor
+ *   size_t  n,          rdi
+ *   float*  w,          rsi
+ *   float*  m,          rdx
+ *   float*  v,          rcx
+ *   float*  grads,      r8
+ *   float   clip_coef,  xmm0
+ *   float   wd,         xmm1
+ *   float   b1,         xmm2
+ *   float   b2,         xmm3
+ *   float   lr_bc1,     xmm4
+ *   float   inv_bc2,    xmm5
+ *   float   eps         xmm6
  * );
- * ─────────────────────────────────────────────────────────────────────────
- * Register allocation (YMM):
- *   ymm8  = clip_coef (broadcast)
- *   ymm9  = wd        (broadcast)
- *   ymm10 = b1        (broadcast)
- *   ymm11 = 1 - b1    (broadcast)
- *   ymm12 = lr_bc1    (broadcast)
- *   ymm13 = b2        (broadcast)
- *   ymm14 = 1 - b2    (broadcast)
- *   ymm15 = eps       (broadcast)
- *   ymm7  = inv_bc2   (broadcast)
+ *
+ * Polish: AT&T (match rest of tree), prefetch 4 streams, NaN grads → 0.
  */
 
-.intel_syntax noprefix
-.text
-
+.section .text
 .global adam_step_avx2
 .type   adam_step_avx2, @function
 
 adam_step_avx2:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %r12
 
-    /* Broadcast all scalar arguments from xmm into ymm */
-    vbroadcastss    ymm8,  xmm0    /* clip_coef */
-    vbroadcastss    ymm9,  xmm1    /* wd */
-    vbroadcastss    ymm10, xmm2    /* b1 */
-    vbroadcastss    ymm13, xmm3    /* b2 */
-    vbroadcastss    ymm12, xmm4    /* lr_bc1 */
-    vbroadcastss    ymm7,  xmm5    /* inv_bc2 */
-    vbroadcastss    ymm15, xmm6    /* eps */
+    vbroadcastss %xmm0, %ymm8       # clip_coef
+    vbroadcastss %xmm1, %ymm9       # wd
+    vbroadcastss %xmm2, %ymm10      # b1
+    vbroadcastss %xmm3, %ymm13      # b2
+    vbroadcastss %xmm4, %ymm12      # lr_bc1
+    vbroadcastss %xmm5, %ymm7       # inv_bc2
+    vbroadcastss %xmm6, %ymm15      # eps
 
-    /* Compute (1 - b1) via: tmp = 1.0 - b1 */
-    mov     eax, 0x3F800000
-    vmovd   xmm0, eax              /* xmm0 = 1.0f */
-    vbroadcastss ymm0, xmm0        /* ymm0 = {1.0, 1.0, ..., 1.0} */
-    vsubps  ymm11, ymm0, ymm10     /* ymm11 = 1 - b1 */
-    vsubps  ymm14, ymm0, ymm13     /* ymm14 = 1 - b2 */
+    # 1.0 broadcast → (1-b1), (1-b2)
+    movl $0x3F800000, %eax
+    vmovd %eax, %xmm0
+    vbroadcastss %xmm0, %ymm0
+    vsubps %ymm10, %ymm0, %ymm11    # 1 - b1
+    vsubps %ymm13, %ymm0, %ymm14    # 1 - b2
 
-    xor     r12d, r12d             /* i = 0 */
+    xor %r12d, %r12d                # i = 0
 
 .Ladam_loop8:
-    /* Check: have we consumed at least 8 more elements? */
-    lea     rbx, [r12 + 8]
-    cmp     rbx, rdi
-    ja      .Ladam_tail            /* less than 8 remain */
+    lea 8(%r12), %rbx
+    cmp %rdi, %rbx
+    ja .Ladam_tail
 
-    /* Load 8 elements from each buffer */
-    vmovups ymm0, [r8  + r12*4]   /* grads[i..i+8] */
-    vmovups ymm1, [rsi + r12*4]   /* w[i..i+8] */
-    vmovups ymm2, [rdx + r12*4]   /* m[i..i+8] */
-    vmovups ymm3, [rcx + r12*4]   /* v[i..i+8] */
+    # Prefetch next cachelines for all four streams
+    prefetcht0 256(%r8, %r12, 4)
+    prefetcht0 256(%rsi, %r12, 4)
+    prefetcht0 256(%rdx, %r12, 4)
+    prefetcht0 256(%rcx, %r12, 4)
 
-    /* g = grads * clip_coef + wd * w */
-    vmulps  ymm4, ymm0, ymm8           /* ymm4 = grads * clip_coef */
-    vfmadd231ps ymm4, ymm1, ymm9       /* ymm4 += wd * w */
+    vmovups (%r8, %r12, 4), %ymm0   # grads
+    vmovups (%rsi, %r12, 4), %ymm1  # w
+    vmovups (%rdx, %r12, 4), %ymm2  # m
+    vmovups (%rcx, %r12, 4), %ymm3  # v
 
-    /* m = b1 * m + (1 - b1) * g */
-    vmulps  ymm2, ymm2, ymm10          /* m = b1 * m */
-    vfmadd231ps ymm2, ymm4, ymm11      /* m += (1-b1)*g */
+    # NaN/Inf grads → 0 (exponent all-ones)
+    # Mask: where (abs(g) has exp==0xFF) replace with 0
+    vmovdqa .exp_mask(%rip), %ymm4
+    vpand %ymm4, %ymm0, %ymm5
+    vpcmpeqd %ymm4, %ymm5, %ymm5    # 0xFFFFFFFF lanes that are NaN/Inf
+    vpandn %ymm0, %ymm5, %ymm0      # clear those lanes
 
-    /* v = b2 * v + (1 - b2) * g*g */
-    vmulps  ymm5, ymm4, ymm4           /* ymm5 = g*g */
-    vmulps  ymm3, ymm3, ymm13          /* v = b2 * v */
-    vfmadd231ps ymm3, ymm5, ymm14      /* v += (1-b2)*g*g */
+    # g = grads * clip + wd * w
+    vmulps %ymm8, %ymm0, %ymm4
+    vfmadd231ps %ymm9, %ymm1, %ymm4
 
-    /* v_hat = v * inv_bc2 */
-    vmulps  ymm5, ymm3, ymm7           /* ymm5 = v_hat */
-    vsqrtps ymm5, ymm5                 /* ymm5 = sqrt(v_hat) */
-    vaddps  ymm5, ymm5, ymm15          /* ymm5 += eps */
+    # m = b1*m + (1-b1)*g
+    vmulps %ymm10, %ymm2, %ymm2
+    vfmadd231ps %ymm11, %ymm4, %ymm2
 
-    /* step = lr_bc1 * m / (sqrt(v_hat) + eps) */
-    vdivps  ymm6, ymm2, ymm5           /* ymm6 = m / denom */
-    vmulps  ymm6, ymm6, ymm12          /* ymm6 = lr_bc1 * m / denom */
+    # v = b2*v + (1-b2)*g*g
+    vmulps %ymm4, %ymm4, %ymm5
+    vmulps %ymm13, %ymm3, %ymm3
+    vfmadd231ps %ymm14, %ymm5, %ymm3
 
-    /* w -= step */
-    vsubps  ymm1, ymm1, ymm6
+    # step = lr_bc1 * m / (sqrt(v*inv_bc2) + eps)
+    vmulps %ymm7, %ymm3, %ymm5
+    vsqrtps %ymm5, %ymm5
+    vaddps %ymm15, %ymm5, %ymm5
+    vdivps %ymm5, %ymm2, %ymm6
+    vmulps %ymm12, %ymm6, %ymm6
 
-    /* Store updated w, m, v */
-    vmovups [rsi + r12*4], ymm1
-    vmovups [rdx + r12*4], ymm2
-    vmovups [rcx + r12*4], ymm3
+    vsubps %ymm6, %ymm1, %ymm1
 
-    add     r12, 8
-    jmp     .Ladam_loop8
+    vmovups %ymm1, (%rsi, %r12, 4)
+    vmovups %ymm2, (%rdx, %r12, 4)
+    vmovups %ymm3, (%rcx, %r12, 4)
+
+    add $8, %r12
+    jmp .Ladam_loop8
 
 .Ladam_tail:
-    /* Scalar tail for remaining elements (0..7) */
-    /* Re-extract scalar constants from ymm into xmm */
-    vextractf128    xmm8,  ymm8,  0
-    vextractf128    xmm9,  ymm9,  0
-    vextractf128    xmm10, ymm10, 0
-    vextractf128    xmm11, ymm11, 0
-    vextractf128    xmm12, ymm12, 0
-    vextractf128    xmm13, ymm13, 0
-    vextractf128    xmm14, ymm14, 0
-    vextractf128    xmm7,  ymm7,  0
-    vextractf128    xmm15, ymm15, 0
-
+    # Reload scalars into low xmm of broadcast regs (already low dword ok)
 .Ladam_tail_loop:
-    cmp     r12, rdi
-    jge     .Ladam_done
+    cmp %rdi, %r12
+    jge .Ladam_done
 
-    vmovss  xmm0, [r8  + r12*4]        /* g = grads[i] */
-    vmovss  xmm1, [rsi + r12*4]        /* w[i] */
-    vmovss  xmm2, [rdx + r12*4]        /* m[i] */
-    vmovss  xmm3, [rcx + r12*4]        /* v[i] */
+    vmovss (%r8, %r12, 4), %xmm0
+    vmovss (%rsi, %r12, 4), %xmm1
+    vmovss (%rdx, %r12, 4), %xmm2
+    vmovss (%rcx, %r12, 4), %xmm3
 
-    /* g = grads * clip_coef + wd * w */
-    vmulss  xmm4, xmm0, xmm8
-    vfmadd231ss xmm4, xmm1, xmm9
+    # scalar NaN/Inf kill
+    vmovd %xmm0, %eax
+    andl $0x7F800000, %eax
+    cmpl $0x7F800000, %eax
+    jne 1f
+    vxorps %xmm0, %xmm0, %xmm0
+1:
+    vmulss %xmm8, %xmm0, %xmm4
+    vfmadd231ss %xmm9, %xmm1, %xmm4
 
-    /* m = b1*m + (1-b1)*g */
-    vmulss  xmm2, xmm2, xmm10
-    vfmadd231ss xmm2, xmm4, xmm11
+    vmulss %xmm10, %xmm2, %xmm2
+    vfmadd231ss %xmm11, %xmm4, %xmm2
 
-    /* v = b2*v + (1-b2)*g*g */
-    vmulss  xmm5, xmm4, xmm4
-    vmulss  xmm3, xmm3, xmm13
-    vfmadd231ss xmm3, xmm5, xmm14
+    vmulss %xmm4, %xmm4, %xmm5
+    vmulss %xmm13, %xmm3, %xmm3
+    vfmadd231ss %xmm14, %xmm5, %xmm3
 
-    /* w -= lr_bc1 * m / (sqrt(v*inv_bc2) + eps) */
-    vmulss  xmm5, xmm3, xmm7
-    vsqrtss xmm5, xmm5, xmm5
-    vaddss  xmm5, xmm5, xmm15
-    vdivss  xmm6, xmm2, xmm5
-    vmulss  xmm6, xmm6, xmm12
-    vsubss  xmm1, xmm1, xmm6
+    vmulss %xmm7, %xmm3, %xmm5
+    vsqrtss %xmm5, %xmm5, %xmm5
+    vaddss %xmm15, %xmm5, %xmm5
+    vdivss %xmm5, %xmm2, %xmm6
+    vmulss %xmm12, %xmm6, %xmm6
+    vsubss %xmm6, %xmm1, %xmm1
 
-    vmovss  [rsi + r12*4], xmm1
-    vmovss  [rdx + r12*4], xmm2
-    vmovss  [rcx + r12*4], xmm3
+    vmovss %xmm1, (%rsi, %r12, 4)
+    vmovss %xmm2, (%rdx, %r12, 4)
+    vmovss %xmm3, (%rcx, %r12, 4)
 
-    inc     r12
-    jmp     .Ladam_tail_loop
+    inc %r12
+    jmp .Ladam_tail_loop
 
 .Ladam_done:
     vzeroupper
-    pop     r12
-    pop     rbx
-    pop     rbp
+    pop %r12
+    pop %rbx
+    pop %rbp
     ret
 
-.size adam_step_avx2, .-adam_step_avx2
+.section .rodata
+.align 32
+.exp_mask:
+    .long 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000
+    .long 0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000

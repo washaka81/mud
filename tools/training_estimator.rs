@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     let model_path = args
         .get(1)
         .map(|s| s.as_str())
-        .unwrap_or("models/qwen2_0.5b_restored.mud");
+        .unwrap_or("models/smollm2_restored.mud");
 
     let corpus_size_input = args
         .iter()

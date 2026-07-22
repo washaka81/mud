@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     let model_path = args
         .get(1)
         .map(|s| s.as_str())
-        .unwrap_or("models/qwen2_0.5b_restored.mud");
+        .unwrap_or("models/smollm2.mud");
 
     println!(
         "{}   🔍 Auditing Boundaries for: {}{}{}",
@@ -134,7 +134,7 @@ fn main() -> anyhow::Result<()> {
 
         // Validate that the data region is large enough for the expected element count
         let expected_bytes = match tensor.t_type {
-            MudTensorType::Ternary2Bit => elements.div_ceil(16) * 4,
+            MudTensorType::Ternary2Bit => elements.div_ceil(8) * 4,
             MudTensorType::Float32 => elements * 4,
             _ => elements * 4,
         };

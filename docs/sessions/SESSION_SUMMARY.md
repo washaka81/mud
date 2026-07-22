@@ -1,5 +1,24 @@
 # Resumen de Sesiones — Forge LLM (MUD)
 
+## Sesión 2026-07-16 — Docs + ASM + compute stack + tooling
+
+**Detalle:** [`MUD_SESSION_REPORT_2026-07-16.md`](./MUD_SESSION_REPORT_2026-07-16.md)
+
+### Cerrado
+- Jerarquía canónica GEMINI / AGENTS / VISION / PLAN  
+- ASM polish + `lm_head_logits_avx2` en `main.rs`; SiLU/dots en forward  
+- Auditoría ELUT/FP32 + PCorePool×8 + ash (GEMV ash no live)  
+- Tools con LIVE vs PLANNED (`run_trainer`, `training_healthcheck`, `avx_math_validator`, banners)  
+- Docs: `MUD_COMPUTE_STACK.md`, STATUS_REPORT, VISION handoff  
+
+### Mañana (roadmap Fase A)
+1. **L-01** — wire optimizers al step  
+2. L-02 Muon NS · L-03 purge workspace · L-07 P-13  
+
+No empezar MoE/C-MUD.
+
+---
+
 ## Sesión 2026-06-22 — JEPA Collapse & Residual Scaling
 
 ### Bugs Corregidos

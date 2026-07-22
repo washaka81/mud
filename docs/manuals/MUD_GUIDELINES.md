@@ -3,7 +3,7 @@
 
 ## 1. Zero-Allocation Mandate
 No code in `src/mud/inference.rs` should call `Vec::new()`, `Box::new()`, or any allocating function during the `step()` call.
-- **Solution:** Use `InferenceWorkspace` pre-allocated buffers. This includes buffers for the Mamba `ssm_states` and `conv_states`.
+- **Solution:** Use `SlimeWorkspace` pre-allocated buffers (see `src/mud/slime.rs`). Historical `InferenceWorkspace` was removed (L-03 / P-08).
 - **Validation:** Monitor RSS memory growth during long chat sessions. Memory footprint MUST remain constant (O(1)) during Mamba sequence generation.
 
 ## 2. Pointer Arithmetic Standards

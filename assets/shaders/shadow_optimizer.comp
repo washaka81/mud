@@ -17,6 +17,7 @@ layout(push_constant) uniform PushConstants {
     uint cols;
     float learning_rate;
     float weight_decay;
+    float num_tokens;
 } pcs;
 
 shared float shared_sum[256];
@@ -38,8 +39,10 @@ void main() {
         float w = shadow_w[idx];
         float g = grad_w[idx];
 
-        // 🛡️ SANITIZATION
+        // 🛡️ SANITIZATION & AVERAGING
         if (isnan(g) || isinf(g)) g = 0.0;
+        else g = g / pcs.num_tokens;
+        
         g = clamp(g, -10.0, 10.0);
 
         // SGD + Weight Decay

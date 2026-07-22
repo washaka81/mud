@@ -18,6 +18,7 @@ fn test_mud_save_load_roundtrip() {
         shape: vec![16, 16],
         data_ptr: data.as_ptr(),
         offset: 0,
+        data_base: 0,
         mmap: None,
         owned_data: Some(data.clone()),
     };
@@ -137,32 +138,32 @@ fn test_dequantize_ternary_row_remainder() {
 
 fn scalar_ternary_gemv(x: &[f32], weights: &[u32], scale: f32, n: usize) -> f32 {
     let mut sum = 0.0f32;
-    let u32_count = n / 16;
-    let remainder = n % 16;
+    let u32_count = n / 8;
+    let remainder = n % 8;
 
     for i in 0..u32_count {
         let val = weights[i];
-        for j in 0..16 {
-            let bits = (val >> (j * 2)) & 3;
+        for j in 0..8 {
+            let bits = (val >> (j * 4)) & 15;
             let w = match bits {
                 1 => 1.0,
-                2 => -1.0,
+                15 => -1.0,
                 _ => 0.0,
             };
-            sum += w * x[i * 16 + j];
+            sum += w * x[i * 8 + j];
         }
     }
 
     if remainder > 0 {
         let val = weights[u32_count];
         for j in 0..remainder {
-            let bits = (val >> (j * 2)) & 3;
+            let bits = (val >> (j * 4)) & 15;
             let w = match bits {
                 1 => 1.0,
-                2 => -1.0,
+                15 => -1.0,
                 _ => 0.0,
             };
-            sum += w * x[u32_count * 16 + j];
+            sum += w * x[u32_count * 8 + j];
         }
     }
 
@@ -171,15 +172,15 @@ fn scalar_ternary_gemv(x: &[f32], weights: &[u32], scale: f32, n: usize) -> f32 
 
 fn make_ternary_packed(values: &[i8]) -> Vec<u32> {
     let n = values.len();
-    let u32_count = n.div_ceil(16);
+    let u32_count = n.div_ceil(8);
     let mut packed = vec![0u32; u32_count];
     for i in 0..n {
         let code = match values[i] {
             1 => 1u32,
-            -1 => 2u32,
+            -1 => 15u32,
             _ => 0u32,
         };
-        packed[i / 16] |= code << ((i % 16) * 2);
+        packed[i / 8] |= code << ((i % 8) * 4);
     }
     packed
 }
@@ -244,7 +245,7 @@ fn test_ternary_gemv_4rows_consistency() {
     }
 
     let mut quad_results = [0.0f32; 4];
-    let stride = n / 16;
+    let stride = n / 8;
     let all_weights: Vec<u32> = (0..4)
         .flat_map(|row| make_ternary_packed(&vec![1i8 - (row as i8 * 2).signum(); n]))
         .collect();
@@ -362,85 +363,7 @@ fn test_tsar_edge_cases() {
     }
 }
 
-// ============================================================
-// PEXT UNPACK CORRECTNESS
-// ============================================================
-
-#[test]
-fn test_pext_unpack_all_patterns() {
-    let mut expected_vals = [0i8; 32];
-    let mut packed: u64 = 0;
-    for (i, val) in expected_vals.iter_mut().enumerate() {
-        let bits = match i % 4 {
-            0 => 0u64, // 00 -> 0
-            1 => 1u64, // 01 -> +1
-            2 => 2u64, // 10 -> -1
-            _ => 3u64, // 11 -> 0
-        };
-        packed |= bits << (i * 2);
-        *val = match bits {
-            1 => 1i8,
-            2 => -1i8,
-            _ => 0i8,
-        };
-    }
-
-    let mut out = [0i8; 32];
-    eprintln!("DEBUG packed=0x{packed:016x}");
-    for (i, val) in expected_vals.iter().enumerate().take(4) {
-        let bits = (packed >> (i * 2)) & 3;
-        let low = (packed >> (i * 2)) & 1;
-        let high = (packed >> (i * 2 + 1)) & 1;
-        eprintln!("DEBUG i={i} bits={bits} low={low} high={high} expected={val}");
-    }
-    unsafe {
-        asm::pext_unpack_ternary(packed, out.as_mut_ptr());
-    }
-
-    for (i, val) in out.iter().enumerate() {
-        assert_eq!(
-            *val, expected_vals[i],
-            "PEXT unpack idx {i}: expected={}, got={}",
-            expected_vals[i], *val
-        );
-    }
-}
-
-#[test]
-fn test_pext_unpack_all_ones() {
-    let packed: u64 = 0x5555_5555_5555_5555u64;
-    let mut out = [0i8; 32];
-    unsafe {
-        asm::pext_unpack_ternary(packed, out.as_mut_ptr());
-    }
-    eprintln!("PEXT all-ones out = {:?}", &out[..32]);
-    let mut failures = Vec::new();
-    for (i, &val) in out.iter().enumerate() {
-        if val != 1 {
-            failures.push((i, val));
-        }
-    }
-    if !failures.is_empty() {
-        eprintln!("PEXT all-ones failures: {failures:?}");
-    }
-    assert!(
-        failures.is_empty(),
-        "PEXT all ones had {} failures",
-        failures.len()
-    );
-}
-
-#[test]
-fn test_pext_unpack_all_zeros() {
-    let packed: u64 = 0u64;
-    let mut out = [0i8; 32];
-    unsafe {
-        asm::pext_unpack_ternary(packed, out.as_mut_ptr());
-    }
-    for (i, val) in out.iter().enumerate() {
-        assert_eq!(*val, 0, "PEXT all zeros idx {i}");
-    }
-}
+// L-04: PEXT / 2-bit unpack tests removed with ternary_pext.s
 
 // ============================================================
 // RMSNORM CORRECTNESS
@@ -662,14 +585,19 @@ fn test_router_q_head_stochastic() {
 
 #[test]
 fn test_ternary_gemv_nan_input() {
+    // Contract (2026-07-15 polish): non-finite scalar result is sanitized to 0.0
+    // so QAT cannot poison residual streams with a single bad GEMV.
     let n = 64;
     let x: Vec<f32> = vec![f32::NAN; n];
     let packed = make_ternary_packed(&vec![1i8; n]);
-    let mut out = 0.0f32;
+    let mut out = 1.0f32;
     unsafe {
         asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out, 1.0);
     }
-    assert!(out.is_nan(), "GEMV NaN input should produce NaN output");
+    assert!(
+        out == 0.0 && out.is_finite(),
+        "GEMV NaN input must sanitize to 0.0, got {out}"
+    );
 }
 
 #[test]
@@ -677,31 +605,53 @@ fn test_ternary_gemv_inf_input() {
     let n = 64;
     let x: Vec<f32> = vec![f32::INFINITY; n];
     let packed = make_ternary_packed(&vec![1i8; n]);
-    let mut out = 0.0f32;
+    let mut out = 1.0f32;
     unsafe {
         asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out, 1.0);
     }
     assert!(
-        out.is_infinite(),
-        "GEMV Inf input should produce Inf output"
+        out == 0.0 && out.is_finite(),
+        "GEMV Inf input must sanitize to 0.0, got {out}"
     );
 }
 
 #[test]
 fn test_rms_norm_nan_input() {
+    // L-08 contract: non-finite → sanitize to 0.0 (training safety)
     let n = 128;
     let x: Vec<f32> = vec![f32::NAN; n];
     let scale = unsafe { asm::rms_norm_scale_asm(n, x.as_ptr(), 1e-6) };
-    assert!(scale.is_nan(), "RMSNorm NaN input should produce NaN");
+    assert!(
+        scale == 0.0 && scale.is_finite(),
+        "RMSNorm NaN input must sanitize to 0.0, got {scale}"
+    );
 }
 
 #[test]
 fn test_dot_product_nan_input() {
+    // L-08 contract: non-finite → sanitize to 0.0
     let n = 64;
     let a: Vec<f32> = vec![f32::NAN; n];
     let b: Vec<f32> = vec![1.0f32; n];
     let result = unsafe { asm::dot_product_avx2(n, a.as_ptr(), b.as_ptr()) };
-    assert!(result.is_nan(), "dot product NaN input should produce NaN");
+    assert!(
+        result == 0.0 && result.is_finite(),
+        "dot product NaN input must sanitize to 0.0, got {result}"
+    );
+}
+
+#[test]
+fn test_silu_nan_input_sanitized() {
+    let n = 16;
+    let src = vec![f32::NAN; n];
+    let mut dst = vec![1.0f32; n];
+    unsafe {
+        asm::silu_vectorial_avx2(n, src.as_ptr(), dst.as_mut_ptr());
+    }
+    assert!(
+        dst.iter().all(|&v| v == 0.0 && v.is_finite()),
+        "silu NaN input must sanitize lanes to 0.0, got {dst:?}"
+    );
 }
 
 // ============================================================
@@ -749,49 +699,7 @@ fn test_ternary_gemv_scale_effect() {
 // QUANTIZATION NOISE BOUND
 // ============================================================
 
-#[test]
-fn test_ternary_vs_fp32_quantization_noise() {
-    let n = 512;
-    let x: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.3).cos() * 5.0).collect();
-
-    let mut fp32_result = 0.0f32;
-    let packed = make_ternary_packed(&vec![1i8; n]);
-    unsafe {
-        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut fp32_result, 1.0);
-    }
-
-    let absmax = x.iter().map(|v| v.abs()).fold(1e-8f32, f32::max);
-    let q_scale = 127.0 / absmax;
-    let mut x_q = vec![0i8; n];
-    for i in 0..n {
-        x_q[i] = (x[i] * q_scale).round().clamp(-127.0, 127.0) as i8;
-    }
-    let inv_q_scale = absmax / 127.0;
-
-    let blocks_64 = n / 32;
-    let mut w_unpacked = vec![0i8; n];
-    unsafe {
-        for b in 0..blocks_64 {
-            asm::pext_unpack_ternary(
-                *(packed.as_ptr() as *const u64).add(b),
-                w_unpacked.as_mut_ptr().add(b * 32),
-            );
-        }
-    }
-
-    let mut tsar_result = 0.0f32;
-    unsafe {
-        asm::ternary_gemv_lut_avx2(n, x_q.as_ptr(), w_unpacked.as_ptr(), &mut tsar_result, 1.0);
-    }
-
-    tsar_result *= inv_q_scale;
-
-    let snr = fp32_result.abs() / (tsar_result - fp32_result).abs().max(1e-10);
-    assert!(
-        snr > 10.0 || fp32_result.abs() < 1.0,
-        "T-SAR SNR too low: {snr:.1}dB (fp32={fp32_result}, tsar={tsar_result})"
-    );
-}
+// L-04: T-SAR / ternary_lut tests removed with ternary_lut.s + ternary_pext.s
 
 // ============================================================
 // E2E SMOKE TESTS — Model loading & error handling
@@ -813,11 +721,17 @@ fn test_mud_load_invalid_magic() {
 
 #[test]
 fn test_slime_workspace_creation_no_core() {
+    unsafe {
+        std::env::remove_var("MUD_MAX_POS");
+        std::env::remove_var("MUD_HCA_WINDOW");
+        std::env::remove_var("MUD_HCA_RATIO");
+    }
     let ws = crate::mud::slime::SlimeWorkspace::new(64, 128, 4, 2, 16, 64, 30, 128.0);
+    let pol = crate::mud::kv_context::KvContextPolicy::from_parts(128, 256, 10);
     assert_eq!(ws.registers.len(), 64);
-    assert_eq!(ws.kv_cache.len(), 30 * 2 * 128 * 16);
+    assert_eq!(ws.dense_kv_elems(), 30 * 2 * pol.dense_cap * 16);
     assert_eq!(ws.norm_i8.len(), 64);
-    assert_eq!(ws.scores.len(), 128);
+    assert_eq!(ws.scores.len(), pol.scores_len());
 }
 
 #[test]

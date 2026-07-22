@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::fs;
+use std::process::Command;
 
 /// Environment-Based Critic for Reinforcement Learning from Verifiable Rewards (RLVR)
 /// Executes generated code in a sandboxed/temporary environment to obtain
@@ -20,10 +20,13 @@ impl RlvrCritic {
     pub fn evaluate_rust_code(&self, code: &str) -> (f32, String) {
         let temp_dir = std::env::temp_dir();
         let file_path = temp_dir.join("mud_rlvr_eval.rs");
-        
+
         // Write code to a temporary file
         if fs::write(&file_path, code).is_err() {
-            return (-1.0, "System Error: Failed to write to temp file".to_string());
+            return (
+                -1.0,
+                "System Error: Failed to write to temp file".to_string(),
+            );
         }
 
         // Run rustc --no-codegen to only check syntax/types
@@ -46,9 +49,7 @@ impl RlvrCritic {
                     (-1.0, error_msg)
                 }
             }
-            Err(e) => {
-                (-1.0, format!("Execution Error: {}", e))
-            }
+            Err(e) => (-1.0, format!("Execution Error: {}", e)),
         }
     }
 }

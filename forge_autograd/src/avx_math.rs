@@ -18,7 +18,9 @@ pub unsafe fn dot_product_avx2(a: &[f32], b: &[f32]) -> f32 {
     }
 
     let mut sums = [0.0f32; 8];
-    unsafe { _mm256_storeu_ps(sums.as_mut_ptr(), sum_vec); }
+    unsafe {
+        _mm256_storeu_ps(sums.as_mut_ptr(), sum_vec);
+    }
     let mut total = sums.iter().sum();
 
     while i < len {
@@ -54,52 +56,64 @@ pub unsafe fn axpy_avx2(a: &mut [f32], alpha: f32, b: &[f32]) {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn sgd_step_avx2(shadow_w: &mut [f32], grad_w: &[f32], lr: f32, weight_decay: f32, num_tokens: f32) {
+pub unsafe fn sgd_step_avx2(
+    shadow_w: &mut [f32],
+    grad_w: &[f32],
+    lr: f32,
+    weight_decay: f32,
+    num_tokens: f32,
+) {
+    // NOTE: gradient normalization by `num_tokens` is performed ONCE by the
+    // caller via `scale_grad_by_tokens` (applies to every optimizer strategy).
+    // Do NOT divide here again, or the effective LR would shrink by num_tokens².
+    let _ = num_tokens;
     let len = shadow_w.len();
     let mut i = 0;
-    
-    let inv_tokens_vec = _mm256_set1_ps(1.0 / num_tokens);
+
     let g_max_vec = _mm256_set1_ps(10.0);
     let g_min_vec = _mm256_set1_ps(-10.0);
-    
+
     let neg_lr_vec = _mm256_set1_ps(-lr);
     let decay_factor = 1.0 - lr * weight_decay;
     let decay_vec = _mm256_set1_ps(decay_factor);
-    
+
     let w_max_vec = _mm256_set1_ps(5.0);
     let w_min_vec = _mm256_set1_ps(-5.0);
-    
+
     let zero_vec = _mm256_setzero_ps();
 
     while i + 7 < len {
         let g_chunk = _mm256_loadu_ps(grad_w.as_ptr().add(i));
-        
-        // g_val = g_chunk * inv_tokens
-        let mut g_val = _mm256_mul_ps(g_chunk, inv_tokens_vec);
-        
-        // Handle NaN/Infinity: if g_chunk is NaN, cmp_ord is false (all zeros). 
+
+        let mut g_val = g_chunk;
+
+        // Handle NaN/Infinity: if g_chunk is NaN, cmp_ord is false (all zeros).
         // We mask NaNs to 0.0.
         let is_ord = _mm256_cmp_ps(g_chunk, g_chunk, 0x07); // _CMP_ORD_Q
         g_val = _mm256_blendv_ps(zero_vec, g_val, is_ord);
-        
+
         // clamp(-10, 10) -> max(min(x, 10), -10)
         g_val = _mm256_max_ps(g_min_vec, _mm256_min_ps(g_max_vec, g_val));
-        
+
         let w_chunk = _mm256_loadu_ps(shadow_w.as_ptr().add(i));
-        
+
         // w_val = w_chunk * decay_factor + (-lr) * g_val
         let mut w_val = _mm256_fmadd_ps(decay_vec, w_chunk, _mm256_mul_ps(neg_lr_vec, g_val));
-        
+
         // clamp(-5, 5)
         w_val = _mm256_max_ps(w_min_vec, _mm256_min_ps(w_max_vec, w_val));
-        
+
         _mm256_storeu_ps(shadow_w.as_mut_ptr().add(i), w_val);
         i += 8;
     }
 
     while i < len {
         let g = grad_w[i];
-        let mut g_val = if g.is_nan() || g.is_infinite() { 0.0 } else { g / num_tokens };
+        let mut g_val = if g.is_nan() || g.is_infinite() {
+            0.0
+        } else {
+            g
+        };
         g_val = g_val.clamp(-10.0, 10.0);
         let mut w_val = shadow_w[i];
         w_val = w_val * decay_factor - lr * g_val;
@@ -108,7 +122,6 @@ pub unsafe fn sgd_step_avx2(shadow_w: &mut [f32], grad_w: &[f32], lr: f32, weigh
         i += 1;
     }
 }
-
 
 /// Fast exp2 approximation using polynomial expansion (same as ASM kernel).
 /// Computes 2^x for 8 lanes using: 2^(n+f) = 2^n * poly(f)
@@ -148,13 +161,11 @@ pub unsafe fn silu_avx2(src: &[f32], dst: &mut [f32]) {
     let mut i = 0;
     let neg_one = _mm256_set1_ps(-1.0);
     let one = _mm256_set1_ps(1.0);
-    let ln2 = _mm256_set1_ps(0.69314718);
 
     while i + 7 < len {
         let x = _mm256_loadu_ps(src.as_ptr().add(i));
         let neg_x = _mm256_mul_ps(neg_one, x);
-        let neg_x_ln2 = _mm256_mul_ps(neg_x, ln2);
-        let exp_neg_x = exp2_approx_avx2(neg_x_ln2);
+        let exp_neg_x = exp2_approx_avx2(neg_x);
         let denom = _mm256_add_ps(one, exp_neg_x);
         let sigmoid = _mm256_div_ps(one, denom);
         let result = _mm256_mul_ps(x, sigmoid);
@@ -210,10 +221,14 @@ pub unsafe fn sgemm_abt_avx2(m: usize, n: usize, k: usize, a: &[f32], b: &[f32],
             for p in 0..k {
                 let a_val = _mm256_set1_ps(a_row[p]);
                 let b_vals = _mm256_set_ps(
-                    b[(j + 7) * k + p], b[(j + 6) * k + p],
-                    b[(j + 5) * k + p], b[(j + 4) * k + p],
-                    b[(j + 3) * k + p], b[(j + 2) * k + p],
-                    b[(j + 1) * k + p], b[j * k + p],
+                    b[(j + 7) * k + p],
+                    b[(j + 6) * k + p],
+                    b[(j + 5) * k + p],
+                    b[(j + 4) * k + p],
+                    b[(j + 3) * k + p],
+                    b[(j + 2) * k + p],
+                    b[(j + 1) * k + p],
+                    b[j * k + p],
                 );
                 acc = _mm256_fmadd_ps(a_val, b_vals, acc);
             }

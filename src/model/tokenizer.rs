@@ -151,6 +151,93 @@ impl Tokenizer {
         })
     }
 
+    /// Resolve BOS id for this vocab (SmolLM / Llama-3 / GPT-2 / SP variants).
+    pub fn bos_id(&self) -> u32 {
+        const CANDIDATES: &[&str] = &[
+            "<|endoftext|>",
+            "<|begin_of_text|>",
+            "<s>",
+            "<bos>",
+            "[BOS]",
+            "<|im_start|>",
+        ];
+        for name in CANDIDATES {
+            if let Some(&id) = self.special_tokens.get(*name) {
+                return id;
+            }
+        }
+        0
+    }
+
+    /// Resolve EOS id for document boundaries / stop (prefer eot / endoftext / im_end).
+    pub fn eos_id(&self) -> u32 {
+        const CANDIDATES: &[&str] = &[
+            "<|endoftext|>",
+            "<|eot_id|>",
+            "</s>",
+            "<eos>",
+            "[EOS]",
+            "<|im_end|>",
+            "<|end|>",
+        ];
+        for name in CANDIDATES {
+            if let Some(&id) = self.special_tokens.get(*name) {
+                return id;
+            }
+        }
+        self.bos_id()
+    }
+
+    /// Prefer explicit metadata (`bos_token_id` / `eos_token_id` or `raw_config_json`), else vocab specials.
+    pub fn special_ids_from_metadata(
+        &self,
+        meta: &std::collections::HashMap<String, String>,
+    ) -> (u32, u32) {
+        let parse_id = |key: &str| -> Option<u32> {
+            meta.get(key)
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .filter(|&id| (id as usize) < self.id_to_token.len().max(1))
+        };
+        let mut bos = parse_id("bos_token_id");
+        let mut eos = parse_id("eos_token_id");
+        // Fallback: embedded HF config JSON from converter
+        if bos.is_none() || eos.is_none() {
+            if let Some(raw) = meta.get("raw_config_json") {
+                // Minimal parse without serde dependency on this path
+                if bos.is_none() {
+                    if let Some(v) = raw.split("\"bos_token_id\"").nth(1) {
+                        let digits: String = v
+                            .chars()
+                            .skip_while(|c| !c.is_ascii_digit())
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        bos = digits
+                            .parse()
+                            .ok()
+                            .filter(|&id: &u32| (id as usize) < self.id_to_token.len().max(1));
+                    }
+                }
+                if eos.is_none() {
+                    if let Some(v) = raw.split("\"eos_token_id\"").nth(1) {
+                        let digits: String = v
+                            .chars()
+                            .skip_while(|c| !c.is_ascii_digit())
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        eos = digits
+                            .parse()
+                            .ok()
+                            .filter(|&id: &u32| (id as usize) < self.id_to_token.len().max(1));
+                    }
+                }
+            }
+        }
+        (
+            bos.unwrap_or_else(|| self.bos_id()),
+            eos.unwrap_or_else(|| self.eos_id()),
+        )
+    }
+
     /// Encodes a string into a list of token IDs.
     /// Handles special tokens first, then applies BPE. Falls back to character-level IDs if needed.
     pub fn encode(&self, text: &str) -> Vec<u32> {
@@ -215,12 +302,16 @@ impl Tokenizer {
     /// Internal BPE encoder for a single text fragment.
     fn encode_bpe(&self, text: &str) -> Vec<u32> {
         let bytes = text.as_bytes();
-        
+
         // Map bytes to unicode characters using the byte_encoder (GPT-2 style)
         let words: Vec<String> = bytes
             .iter()
             .map(|&b| {
-                self.byte_encoder.get(&b).cloned().unwrap_or(b as char).to_string()
+                self.byte_encoder
+                    .get(&b)
+                    .cloned()
+                    .unwrap_or(b as char)
+                    .to_string()
             })
             .collect();
 
@@ -240,12 +331,16 @@ impl Tokenizer {
             parts.push(Part {
                 text: w.clone(),
                 prev: i as isize - 1,
-                next: if i == words.len() - 1 { -1 } else { i as isize + 1 },
+                next: if i == words.len() - 1 {
+                    -1
+                } else {
+                    i as isize + 1
+                },
             });
         }
 
-        use std::collections::BinaryHeap;
         use std::cmp::Ordering;
+        use std::collections::BinaryHeap;
 
         #[derive(Eq, PartialEq)]
         struct MergePair {
@@ -271,13 +366,24 @@ impl Tokenizer {
         for i in 0..parts.len() - 1 {
             let pair = (parts[i].text.clone(), parts[i + 1].text.clone());
             if let Some(&rank) = self.merges.get(&pair) {
-                heap.push(MergePair { rank, left_idx: i, right_idx: i + 1 });
+                heap.push(MergePair {
+                    rank,
+                    left_idx: i,
+                    right_idx: i + 1,
+                });
             }
         }
 
-        while let Some(MergePair { rank, left_idx, right_idx }) = heap.pop() {
+        while let Some(MergePair {
+            rank,
+            left_idx,
+            right_idx,
+        }) = heap.pop()
+        {
             // Check if the pair is still valid and adjacent
-            if parts[left_idx].next != right_idx as isize || parts[right_idx].prev != left_idx as isize {
+            if parts[left_idx].next != right_idx as isize
+                || parts[right_idx].prev != left_idx as isize
+            {
                 continue;
             }
 
@@ -292,7 +398,7 @@ impl Tokenizer {
             // Merge right_idx into left_idx
             let right_text = parts[right_idx].text.clone();
             parts[left_idx].text.push_str(&right_text);
-            
+
             let next_idx = parts[right_idx].next;
             parts[left_idx].next = next_idx;
             if next_idx != -1 {
@@ -302,17 +408,31 @@ impl Tokenizer {
             // Push new adjacent pairs to heap
             let next_idx = parts[left_idx].next;
             if next_idx != -1 {
-                let pair = (parts[left_idx].text.clone(), parts[next_idx as usize].text.clone());
+                let pair = (
+                    parts[left_idx].text.clone(),
+                    parts[next_idx as usize].text.clone(),
+                );
                 if let Some(&rank) = self.merges.get(&pair) {
-                    heap.push(MergePair { rank, left_idx, right_idx: next_idx as usize });
+                    heap.push(MergePair {
+                        rank,
+                        left_idx,
+                        right_idx: next_idx as usize,
+                    });
                 }
             }
 
             let prev_idx = parts[left_idx].prev;
             if prev_idx != -1 {
-                let pair = (parts[prev_idx as usize].text.clone(), parts[left_idx].text.clone());
+                let pair = (
+                    parts[prev_idx as usize].text.clone(),
+                    parts[left_idx].text.clone(),
+                );
                 if let Some(&rank) = self.merges.get(&pair) {
-                    heap.push(MergePair { rank, left_idx: prev_idx as usize, right_idx: left_idx });
+                    heap.push(MergePair {
+                        rank,
+                        left_idx: prev_idx as usize,
+                        right_idx: left_idx,
+                    });
                 }
             }
         }
@@ -376,6 +496,19 @@ impl Tokenizer {
 
         String::from_utf8_lossy(&decoded_bytes).into_owned()
     }
+
+    /// Returns true if the token ID starts with a space prefix character ('Ġ' or '\u{2581}')
+    pub fn has_space_prefix(&self, id: u32) -> bool {
+        if let Some(token) = self.id_to_token.get(id as usize) {
+            if let Some(sc) = self.space_char {
+                token.starts_with(sc)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
 }
 
 /// Creates a mapping of all byte values to unique Unicode characters.
@@ -418,8 +551,11 @@ impl TokenStreamDecoder {
             return String::new();
         };
 
-        let byte_decoder: std::collections::HashMap<char, u8> =
-            tokenizer.byte_encoder.iter().map(|(&b, &c)| (c, b)).collect();
+        let byte_decoder: std::collections::HashMap<char, u8> = tokenizer
+            .byte_encoder
+            .iter()
+            .map(|(&b, &c)| (c, b))
+            .collect();
 
         for c in token_str.chars() {
             if let Some(sc) = tokenizer.space_char {
@@ -451,7 +587,9 @@ impl TokenStreamDecoder {
                 Err(e) => {
                     let valid_up_to = e.valid_up_to();
                     if valid_up_to > 0 {
-                        decoded.push_str(std::str::from_utf8(&self.byte_buffer[..valid_up_to]).unwrap());
+                        decoded.push_str(
+                            std::str::from_utf8(&self.byte_buffer[..valid_up_to]).unwrap(),
+                        );
                     }
                     if let Some(error_len) = e.error_len() {
                         // Invalid bytes. Output replacement char and skip them.

@@ -2,7 +2,13 @@
 
 /// Computes the top `r` left singular vectors of `grad` (size rows x cols) using Power Iteration.
 /// Returns a flat matrix `P` of size `rows x r`.
-pub fn compute_projection_matrix(grad: &[f32], rows: usize, cols: usize, r: usize, iters: usize) -> Vec<f32> {
+pub fn compute_projection_matrix(
+    grad: &[f32],
+    rows: usize,
+    cols: usize,
+    r: usize,
+    iters: usize,
+) -> Vec<f32> {
     let mut p_matrix = vec![0.0f32; rows * r];
     let mut g_residual = grad.to_vec();
 
@@ -27,7 +33,9 @@ pub fn compute_projection_matrix(grad: &[f32], rows: usize, cols: usize, r: usiz
             }
             // Normalize v
             let v_norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
-            for val in v.iter_mut() { *val /= v_norm; }
+            for val in v.iter_mut() {
+                *val /= v_norm;
+            }
 
             // u = G * v
             for r_idx in 0..rows {
@@ -39,7 +47,9 @@ pub fn compute_projection_matrix(grad: &[f32], rows: usize, cols: usize, r: usiz
             }
             // Normalize u
             let u_norm = u.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
-            for val in u.iter_mut() { *val /= u_norm; }
+            for val in u.iter_mut() {
+                *val /= u_norm;
+            }
         }
 
         // Compute sigma
@@ -71,10 +81,12 @@ pub fn compute_projection_matrix(grad: &[f32], rows: usize, cols: usize, r: usiz
 /// Then it passes G_low through SGD (simply returning it).
 /// Then G_updated = P * G_low (size: rows x cols)
 pub fn galore_step(grad: &mut [f32], rows: usize, cols: usize, rank: usize) {
-    if rows <= cols { return; } // Only implemented for tall matrices right now
+    if rows <= cols {
+        return;
+    } // Only implemented for tall matrices right now
 
     let p_matrix = compute_projection_matrix(grad, rows, cols, rank, 3); // 3 iters is usually enough for top approx
-    
+
     // 1. G_low = P^T * G
     let mut g_low = vec![0.0f32; rank * cols];
     for c in 0..cols {

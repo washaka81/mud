@@ -49,6 +49,8 @@ sgemm_abt_avx2:
     cmp $16, %r9
     jl .L_abt_p_leftover
 
+    prefetcht0 256(%rcx, %r8, 4)
+    prefetcht0 256(%rdx, %r8, 4)
     vmovups (%rcx, %r8, 4), %ymm1
     vmovups (%rdx, %r8, 4), %ymm2
     vfmadd231ps %ymm1, %ymm2, %ymm0

@@ -1,9 +1,9 @@
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 // Multi-Head Causal Attention for short sequences
 // Dispatch: [n_heads, seq_len, 1] — each workgroup handles one head at one position
-// Supports GQA via repeat = n_head / n_kv_head
+// Supports GQA via n_head / n_kv_head mapping.
+// Dot products reduced via shared memory (portable across subgroup sizes).
 
 layout(local_size_x = 32) in;
 
@@ -22,6 +22,7 @@ layout(push_constant) uniform PushConstants {
 shared float s_scores[64];
 shared float s_max_score;
 shared float s_sum_exp;
+shared float s_dot[32];
 
 void main() {
     uint head = gl_WorkGroupID.x;
@@ -45,13 +46,21 @@ void main() {
         for (uint d = lane_id; d < pcs.head_dim; d += 32u) {
             local_dot += q[q_offset + d] * k[k_offset + d];
         }
-        float score = subgroupAdd(local_dot) * scale;
+        s_dot[lane_id] = local_dot;
+        barrier();
+        for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+            if (lane_id < stride) {
+                s_dot[lane_id] += s_dot[lane_id + stride];
+            }
+            barrier();
+        }
         if (lane_id == 0) {
+            float score = s_dot[0] * scale;
             s_scores[j] = score;
             s_max_score = max(s_max_score, score);
         }
+        barrier();
     }
-    barrier();
 
     // Phase 2: Softmax
     if (lane_id == 0) {

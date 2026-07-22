@@ -64,11 +64,13 @@ impl HardwareProfile {
         // Benchmark validated that total_cores (all logical CPUs) outperforms half-cores by 13% on i7-1260P.
         let preferred_threads = total_cores;
         let preferred_threads = preferred_threads.max(4).min(total_cores);
-        // Env override: RAYON_NUM_THREADS takes precedence
-        let preferred_threads = std::env::var("RAYON_NUM_THREADS")
+        // Env override: MUD_PCORE_THREADS (preferred) or legacy RAYON_NUM_THREADS
+        let preferred_threads = std::env::var("MUD_PCORE_THREADS")
+            .or_else(|_| std::env::var("RAYON_NUM_THREADS"))
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(preferred_threads);
+            .unwrap_or(preferred_threads)
+            .clamp(1, 64);
 
         let total_ram_mb = sys.total_memory() / 1024 / 1024;
 
@@ -106,20 +108,18 @@ impl HardwareProfile {
         let mut vlk_device_name = "None".to_string();
         let mut vlk_is_integrated = false;
 
-        // Try to get Vulkan info if possible without full init
-        if let Ok(library) = vulkano::VulkanLibrary::new() {
-            if let Ok(instance) = vulkano::instance::Instance::new(
-                library,
-                vulkano::instance::InstanceCreateInfo {
-                    flags: vulkano::instance::InstanceCreateFlags::ENUMERATE_PORTABILITY,
-                    ..Default::default()
-                },
-            ) {
-                if let Ok(mut devices) = instance.enumerate_physical_devices() {
-                    if let Some(device) = devices.next() {
-                        vlk_device_name = device.properties().device_name.clone();
-                        vlk_is_integrated = device.properties().device_type
-                            == vulkano::device::physical::PhysicalDeviceType::IntegratedGpu;
+        if let Ok(entry) = unsafe { ash::Entry::load() } {
+            if let Ok(instance) =
+                unsafe { entry.create_instance(&ash::vk::InstanceCreateInfo::default(), None) }
+            {
+                if let Ok(devices) = unsafe { instance.enumerate_physical_devices() } {
+                    if let Some(device) = devices.first() {
+                        let props = unsafe { instance.get_physical_device_properties(*device) };
+                        let name_cstr =
+                            unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
+                        vlk_device_name = name_cstr.to_string_lossy().into_owned();
+                        vlk_is_integrated =
+                            props.device_type == ash::vk::PhysicalDeviceType::INTEGRATED_GPU;
                     }
                 }
             }

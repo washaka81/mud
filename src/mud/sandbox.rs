@@ -1,6 +1,6 @@
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use std::io::Read;
 use wait_timeout::ChildExt;
 
 /// Priority 11: Sandboxed Terminal Execution
@@ -44,8 +44,12 @@ impl TerminalSandbox {
                 let final_output = if status.success() {
                     format!("Command Output:\n{}", out_str)
                 } else {
-                    format!("Command Failed (Exit Code: {}):\nSTDOUT:\n{}\nSTDERR:\n{}", 
-                        status.code().unwrap_or(-1), out_str, err_str)
+                    format!(
+                        "Command Failed (Exit Code: {}):\nSTDOUT:\n{}\nSTDERR:\n{}",
+                        status.code().unwrap_or(-1),
+                        out_str,
+                        err_str
+                    )
                 };
                 Ok(final_output)
             }
@@ -53,7 +57,10 @@ impl TerminalSandbox {
                 // Timeout occurred, kill the process
                 let _ = child.kill();
                 let _ = child.wait();
-                Ok(format!("Command Timeout Reached ({}s). Process terminated.", self.timeout_seconds))
+                Ok(format!(
+                    "Command Timeout Reached ({}s). Process terminated.",
+                    self.timeout_seconds
+                ))
             }
         }
     }

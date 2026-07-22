@@ -33,13 +33,30 @@ dot_product_avx2:
     add $32, %rdx
     sub $8, %rdi
 .dot_done:
+    # scalar leftover 0..7 (was dropped — silent undercount)
+    test %rdi, %rdi
+    jz .dot_hsum
+.dot_scalar:
+    vmovss (%rsi), %xmm1
+    vmulss (%rdx), %xmm1, %xmm1
+    vaddss %xmm1, %xmm0, %xmm0
+    add $4, %rsi
+    add $4, %rdx
+    dec %rdi
+    jnz .dot_scalar
+.dot_hsum:
     vaddps %ymm3, %ymm0, %ymm0
     vextractf128 $1, %ymm0, %xmm1
     vaddps %xmm1, %xmm0, %xmm0
-    vshufps $0xEE, %xmm0, %xmm0, %xmm1
-    vaddps %xmm1, %xmm0, %xmm0
-    vshufps $0x11, %xmm0, %xmm0, %xmm1
-    vaddps %xmm1, %xmm0, %xmm0
+    vhaddps %xmm0, %xmm0, %xmm0
+    vhaddps %xmm0, %xmm0, %xmm0
+    # L-08: NaN/Inf → 0.0 (IEEE exp all-ones)
+    vmovd %xmm0, %eax
+    andl $0x7F800000, %eax
+    cmpl $0x7F800000, %eax
+    jne .dot_ret
+    vxorps %xmm0, %xmm0, %xmm0
+.dot_ret:
     vzeroupper
     pop %rbp
     ret
@@ -68,13 +85,29 @@ sum_squares_avx2:
     add $32, %rsi
     sub $8, %rdi
 .ss_done:
+    # scalar leftover 0..7
+    test %rdi, %rdi
+    jz .ss_hsum
+.ss_scalar:
+    vmovss (%rsi), %xmm1
+    vmulss %xmm1, %xmm1, %xmm1
+    vaddss %xmm1, %xmm0, %xmm0
+    add $4, %rsi
+    dec %rdi
+    jnz .ss_scalar
+.ss_hsum:
     vaddps %ymm2, %ymm0, %ymm0
     vextractf128 $1, %ymm0, %xmm1
     vaddps %xmm1, %xmm0, %xmm0
-    vshufps $0xEE, %xmm0, %xmm0, %xmm1
-    vaddps %xmm1, %xmm0, %xmm0
-    vshufps $0x11, %xmm0, %xmm0, %xmm1
-    vaddps %xmm1, %xmm0, %xmm0
+    vhaddps %xmm0, %xmm0, %xmm0
+    vhaddps %xmm0, %xmm0, %xmm0
+    # L-08: NaN/Inf → 0.0
+    vmovd %xmm0, %eax
+    andl $0x7F800000, %eax
+    cmpl $0x7F800000, %eax
+    jne .ss_ret
+    vxorps %xmm0, %xmm0, %xmm0
+.ss_ret:
     vzeroupper
     pop %rbp
     ret
@@ -172,6 +205,7 @@ apply_gradient_avx2:
 hadamard_transform_avx2:
     push %rbp
     mov %rsp, %rbp
+    push %rbx            # callee-saved; used as s*4 scratch
     
     # rdi = n (must be power of 2)
     # rsi = x (data pointer)
@@ -263,6 +297,7 @@ hadamard_transform_avx2:
 
 .h_done:
     vzeroupper
+    pop %rbx
     pop %rbp
     ret
 

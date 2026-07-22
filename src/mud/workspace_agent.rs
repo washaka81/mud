@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Priority 9: Autonomous Workspace Integration
 /// This module provides the MUD Engine with direct read/write access to the host
@@ -30,7 +30,10 @@ impl AgentWorkspace {
 
                     // Skip common hidden/binary directories to prevent memory bloat
                     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-                    if file_name.starts_with('.') || file_name == "target" || file_name == "node_modules" {
+                    if file_name.starts_with('.')
+                        || file_name == "target"
+                        || file_name == "node_modules"
+                    {
                         continue;
                     }
 
@@ -46,11 +49,11 @@ impl AgentWorkspace {
                 }
             }
         }
-        
+
         map.sort();
         map
     }
-    
+
     /// Reads a file into the engine's context buffer.
     pub fn read_file(&self, relative_path: &str) -> std::io::Result<String> {
         let full_path = self.root_dir.join(relative_path);

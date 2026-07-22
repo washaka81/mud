@@ -5,7 +5,7 @@ use forge_llm::mud::MudFile;
 fn main() -> anyhow::Result<()> {
     let model_path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "models/qwen2_0.5b.mud".to_string());
+        .unwrap_or_else(|| "models/smollm2.mud".to_string());
     println!("=== MUD Model Diagnostic ===");
     println!("Loading: {}", model_path);
 
@@ -245,7 +245,7 @@ fn main() -> anyhow::Result<()> {
         );
         let token_id = 1u32; // check token 1
         if embd.t_type == forge_llm::mud::MudTensorType::Ternary2Bit {
-            let offset = (token_id as usize) * (hidden_size / 16);
+            let offset = (token_id as usize) * (hidden_size / 8);
             let mut row = vec![0.0f32; hidden_size];
             unsafe {
                 forge_llm::mud::dequantize_ternary_row(
@@ -297,6 +297,31 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    // 8. C-MUD reasoning kernel (research §3, new work)
+    println!("\n--- [8] C-MUD Reasoning Kernel (research §3) ---");
+    let (cmud_ok, cmud_msg) = forge_llm::mud::cmud::cmud_kernel_selfcheck();
+    if cmud_ok {
+        println!("  ✅ C-MUD kernel self-check OK ({cmud_msg})");
+    } else {
+        println!("  ⚠️  C-MUD kernel self-check issues ({cmud_msg}) — opt-in path");
+    }
+
+    // 9. Diagnostic summary
+    println!("\n--- [9] Diagnostic Summary ---");
+    println!("  hidden_size     : {}", hidden_size);
+    println!("  num_layers      : {}", num_layers);
+    println!("  num_experts     : {}", num_experts);
+    println!("  total tensors   : {}", tensor_names.len());
+    println!("  null pointers   : {}", null_weight_count);
+    println!("  missing tensors : {}", missing.len());
+    println!("  cmud_kernel     : {}", if cmud_ok { "OK" } else { "WARN" });
+    let verdict = if null_weight_count == 0 && missing.is_empty() {
+        "🟢 STRUCTURALLY HEALTHY"
+    } else {
+        "🔴 STRUCTURAL ISSUES"
+    };
+    println!("  verdict         : {}", verdict);
 
     println!("\n=== Diagnostic Complete ===");
     Ok(())

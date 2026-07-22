@@ -10,9 +10,6 @@ readme = "README.md"
 default-run = "forge_llm"
 
 
-[[bin]]
-name = "vulkan_simulator"
-path = "tools/vulkan_simulator.rs"
 
 [dependencies]
 # Memory mapping for loading .mud files efficiently
@@ -50,6 +47,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 wait-timeout = "0.2.1"
 bytemuck = "1.25.0"
 core_affinity = "0.8.3"
+ash = "0.38.0"
+gpu-allocator = "0.28.0"
 
 [[bin]]
 name = "forge_llm"
@@ -59,70 +58,31 @@ path = "src/main.rs"
 name = "model_dumper"
 path = "tools/model_dumper.rs"
 
-[[bin]]
-name = "phase14_audit"
-path = "tools/phase14_audit.rs"
 
-[[bin]]
-name = "tokenizer_audit"
-path = "tools/tokenizer_audit.rs"
 
-[[bin]]
-name = "expert_anatomy"
-path = "tools/expert_anatomy.rs"
 
 [[bin]]
 name = "step_inference"
 path = "tools/step_inference.rs"
 
-[[bin]]
-name = "weight_audit"
-path = "tools/weight_audit.rs"
-
-
-[[bin]]
-name = "deep_math_audit"
-path = "tools/deep_math_audit.rs"
-
-[[bin]]
-name = "mud_fusion"
-path = "tools/mud_fusion.rs"
-
-[[bin]]
-name = "ternary_audit"
-path = "tools/ternary_audit.rs"
 
 
 
-[[bin]]
-name = "ptr_audit"
-path = "tools/ptr_audit.rs"
 
 
-[[bin]]
-name = "tensor_microscope"
-path = "tools/tensor_microscope.rs"
 
-[[bin]]
-name = "mud_calibrator"
-path = "tools/mud_calibrator.rs"
+
+
+
+
 
 [[bin]]
 name = "universal_converter"
 path = "tools/universal_converter/main.rs"
 
-[[bin]]
-name = "interactive_validator"
-path = "tools/interactive_validator.rs"
 
 
-[[bin]]
-name = "embed_audit"
-path = "tools/embed_audit.rs"
 
-[[bin]]
-name = "embed_ternarize"
-path = "tools/embed_ternarize.rs"
 
 [lib]
 name = "forge_llm"
@@ -132,22 +92,10 @@ crate-type = ["cdylib", "lib"]
 # Used to compile ASM files during the build process
 cc = "1.0.83"
 
-[[bin]]
-name = "iq_box"
-path = "tools/iq_box.rs"
-
-[[bin]]
-name = "model_banner"
-path = "tools/model_banner.rs"
-
-[[bin]]
-name = "hw_detect"
-path = "tools/hw_detect.rs"
 
 
-[[bin]]
-name = "wave_alignment_audit"
-path = "tools/wave_alignment_audit.rs"
+
+
 
 
 [[bin]]
@@ -168,16 +116,7 @@ path = "tools/diagnose_model.rs"
 
 
 
-[[bin]]
-name = "matrix_benchmark"
-path = "tools/matrix_benchmark.rs"
-[[bin]]
-name = "precision_benchmark"
-path = "tools/precision_benchmark.rs"
 
-[[bin]]
-name = "create_blank_mud"
-path = "tools/create_blank_mud.rs"
 
 [profile.release]
 opt-level = 3
@@ -206,55 +145,25 @@ path = "tools/conversion_verifier.rs"
 name = "training_estimator"
 path = "tools/training_estimator.rs"
 
-[[bin]]
-name = "awake_aligner"
-path = "tools/awake_aligner.rs"
 
 [[bin]]
 name = "boundary_validator"
 path = "tools/boundary_validator.rs"
 
-[[bin]]
-name = "gguf_to_safetensors"
-path = "tools/gguf_to_safetensors.rs"
-[[bin]]
-name = "gguf_to_mud"
-path = "tools/gguf_to_mud.rs"
-
-[[bin]]
-name = "int4_quantizer"
-path = "tools/int4_quantizer.rs"
-
-[[bin]]
-name = "fix_metadata"
-path = "tools/fix_metadata.rs"
 
 
-[[bin]]
-name = "ldt_audit"
-path = "tools/ldt_audit.rs"
 
 
-[[bin]]
-name = "patch_nans"
-path = "tools/patch_nans.rs"
 
 
-[[bin]]
-name = "test_norm_values"
-path = "tools/test_norm_values.rs"
+
+
 
 
 [[bin]]
 name = "train_telemetry"
 path = "tools/train_telemetry.rs"
 
-[[bin]]
-name = "check_emb"
-path = "tools/check_emb.rs"
 
 
-[[bin]]
-name = "get_row"
-path = "src/bin/get_row.rs"
 

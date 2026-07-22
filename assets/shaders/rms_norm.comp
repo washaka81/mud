@@ -1,9 +1,9 @@
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 // RMSNorm with learnable weights: y[i] = x[i] * rms_scale * w[i]
 // rms_scale = 1 / sqrt(mean(x^2) + eps)
 // Dispatch: [seq_len, 1, 1] — each workgroup handles one sequence position
+// Workgroup reduction via shared memory (portable; no subgroup-size assumption).
 
 layout(local_size_x = 32) in;
 
@@ -18,6 +18,8 @@ layout(push_constant) uniform PushConstants {
     uint reserved;
 } pcs;
 
+shared float s_partial[32];
+
 void main() {
     uint seq_pos = gl_WorkGroupID.x;
     uint lane_id = gl_LocalInvocationID.x;
@@ -26,17 +28,26 @@ void main() {
 
     uint row_start = seq_pos * pcs.hidden_size;
 
-    // Phase 1: Compute sum of squares using subgroup reduction
+    // Phase 1: partial sum of squares
     float local_sum = 0.0;
     for (uint i = lane_id; i < pcs.hidden_size; i += 32u) {
         float val = x[row_start + i];
         local_sum += val * val;
     }
-    float total_sum = subgroupAdd(local_sum);
+    s_partial[lane_id] = local_sum;
+    barrier();
 
-    // Phase 2: Compute RMS scale and apply normalization + weights
+    // Phase 2: tree reduce in shared memory
+    for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+        if (lane_id < stride) {
+            s_partial[lane_id] += s_partial[lane_id + stride];
+        }
+        barrier();
+    }
+    float total_sum = s_partial[0];
     float rms_scale = inversesqrt(total_sum / float(pcs.hidden_size) + pcs.eps);
 
+    // Phase 3: apply norm + weights
     for (uint i = lane_id; i < pcs.hidden_size; i += 32u) {
         y[row_start + i] = x[row_start + i] * rms_scale * w[i];
     }
