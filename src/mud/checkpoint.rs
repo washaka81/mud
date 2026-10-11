@@ -176,8 +176,17 @@ pub(crate) fn sync_shadow_to_mud(
         .get_mut("token_embd.weight")
         .expect("Missing token_embd.weight");
 
+    // R-10: capture the freshly-quantized / copied embedding bytes so we can
+    // mirror them into a separate `output.weight` head below. These Vecs live
+    // at function scope so their borrows survive the `if` arms into the mirror.
+    let packed_emb: Vec<u8>;
+    let scales_emb: Vec<f32>;
+    let mut emb_bytes: &[u8] = &[];
+    let mut emb_scales: Option<&[f32]> = None;
+    let emb_t_type = emb_tensor.t_type;
+
     if !(freeze_emb || scales_only) {
-        if emb_tensor.t_type == MudTensorType::Ternary2Bit {
+        if emb_t_type == MudTensorType::Ternary2Bit {
             let rows = emb_tensor.shape[0];
             let cols = emb_tensor.shape[1];
             let byte_count = shadow_emb.len().div_ceil(8) * 4;
@@ -241,33 +250,33 @@ pub(crate) fn sync_shadow_to_mud(
             // P-01: mem::take avoids clone() — moves the Vec out of the thread-local,
             // releasing the borrow before write_owned_bytes. The thread-local
             // keeps a reusable (empty) Vec for next call.
-            let packed_move = SYNC_PACKED_BUF.with_borrow_mut(std::mem::take::<Vec<u8>>);
-            write_owned_bytes(emb_tensor, &packed_move);
+            packed_emb = SYNC_PACKED_BUF.with_borrow_mut(std::mem::take::<Vec<u8>>);
+            write_owned_bytes(emb_tensor, &packed_emb);
 
             // P-01: avoid to_vec() — use mem::take to move scales out of thread-local
             // (zero-copy write to tensor, no clone, no double-copy).
-            let scales_move = SYNC_SCALES_BUF.with_borrow_mut(std::mem::take::<Vec<f32>>);
+            scales_emb = SYNC_SCALES_BUF.with_borrow_mut(std::mem::take::<Vec<f32>>);
             if let Some(scale_tensor) = core.tensors.get_mut("token_embd.prq_scale") {
                 // ΔW: compare old vs new PRQ scale for embedding
                 if let Some(prev_s) = scale_tensor.owned_data.as_deref() {
-                    if prev_s.len() == scales_move.len() * 4 {
+                    if prev_s.len() == scales_emb.len() * 4 {
                         let prev_f = unsafe {
                             std::slice::from_raw_parts(prev_s.as_ptr() as *const f32, prev_s.len() / 4)
                         };
-                        for (a, b) in prev_f.iter().zip(scales_move.iter()) {
+                        for (a, b) in prev_f.iter().zip(scales_emb.iter()) {
                             dbg_scale_absdelta += (a - b).abs() as f64;
                             dbg_scale_absbase += a.abs() as f64;
                         }
                     }
                 }
                 let scale_bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(scales_move.as_ptr() as *const u8, scales_move.len() * 4)
+                    std::slice::from_raw_parts(scales_emb.as_ptr() as *const u8, scales_emb.len() * 4)
                 };
                 write_owned_bytes(scale_tensor, scale_bytes);
             } else {
-                // Scale tensor doesn't exist yet — create from the already-extracted scales_move
+                // Scale tensor doesn't exist yet — create from the already-extracted scales_emb
                 let scale_bytes = unsafe {
-                    std::slice::from_raw_parts(scales_move.as_ptr() as *const u8, scales_move.len() * 4).to_vec()
+                    std::slice::from_raw_parts(scales_emb.as_ptr() as *const u8, scales_emb.len() * 4).to_vec()
                 };
                 core.tensors.insert(
                     "token_embd.prq_scale".to_string(),
@@ -283,6 +292,11 @@ pub(crate) fn sync_shadow_to_mud(
                     },
                 );
             }
+            // R-10: expose the freshly-packed bytes/scales for the output.weight mirror.
+            // (packed_emb / scales_emb are function-scoped Vecs, so these borrows
+            // survive the if-arm into the mirror call below.)
+            emb_bytes = &packed_emb;
+            emb_scales = Some(&scales_emb);
         } else {
             // F32 embedding: avoid to_vec() — use &[u8] view directly
             let bytes: &[u8] = unsafe {
@@ -298,7 +312,26 @@ pub(crate) fn sync_shadow_to_mud(
                 }
             }
             write_owned_bytes(emb_tensor, bytes);
+            emb_bytes = bytes;
+            emb_scales = None;
         }
+    }
+
+    // R-10 FIX: Mirror trained embedding into a separate `output.weight` LM head
+    // so inference (which prefers `output.weight`) reflects training. The head IS
+    // the embedding (weight tying); converter emits `output.weight` as a copy.
+    // No-op for genuinely tied models (no separate `output.weight` tensor).
+    if !(freeze_emb || scales_only || emb_bytes.is_empty()) {
+        sync_tied_output_weight(
+            core,
+            emb_t_type,
+            emb_bytes,
+            emb_scales,
+            &mut dbg_bits_changed,
+            &mut dbg_bytes_total,
+            &mut dbg_scale_absdelta,
+            &mut dbg_scale_absbase,
+        );
     }
 
     for (blk, shadow) in shadow_layers.iter_mut().enumerate() {
@@ -398,6 +431,9 @@ pub(crate) fn sync_shadow_to_mud(
             &mut dbg_scale_absbase,
         );
     }
+
+    // R-10 FIX: the trained embedding is captured in `emb_bytes` / `emb_scales`
+    // below. Mirror it into a separate `output.weight` LM head (see helper).
 
     // FIX (2026-07-31): Sync mHC alpha/beta shadow buffers back to the MudFile.
     // Previously, mHC alpha/beta were trained in-place via `mhc_scale_sgd_step`
@@ -552,6 +588,87 @@ pub(crate) fn write_owned_bytes(t: &mut MudTensor, bytes: &[u8]) {
         }
     } else {
         t.owned_data = Some(bytes.to_vec());
+    }
+}
+
+/// R-10 FIX: Mirror the just-synced embedding (`token_embd.weight`) into a
+/// *separate* `output.weight` LM-head tensor when present.
+///
+/// Weight tying means the LM head IS the embedding matrix. The converter emits
+/// `output.weight` as a snapshot copy of `token_embd.weight`, but the old
+/// `sync_shadow_to_mud` only wrote `token_embd.weight` — so inference (which
+/// prefers `output.weight` via `inference.rs:395`) saw an unchanged head: the
+/// trained head never reached the evaluated head. This keeps the two
+/// byte-identical so the head the trainer updates is the head used at eval.
+///
+/// No-op for genuinely tied models (no separate `output.weight`).
+/// Mirrors both the `weight` and (for ternary models) the `.prq_scale`.
+#[allow(clippy::too_many_arguments)]
+fn sync_tied_output_weight(
+    core: &mut crate::mud::MudSkill,
+    t_type: MudTensorType,
+    emb_bytes: &[u8],
+    emb_scales: Option<&[f32]>,
+    dbg_bits_changed: &mut u64,
+    dbg_bytes_total: &mut u64,
+    dbg_scale_absdelta: &mut f64,
+    dbg_scale_absbase: &mut f64,
+) {
+    // Does the model store a separate (uncoupled) LM head?
+    let out_t = match core.tensors.get_mut("output.weight") {
+        Some(t) if t.t_type == t_type && t.owned_data.as_deref().is_none_or(|d| d.len() == emb_bytes.len()) => t,
+        _ => return, // tied model (no head) or type/size mismatch — skip
+    };
+
+    // ΔW accounting for the mirrored head bytes
+    if let Some(prev) = out_t.owned_data.as_deref() {
+        if prev.len() == emb_bytes.len() {
+            for (a, b) in prev.iter().zip(emb_bytes.iter()) {
+                *dbg_bits_changed += (a != b) as u64;
+            }
+            *dbg_bytes_total += emb_bytes.len() as u64;
+        }
+    }
+    write_owned_bytes(out_t, emb_bytes);
+
+    if t_type == MudTensorType::Ternary2Bit {
+        let scales = match emb_scales {
+            Some(s) if !s.is_empty() => s,
+            _ => return,
+        };
+        let scale_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(scales.as_ptr() as *const u8, scales.len() * 4)
+        };
+        let key = "output.prq_scale";
+        if let Some(st) = core.tensors.get_mut(key) {
+            if let Some(prev_s) = st.owned_data.as_deref() {
+                if prev_s.len() == scale_bytes.len() {
+                    let prev_f = unsafe {
+                        std::slice::from_raw_parts(prev_s.as_ptr() as *const f32, prev_s.len() / 4)
+                    };
+                    for (a, b) in prev_f.iter().zip(scales.iter()) {
+                        *dbg_scale_absdelta += (a - b).abs() as f64;
+                        *dbg_scale_absbase += a.abs() as f64;
+                    }
+                }
+            }
+            write_owned_bytes(st, scale_bytes);
+        } else if !core.tensors.contains_key(key) {
+            // Create the scale tensor mirroring token_embd.prq_scale shape ([rows])
+            core.tensors.insert(
+                key.to_string(),
+                MudTensor {
+                    name: key.to_string(),
+                    t_type: MudTensorType::Float32,
+                    shape: vec![scales.len()],
+                    data_ptr: std::ptr::null(),
+                    offset: 0,
+                    data_base: 0,
+                    mmap: None,
+                    owned_data: Some(scale_bytes.to_vec()),
+                },
+            );
+        }
     }
 }
 
@@ -779,6 +896,7 @@ fn update_layer_tensor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_pack_ternary_basic() {
@@ -866,5 +984,223 @@ mod tests {
         let r = DwReport::default();
         assert_eq!(r.bits_changed, 0);
         assert!(!r.moved);
+    }
+
+    /// R-10 fixture: build a minimal MudTensor with owned bytes.
+    fn mk_tensor(name: &str, t_type: MudTensorType, shape: Vec<usize>, bytes: Vec<u8>) -> MudTensor {
+        MudTensor {
+            name: name.to_string(),
+            t_type,
+            shape,
+            data_ptr: std::ptr::null(),
+            offset: 0,
+            data_base: 0,
+            mmap: None,
+            owned_data: Some(bytes),
+        }
+    }
+
+    /// R-10: a separate `output.weight` LM-head must mirror the trained
+    /// `token_embd.weight` so inference reads the head that was actually
+    /// trained. Before the fix, `sync_shadow_to_mud` only wrote `token_embd.weight`
+    /// and the head stayed stale (identical base↔checkpoint).
+    #[test]
+    fn test_sync_mirrors_emb_to_output_weight() {
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+            std::env::remove_var("MUD_TRAIN_SCALES_ONLY");
+            std::env::remove_var("MUD_TRAIN_DEBUG_DW");
+        }
+        // Force emb trainable (default is frozen=true) so the mirror path runs.
+        unsafe {
+            std::env::set_var("MUD_TRAIN_FREEZE_EMB", "0");
+        }
+        let vocab = 2usize;
+        let hidden = 8usize;
+        // shadow_emb: all +1.0 → packs to nibble 0x1 everywhere (delta = s/2)
+        let mut shadow_emb = vec![1.0f32; vocab * hidden];
+
+        // Compute the expected packed bytes & per-row scales (same as sync path).
+        let byte_count = (vocab * hidden).div_ceil(8) * 4;
+        let mut expected_packed = vec![0u8; byte_count];
+        for r in 0..vocab {
+            for c in 0..hidden {
+                let bit: u32 = 0x1;
+                let idx = r * hidden / 8 + c / 8; // one u32 word per row (hidden=8)
+                let word = unsafe {
+                    std::ptr::read_unaligned(expected_packed.as_ptr().add(idx * 4) as *const u32)
+                };
+                let new = word | (bit << ((c % 8) * 4));
+                unsafe {
+                    std::ptr::write_unaligned(
+                        expected_packed.as_mut_ptr().add(idx * 4) as *mut u32,
+                        new,
+                    );
+                }
+            }
+        }
+        let scale = 1.0f32 / std::f32::consts::SQRT_2;
+        let mut expected_scales: Vec<u8> = Vec::with_capacity(vocab * 4);
+        for _ in 0..vocab {
+            expected_scales.extend_from_slice(&scale.to_le_bytes());
+        }
+
+        // Stale separate output.weight / output.prq_scale (the pre-fix head)
+        let stale_packed = vec![0xEEu8; byte_count];
+        let stale_scale_bytes: Vec<u8> = {
+            let mut v = Vec::with_capacity(vocab * 4);
+            for _ in 0..vocab {
+                v.extend_from_slice(&9.9f32.to_le_bytes());
+            }
+            v
+        };
+
+        let mut core = crate::mud::MudSkill {
+            name: "core".to_string(),
+            tensors: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        core.tensors.insert(
+            "token_embd.weight".to_string(),
+            mk_tensor(
+                "token_embd.weight",
+                MudTensorType::Ternary2Bit,
+                vec![vocab, hidden],
+                stale_packed.clone(),
+            ),
+        );
+        core.tensors.insert(
+            "token_embd.prq_scale".to_string(),
+            mk_tensor(
+                "token_embd.prq_scale",
+                MudTensorType::Float32,
+                vec![vocab],
+                stale_scale_bytes.clone(),
+            ),
+        );
+        core.tensors.insert(
+            "output.weight".to_string(),
+            mk_tensor(
+                "output.weight",
+                MudTensorType::Ternary2Bit,
+                vec![vocab, hidden],
+                vec![0xDDu8; byte_count],
+            ),
+        );
+        core.tensors.insert(
+            "output.prq_scale".to_string(),
+            mk_tensor(
+                "output.prq_scale",
+                MudTensorType::Float32,
+                vec![vocab],
+                stale_scale_bytes.clone(),
+            ),
+        );
+
+        let mut mud = crate::mud::MudFile {
+            mmap: None,
+            skills: HashMap::new(),
+            global_metadata: HashMap::new(),
+            path: None,
+        };
+        mud.skills.insert("core".to_string(), core);
+
+        let mut shadow_layers = vec![crate::mud::slime_backward::SlimeLayerShadowF32::empty()];
+        let layers: Vec<crate::mud::slime_forward::SlimeLayer> = Vec::new();
+
+        let rep = sync_shadow_to_mud(
+            &mut mud,
+            &mut shadow_emb,
+            &mut shadow_layers,
+            &layers,
+            None,
+            true,
+        );
+
+        let core = mud.skills.get("core").unwrap();
+        let out = core.tensors.get("output.weight").unwrap();
+        let emb = core.tensors.get("token_embd.weight").unwrap();
+        assert_eq!(
+            out.owned_data, emb.owned_data,
+            "output.weight must mirror token_embd.weight (R-10)"
+        );
+        assert_eq!(out.owned_data.as_deref(), Some(expected_packed.as_slice()));
+
+        let out_s = core.tensors.get("output.prq_scale").unwrap();
+        let emb_s = core.tensors.get("token_embd.prq_scale").unwrap();
+        assert_eq!(
+            out_s.owned_data, emb_s.owned_data,
+            "output.prq_scale must mirror token_embd.prq_scale (R-10)"
+        );
+        assert_eq!(out_s.owned_data.as_deref(), Some(expected_scales.as_slice()));
+
+        assert!(rep.moved, "sync must report head + emb movement");
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+        }
+    }
+
+    /// R-10 regression: if the model is genuinely tied (no separate
+    /// `output.weight`), `sync_shadow_to_mud` must NOT create a spurious
+    /// output.weight — it should be a silent no-op for the head.
+    #[test]
+    fn test_sync_no_output_weight_when_tied() {
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+            std::env::remove_var("MUD_TRAIN_SCALES_ONLY");
+            std::env::remove_var("MUD_TRAIN_DEBUG_DW");
+        }
+        // Force emb trainable so token_embd sync runs.
+        unsafe {
+            std::env::set_var("MUD_TRAIN_FREEZE_EMB", "0");
+        }
+        let vocab = 2usize;
+        let hidden = 8usize;
+        let mut shadow_emb = vec![1.0f32; vocab * hidden];
+
+        let byte_count = (vocab * hidden).div_ceil(8) * 4;
+        let mut core = crate::mud::MudSkill {
+            name: "core".to_string(),
+            tensors: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        core.tensors.insert(
+            "token_embd.weight".to_string(),
+            mk_tensor(
+                "token_embd.weight",
+                MudTensorType::Ternary2Bit,
+                vec![vocab, hidden],
+                vec![0u8; byte_count],
+            ),
+        );
+        core.tensors.insert(
+            "token_embd.prq_scale".to_string(),
+            mk_tensor(
+                "token_embd.prq_scale",
+                MudTensorType::Float32,
+                vec![vocab],
+                vec![0u8; vocab * 4],
+            ),
+        );
+        // NOTE: no "output.weight" inserted — model is tied.
+
+        let mut mud = crate::mud::MudFile {
+            mmap: None,
+            skills: HashMap::new(),
+            global_metadata: HashMap::new(),
+            path: None,
+        };
+        mud.skills.insert("core".to_string(), core);
+
+        let mut shadow_layers = vec![crate::mud::slime_backward::SlimeLayerShadowF32::empty()];
+        let layers: Vec<crate::mud::slime_forward::SlimeLayer> = Vec::new();
+
+        sync_shadow_to_mud(&mut mud, &mut shadow_emb, &mut shadow_layers, &layers, None, false);
+
+        let core = mud.skills.get("core").unwrap();
+        assert!(!core.tensors.contains_key("output.weight"), "tied model must not synthesize output.weight");
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+        }
     }
 }

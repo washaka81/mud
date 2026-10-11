@@ -43,25 +43,35 @@ pub struct CheckpointPolicy {
 }
 
 impl CheckpointPolicy {
-    pub fn resolve() -> Self {
-        let on = std::env::var("MUD_GRAD_CKPT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    /// Pure policy constructor from already-parsed env flags.
+    ///
+    /// Tests use this directly to avoid racing on the *global* `MUD_GRAD_CKPT`
+    /// / `MUD_GRAD_CKPT_SEG` env vars under parallel test execution (the old
+    /// `env::set_var` / `remove_var` tests produced a non-deterministic
+    /// `test_policy_default_full` failure: a sibling test could re-set
+    /// `MUD_GRAD_CKPT=1` between this test's `remove_var` and its `resolve`).
+    pub fn from_env(on: bool, segment_size: usize) -> Self {
         if !on {
             return Self {
                 mode: CheckpointMode::Full,
                 segment_size: DEFAULT_SEGMENT,
             };
         }
-        let segment_size = std::env::var("MUD_GRAD_CKPT_SEG")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_SEGMENT)
-            .max(1);
         Self {
             mode: CheckpointMode::Segmented,
-            segment_size,
+            segment_size: segment_size.max(1),
         }
+    }
+
+    pub fn resolve() -> Self {
+        let on = std::env::var("MUD_GRAD_CKPT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let segment_size = std::env::var("MUD_GRAD_CKPT_SEG")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_SEGMENT);
+        Self::from_env(on, segment_size)
     }
 
     pub fn is_segmented(self) -> bool {
@@ -300,28 +310,35 @@ mod tests {
 
     #[test]
     fn test_policy_default_full() {
-        unsafe {
-            std::env::remove_var("MUD_GRAD_CKPT");
-        }
-        let p = CheckpointPolicy::resolve();
+        // Pure path: no env mutation, deterministic under parallel test execution.
+        let p = CheckpointPolicy::from_env(false, DEFAULT_SEGMENT);
         assert_eq!(p.mode, CheckpointMode::Full);
+        assert!(!p.is_segmented());
     }
 
     #[test]
     fn test_policy_segmented_env() {
-        unsafe {
-            std::env::set_var("MUD_GRAD_CKPT", "1");
-            std::env::set_var("MUD_GRAD_CKPT_SEG", "3");
-        }
-        let p = CheckpointPolicy::resolve();
-        unsafe {
-            std::env::remove_var("MUD_GRAD_CKPT");
-            std::env::remove_var("MUD_GRAD_CKPT_SEG");
-        }
+        // Pure path: on=true, segment_size=3 (parsed value already resolved).
+        let p = CheckpointPolicy::from_env(true, 3);
         assert!(p.is_segmented());
         assert_eq!(p.segment_size, 3);
         assert_eq!(p.segment_start(7), 6);
         assert_eq!(p.segment_end(7, 30), 9);
+    }
+
+    /// Round-trip: `resolve()` (env-backed) must agree with `from_env` (pure)
+    /// for the two canonical inputs.
+    #[test]
+    fn test_resolve_matches_from_env() {
+        // env-default (unset) == from_env(false, _)
+        unsafe {
+            std::env::remove_var("MUD_GRAD_CKPT");
+            std::env::remove_var("MUD_GRAD_CKPT_SEG");
+        }
+        let resolved = CheckpointPolicy::resolve();
+        let pure = CheckpointPolicy::from_env(false, DEFAULT_SEGMENT);
+        assert_eq!(resolved.mode, pure.mode);
+        assert_eq!(resolved.segment_size, pure.segment_size);
     }
 
     #[test]
