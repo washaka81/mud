@@ -1,0 +1,137 @@
+# --- RUST & BUILD ---
+/target
+/Cargo.lock
+
+# --- VIRTUAL ENVIRONMENTS ---
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- MUD MODELS & DATA (Large Binaries) ---
+models/
+models/*.mud
+models/*.db
+models/*.package
+models/*.pt
+models/archive/
+models/sync/
+models/sync_v35/
+models/tmp_kaggle_dl/
+models/tmp_kaggle_check/
+
+# --- WEIGHTS (PyTorch) ---
+weights/
+checkpoints_vulkan/
+!weights/README.md
+
+# --- TRAINING DATA & CORPUS ---
+training/*.txt
+training/*.bin
+training/**/*.txt
+training/**/*.bin
+!training/vocab_es_en.txt
+!training/extra_knowledge.txt
+!training/README.md
+training/*.txt.backup
+training/*.log
+training/models/
+training/logs/
+training/corpus/
+training/_stash_full/
+
+
+# --- TEST DATA ---
+tests/data/books/
+
+# --- LOGS & DEBUGGING ---
+logs/
+*.log
+chat_out.txt
+traces.jsonl
+/debug/
+*.disassembly
+mud_disassembly.txt
+ai_disassembly.txt
+all_tensors.txt
+tensors_list.txt
+model_disassembly.txt
+tokens_dump.txt
+
+# --- SENSITIVE INFORMATION ---
+.env
+.kaggle/
+kaggle.json
+training/kaggle_config.sh
+secrets.tks
+*.pem
+*.key
+omp_poolside.yml
+
+# --- ORCHESTRATION / AI FILES ---
+# GEMINI.md and AGENTS.md son SSOT del proyecto (políticas + identidad) y
+# DEBEN trackearse en git — no irrados. Solo se ignoran secretos reales aquí.
+.antigravity/
+.antigravitycli/
+.gemini/
+.opencode/
+.crush/
+.mimocode/
+.poolside/
+
+# --- SCRATCH FILES ---
+scratch*.rs
+scratch*
+test_affinity.rs
+
+# --- MERGE ARTIFACTS ---
+*.orig
+*.rej
+*.conflict
+
+# --- REASONING / THINKER TRACES ---
+# Archivos generados por el pipeline de razonamiento complejo (C-MUD).
+# Estos archivos de estado (como CMUX y sidecars JSON) actúan como el
+# "thinker", almacenando las amplitudes y fases de las capas de atención.
+*.cmud
+*.cmux
+*.thinker
+*.think
+
+# --- BUILD ARTIFACTS ---
+*.o
+*.a
+
+# --- RUNTIME LOGS (root) ---
+/mud_metrics.log
+/mud_train_metrics.log
+/mud_train_metrics.log.bak*
+/crash.log
+/iter_val.log
+/output.log
+/test_output.log
+/validator.log
+
+# --- SCRATCH & ROOT DEBT (P-18) ---
+# Ficheros deuda técnica en raíz: pendientes de limpieza en R-66 (Ola 5)
+scratch_sessions_summary.json
+arreglar_trainer.md
+informe.md
+corpus.txt
+/PLAN_MAESTRO.md
+test_tok.rs
+
+# --- DEBUG DUMPS ---
+/dump.txt
+/bt.txt
+/out.txt
+/mud_disassembly.txt
+/tui_*.log
+/tui_*.txt
+
+# --- PYTHON ---
+*.py
+.venv/
