@@ -32,7 +32,8 @@
 > | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`) | `mud.sh` `ci)` case |
 > | Repo con **git init** + `.gitignore` limpio (R-04) | `git status` limpio tras commit |
 > | ✅ **R-10**: el trainer SÍ entrena la cabeza evaluada — `sync_shadow_to_mud` espeja `token_embd.weight`→`output.weight` (+ `output.prq_scale`) vía `sync_tied_output_weight`; inferencia (`inference.rs:395`) y trainer (`train_step.rs:593`) coinciden. No-op para modelos *tied*. | `checkpoint.rs` + tests; `cargo test --lib --release` 462/0 |
-> | **Backward ≠ forward**: FFN `silu(gate)·up` vs derivada ReLU²; mHC omite `alpha` y `(1-gate)·beta` | `slime_forward.rs:613-637` vs `slime_backward.rs:1109-1170`, `:1055-1066` |
+> | ✅ **R-11**: FFN backward SiLU — `slime_backward.rs` reemplazó ReLU² (`g²·up`) por `silu(gate)·up` vía `ezop::silu_backward_avx2` (AVX2 8-f32/iter + escalar, σ via exp2 ≈ forward `silu_vectorial`). `test_silu_backward_matches_reference` ✅; `cargo test --lib --release` 463/0. |
+> | ✅ **R-12**: mHC activation backward — `grad_out *= alpha[i]`, `grad_branch *= (1-gate)·beta[i]` vía `ezop::mhc_activation_backward` (AVX2 + escalar, gate=sigmoid(v_jepa) recomputado, `kinetic` preservado). Ambas rutas (ternaria + F32). `test_mhc_activation_backward_matches_reference` ✅ (alpha=0.85/beta=1.2/gate≠0.5). |
 > | **Deriva de escala PRQ** sin punto fijo (`×0.52` por guardado); deadzone **0.7·s** (conversor) vs **0.5·s** (checkpoint) | forense binaria; `quantizer.rs:125` vs `checkpoint.rs:211` |
 > | Wire format ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); LM head en **f32 denso** (77.6 MB/token en `ale.mud`), single-thread | `mod.rs:145`, `asm/lm_head.s` |
 > | Inferencia medida: **~46 tok/s** en `models/ale.mud` (9 % del BW), salida **incoherente** | `MUD_INFER_MAX_TOKENS=512` |
@@ -210,7 +211,7 @@ Completed capability areas (not exhaustive): SlimeForward/Backward STE, ELUT 4-b
 > | Ola | Foco | IDs | Estado |
 > |---|---|---|---|
 > | **0** | Verdad y CI (workflow válido, release tests, git, env SSOT) | R-01…R-06 | 🔴 activa |
-> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | pendiente |
+> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ R-10/R-11/R-12 · R-13…R-20 pendiente |
 > | **2** | Seguridad de entrada (metadata↔shape, GGUF, SAFETY) | R-30…R-38 | pendiente (paralelizable) |
 > | **3** | Eficiencia de inferencia (head ternario, 1.6 bpp, i8, hilos) | R-40…R-48 | pendiente |
 > | **4** | Calidad de conversión (paridad, rotación, emb 8-bit) | R-50…R-55 | pendiente |

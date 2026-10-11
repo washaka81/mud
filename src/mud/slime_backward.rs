@@ -625,20 +625,20 @@ pub fn backward_slime_block(
             }
         }
 
-        // Kinetic spring force on the residual stream
+        // Kinetic spring + mHC activation backward (R-12 FIX).
+        // Forward: h_out = alpha·h_in + (1-gate)·beta·f_h + kinetic; scales now applied.
         let kinetic_lambda = 0.005f32;
         unsafe {
-            let gi = grad_in.as_ptr();
-            let go = grad_out.as_mut_ptr();
-            let gb = b_ws.grad_branch.as_mut_ptr();
-            let jepa = tape.ffn_v_jepa.as_ptr();
-            for i in 0..hidden {
-                let spring_force = *jepa.add(i);
-                let kinetic_grad = -2.0 * kinetic_lambda * spring_force;
-                let g = *gi.add(i);
-                *gb.add(i) = g + kinetic_grad;
-                *go.add(i) = g; // Residual flows unchanged
-            }
+            crate::mud::ezop::mhc_activation_backward(
+                grad_in.as_ptr(),
+                tape.ffn_v_jepa.as_ptr(),
+                layer.mhc_alpha_w,
+                layer.mhc_beta_w,
+                grad_out.as_mut_ptr(),
+                b_ws.grad_branch.as_mut_ptr(),
+                kinetic_lambda,
+                hidden,
+            );
         }
 
         // 1. FFN Down Projection Backward (F32)
@@ -1051,18 +1051,21 @@ pub fn backward_slime_block(
     }
 
     // SAFETY: buffers sized to hidden at workspace construction.
+    // R-12 FIX: apply mHC scales (alpha, (1-gate)*beta) to the activation grads.
+    // Forward: h_out = alpha·h_in + (1-gate)·beta·f_h (+ kinetic spring).
+    //   grad_out  = grad_in · alpha                      → dL/d h_in (residual)
+    //   grad_branch = (grad_in + kinetic)·(1-gate)·beta  → dL/d f_h  (grad_ffn_out)
     unsafe {
-        let gi = grad_in.as_ptr();
-        let go = grad_out.as_mut_ptr();
-        let gb = b_ws.grad_branch.as_mut_ptr();
-        let jepa = tape.ffn_v_jepa.as_ptr();
-        for i in 0..hidden {
-            let spring_force = *jepa.add(i);
-            let kinetic_grad = -2.0 * kinetic_lambda * spring_force;
-            let g = *gi.add(i);
-            *gb.add(i) = g + kinetic_grad;
-            *go.add(i) = g; // Residual flows unchanged
-        }
+        crate::mud::ezop::mhc_activation_backward(
+            grad_in.as_ptr(),
+            tape.ffn_v_jepa.as_ptr(),
+            layer.mhc_alpha_w,
+            layer.mhc_beta_w,
+            grad_out.as_mut_ptr(),
+            b_ws.grad_branch.as_mut_ptr(),
+            kinetic_lambda,
+            hidden,
+        );
     }
 
     // 1. FFN Down Projection Backward (Ternary STE)

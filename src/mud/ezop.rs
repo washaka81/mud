@@ -1354,6 +1354,132 @@ pub unsafe fn mhc_backward_vec(
         }
     }
 }
+
+/// Vectorized mHC activation backward (R-12 FIX).
+///
+/// Forward (mhc_residual): `h_out[i] = alpha[i]·h_in[i] + (1-gate[i])·beta[i]·f_h[i]`
+/// with `gate[i] = sigmoid(v_jepa[i])`.  Given upstream grad `grad_in` (= dL/d h_out),
+/// the activation (residual-stream) gradients are:
+///   grad_out[i]  = grad_in[i] * alpha[i]                         (→ dL/d h_in, to residual)
+///   grad_branch[i] = (grad_in[i] + kinetic_grad[i]) * (1-gate[i]) * beta[i]  (→ dL/d f_h, i.e. grad_ffn_out)
+/// where `kinetic_grad[i] = -2 * kinetic_lambda * v_jepa[i]` (pre-existing JEPA
+/// kinetic-energy regularization; preserved in place, only the missing mHC
+/// scalars are now applied).  Base models (`alpha_w`/`beta_w` null) use
+/// alpha=1, beta=1 (no-op scaling — matches mhc_residual base path).
+///
+/// `gate` is recomputed from `v_jepa` (same source as `mhc_backward_vec`) so the
+/// activation path stays consistent with the alpha/beta param-grad path.
+///
+/// # Safety
+/// - `grad_in`, `v_jepa` readable for `n` elements.
+/// - `grad_out`, `grad_branch` writable for `n` elements.
+/// - `alpha_w`/`beta_w`: either null (base model) or valid for `n` elements.
+/// - Output regions must not alias inputs.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn mhc_activation_backward_avx2(
+    grad_in: *const f32,
+    v_jepa: *const f32,
+    alpha_w: *const f32,
+    beta_w: *const f32,
+    grad_out: *mut f32,
+    grad_branch: *mut f32,
+    kinetic_lambda: f32,
+    n: usize,
+) {
+    use std::arch::x86_64::*;
+    let one = _mm256_set1_ps(1.0);
+    let neg2lam = _mm256_set1_ps(-2.0 * kinetic_lambda);
+    let has_mhc = !alpha_w.is_null() && !beta_w.is_null();
+    let mut i = 0;
+    if n >= 8 {
+        while i + 8 <= n {
+            let gv = _mm256_loadu_ps(grad_in.add(i));
+            let vj = _mm256_loadu_ps(v_jepa.add(i));
+            let gate = sigmoid_vec_local(vj);
+            let one_minus_gate = _mm256_sub_ps(one, gate);
+            let kinetic = _mm256_mul_ps(neg2lam, vj); // -2λ·v_jepa
+
+            if has_mhc {
+                let av = _mm256_loadu_ps(alpha_w.add(i));
+                let bv = _mm256_loadu_ps(beta_w.add(i));
+                let g_out = _mm256_mul_ps(gv, av);
+                let g_branch = _mm256_mul_ps(
+                    _mm256_mul_ps(_mm256_add_ps(gv, kinetic), one_minus_gate),
+                    bv,
+                );
+                _mm256_storeu_ps(grad_out.add(i), g_out);
+                _mm256_storeu_ps(grad_branch.add(i), g_branch);
+            } else {
+                // base model: alpha = beta = 1
+                let g_branch = _mm256_mul_ps(_mm256_add_ps(gv, kinetic), one_minus_gate);
+                _mm256_storeu_ps(grad_out.add(i), gv);
+                _mm256_storeu_ps(grad_branch.add(i), g_branch);
+            }
+            i += 8;
+        }
+    }
+    for j in i..n {
+        let gjv = *grad_in.add(j);
+        let vj = *v_jepa.add(j);
+        let gate = 1.0 / (1.0 + (-vj).exp());
+        let kinetic = -2.0 * kinetic_lambda * vj;
+        let one_minus_gate = 1.0 - gate;
+        if has_mhc {
+            let alpha = *alpha_w.add(j);
+            let beta = *beta_w.add(j);
+            *grad_out.add(j) = gjv * alpha;
+            *grad_branch.add(j) = (gjv + kinetic) * one_minus_gate * beta;
+        } else {
+            *grad_out.add(j) = gjv;
+            *grad_branch.add(j) = (gjv + kinetic) * one_minus_gate;
+        }
+    }
+}
+
+/// Public dispatcher for the mHC activation backward (R-12). AVX2 core on
+/// x86_64, scalar fallback otherwise.  See `mhc_activation_backward_avx2`.
+///
+/// # Safety
+/// Same as the AVX2 core.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn mhc_activation_backward(
+    grad_in: *const f32,
+    v_jepa: *const f32,
+    alpha_w: *const f32,
+    beta_w: *const f32,
+    grad_out: *mut f32,
+    grad_branch: *mut f32,
+    kinetic_lambda: f32,
+    n: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        mhc_activation_backward_avx2(grad_in, v_jepa, alpha_w, beta_w, grad_out, grad_branch, kinetic_lambda, n);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let has_mhc = !alpha_w.is_null() && !beta_w.is_null();
+        for j in 0..n {
+            let gjv = *grad_in.add(j);
+            let vj = *v_jepa.add(j);
+            let gate = 1.0 / (1.0 + (-vj).exp());
+            let kinetic = -2.0 * kinetic_lambda * vj;
+            let one_minus_gate = 1.0 - gate;
+            if has_mhc {
+                let alpha = *alpha_w.add(j);
+                let beta = *beta_w.add(j);
+                *grad_out.add(j) = gjv * alpha;
+                *grad_branch.add(j) = (gjv + kinetic) * one_minus_gate * beta;
+            } else {
+                *grad_out.add(j) = gjv;
+                *grad_branch.add(j) = (gjv + kinetic) * one_minus_gate;
+            }
+        }
+    }
+}
 /// `threshold = scale * 0.7` STE band (matches trainer pack).
 ///
 /// # Safety
@@ -2333,5 +2459,100 @@ mod tests {
             (silu_prime as f32 - 2.0).abs() > 1e-3,
             "silu'(1)={silu_prime} should differ from ReLU² derivative 2.0"
         );
+    }
+
+    /// R-12: mHC activation backward must scale by alpha / (1-gate)*beta.
+    /// Verifies the analytical formula for both the trainable-mHC route
+    /// (alpha=0.85, beta=1.2, gate=sigmoid(v_jepa)≠0.5) and the base-model
+    /// route (alpha_w/beta_w null → alpha=beta=1), comparing AVX2 vs exact f64.
+    #[test]
+    fn test_mhc_activation_backward_matches_reference() {
+        let n = 32;
+        let grad_in: Vec<f32> = (0..n).map(|i| ((i as f32 - 16.0) * 0.07).sin() * 0.3).collect();
+        // v_jepa spread so gate is well away from 0.5
+        let v_jepa: Vec<f32> = (0..n).map(|i| (i as f32 - 16.0) * 0.25).collect();
+        let alpha: Vec<f32> = (0..n).map(|i| 0.85 + (i as f32 - 16.0) * 0.002).collect();
+        let beta: Vec<f32> = (0..n).map(|i| 1.2 + (i as f32 - 16.0) * 0.003).collect();
+        let kinetic_lambda = 0.005f32;
+        let mut grad_out = vec![0.0f32; n];
+        let mut grad_branch = vec![0.0f32; n];
+        unsafe {
+            mhc_activation_backward(
+                grad_in.as_ptr(),
+                v_jepa.as_ptr(),
+                alpha.as_ptr(),
+                beta.as_ptr(),
+                grad_out.as_mut_ptr(),
+                grad_branch.as_mut_ptr(),
+                kinetic_lambda,
+                n,
+            );
+        }
+        let tol = if is_x86_feature_detected!("avx2") { 1e-3 } else { 1e-5 };
+        for i in 0..n {
+            let g = grad_in[i] as f64;
+            let v = v_jepa[i] as f64;
+            let s = 1.0 / (1.0 + (-v).exp());
+            let kinetic = -2.0 * kinetic_lambda as f64 * v;
+            let one_minus_gate = 1.0 - s;
+            // trainable-mHC route
+            let ref_out = g * alpha[i] as f64;
+            let ref_branch = (g + kinetic) * one_minus_gate * beta[i] as f64;
+            assert!(
+                (grad_out[i] - ref_out as f32).abs() < tol,
+                "mHC grad_out[{i}] {} vs ref {}",
+                grad_out[i],
+                ref_out
+            );
+            assert!(
+                (grad_branch[i] - ref_branch as f32).abs() < tol,
+                "mHC grad_branch[{i}] {} vs ref {}",
+                grad_branch[i],
+                ref_branch
+            );
+        }
+        // Regression guard: old code returned grad_out = grad_in (identity),
+        // i.e. grad_out[i] == grad_in[i] (alpha dropped). With alpha=0.85≠1
+        // they must now differ (unless grad_in is 0).
+        assert!(
+            (grad_out[1] - grad_in[1]).abs() > 1e-4 || grad_in[1].abs() < 1e-9,
+            "grad_out should reflect alpha scaling, got identity"
+        );
+
+        // Base-model route (null alpha/beta → alpha=beta=1)
+        let mut grad_out_b = vec![0.0f32; n];
+        let mut grad_branch_b = vec![0.0f32; n];
+        unsafe {
+            mhc_activation_backward(
+                grad_in.as_ptr(),
+                v_jepa.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                grad_out_b.as_mut_ptr(),
+                grad_branch_b.as_mut_ptr(),
+                kinetic_lambda,
+                n,
+            );
+        }
+        for i in 0..n {
+            let g = grad_in[i] as f64;
+            let v = v_jepa[i] as f64;
+            let s = 1.0 / (1.0 + (-v).exp());
+            let kinetic = -2.0 * kinetic_lambda as f64 * v;
+            let ref_out = g; // alpha=1
+            let ref_branch = (g + kinetic) * (1.0 - s); // beta=1
+            assert!(
+                (grad_out_b[i] - ref_out as f32).abs() < tol,
+                "base grad_out[{i}] {} vs {}",
+                grad_out_b[i],
+                ref_out
+            );
+            assert!(
+                (grad_branch_b[i] - ref_branch as f32).abs() < tol,
+                "base grad_branch[{i}] {} vs {}",
+                grad_branch_b[i],
+                ref_branch
+            );
+        }
     }
 }
