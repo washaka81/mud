@@ -184,6 +184,7 @@ show_help() {
     echo "  inspect-var     Run Deep Variance Inspector (VarH/VarJ check per layer)"
     echo "  scale-audit     PRQ scale audit vs BF16 source (detects vocabulary collapse)"
     echo "  pointer-audit   Raw pointer & ELUT nibble formula audit (P-00/P-01)"
+    echo "  env-audit       Verify 0 env-var doc/code/mud.sh divergences (R-05)"
     echo "  mhc-sync        Verify mHC alpha/beta persisted to .mud after checkpoint save"
     echo ""
     echo -e "${BLUE}🧪 C-MUD (Complex Manifold Thinking):${NC}"
@@ -843,9 +844,66 @@ case $1 in
         echo "  variance_inspector      Deep variance inspector (VarH/VarJ per layer)"
         echo "  loss_certification_bench STE loss-must-fall gate (stream K)"
         echo "  extract_code_docs       Extract Rust docs + Markdown into training/corpus/mud_docs.txt"
+        echo "  env-audit              Verify 0 env-var doc/code/mud.sh divergences (R-05)"
         echo "  circuit_telemetry       Seed-driven infinite training circuit TUI"
         ;;
-
+    env-audit)
+        # R-05: Verifica 0 divergencias entre código (env::var), mud.sh vars y docs.
+        # 1) missing-docs:  MUD_* leída en src/tools pero no documentada en MUD_ENV_REFERENCE.md §1/§2
+        # 2) stale-docs:    MUD_* documentada pero NO leída ni exportada (var retirada o falsa)
+        # 3) retired-usage:  presencia de vars §3 (retiradas) en src/tools/mud.sh
+        REF="docs/manuals/MUD_ENV_REFERENCE.md"
+        if [ ! -f "$REF" ]; then
+            echo -e "${RED}[ENV-AUDIT]${NC} Reference file missing: $REF"
+            exit 1
+        fi
+        # Patrón de exclusión: referencias a paths/c documents que contienen MUD_ pero
+        # no son env vars reales (p.ej. MUD_MASTER_REMEDIATION_PLAN_2026, MUD_ENV_REFERENCE).
+        DOCNAME_RE='MUD_[A-Z0-9_]+(_(AUDIT|PLAN|REPORT|REFERENCE|FEASIBILITY|ANALYSIS|GAP|LOGGAS|COUNTDOWN|CRITICOS|OPTIMIZATION_ANALYSIS|IMPROVEMENTS|COMPUTE_STACK|REGISTER_BIT_PACKING|ULTRA_COMPRESSED|SESSION_REPORT|TODO)_[A-Z0-9_]*)'
+        strip_docnames() { grep -vE "$DOCNAME_RE" | sort -u; }
+        # --- vars realmente leídas por el código (R): env::var("MUD_*") ---
+        CODED=$(grep -rhoE 'env::var\("MUD_[A-Z0-9_]+"\)|std::env::var\("MUD_[A-Z0-9_]+"\)' src tools 2>/dev/null \
+                | grep -oE '"MUD_[A-Z0-9_]+"' | tr -d '"' | sort -u)
+        # --- vars referenciadas en mud.sh (S): expansión, asignación o export ---
+        MUDSH=$(grep -hoE 'MUD_[A-Z0-9_]+' mud.sh 2>/dev/null | strip_docnames | grep -v '^$')
+        ALL_CODED=$(printf '%s\n%s\n' "$CODED" "$MUDSH" | grep -v '^$' | sort -u)
+        # --- vars documentadas en §1 tabla maestra (backtick `MUD_*`; evita subcadenas de CMUD_*) ---
+        DOCS=$(sed -n '/^## 1\. Tabla maestra/,/^## 2\. /p' "$REF" \
+               | grep -oE '`MUD_[A-Z0-9_]+`' | tr -d '`' | sort -u)
+        # --- vars retiradas en §3 (sólo filas de tabla `| \`MUD_X\` `, no prose) ---
+        RETIRED=$(sed -n '/^## 3\. Variables retiradas/,/^## 4\. /p' "$REF" \
+                  | grep -oE '\| `MUD_[A-Z0-9_]+`' | sed -E 's/\| `MUD_//; s/`$//' | sort -u)
+        ERR=0
+        echo -e "${CYAN}[ENV-AUDIT]${NC} Código: $(echo "$CODED" | grep -c .) vars · mud.sh: $(echo "$MUDSH" | grep -c .) vars"
+        echo -e "${CYAN}[ENV-AUDIT]${NC} Docs §1: $(echo "$DOCS" | grep -c .) vars · Retiradas §3: $(echo "$RETIRED" | grep -c .) vars"
+        # 1) missing-docs
+        MISSING=$(comm -23 <(echo "$CODED" | grep -v '^$') <(echo "$DOCS" | grep -v '^$'))
+        if [ -n "$MISSING" ]; then
+            echo -e "${RED}[ENV-AUDIT] FAIL missing-docs:${NC} vars leídas en código pero no documentadas:"
+            echo "$MISSING" | sed 's/^/    /'
+            ERR=1
+        fi
+        # 2) stale-docs (documentada en §1/§2 pero ni en código ni en mud.sh)
+        STALE=$(comm -23 <(echo "$DOCS" | grep -v '^$') <(echo "$ALL_CODED" | grep -v '^$'))
+        if [ -n "$STALE" ]; then
+            echo -e "${RED}[ENV-AUDIT] FAIL stale-docs:${NC} vars documentadas en §1/§2 pero ausentes de código y mud.sh (deberían estar en §3 Retiradas):"
+            echo "$STALE" | sed 's/^/    /'
+            ERR=1
+        fi
+        # 3) retired-usage (vars retiradas presentes en código o mud.sh)
+        RUSAGE=$(comm -12 <(echo "$RETIRED" | grep -v '^$') <(echo "$ALL_CODED" | grep -v '^$'))
+        if [ -n "$RUSAGE" ]; then
+            echo -e "${RED}[ENV-AUDIT] FAIL retired-usage:${NC} vars retiradas todavía usadas en código o mud.sh:"
+            echo "$RUSAGE" | sed 's/^/    /'
+            ERR=1
+        fi
+        if [ "$ERR" -eq 0 ]; then
+            echo -e "${GREEN}[ENV-AUDIT] OK — 0 divergencias (R-05)${NC}"
+        else
+            echo -e "${YELLOW}[ENV-AUDIT] Divergencias detectadas — corregir según §3 de $REF${NC}"
+        fi
+        exit $ERR
+        ;;
     *)
         show_help
         ;;

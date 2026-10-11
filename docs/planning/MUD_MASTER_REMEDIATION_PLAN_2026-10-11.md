@@ -229,7 +229,7 @@ flowchart LR
 | R-02 | `mud.sh ci` con release + all-targets | 🔴 | ✅ 2026-10-11 | `cargo clippy --all-targets --all-features -D warnings` 0 warnings; `cargo test --lib --release` 459/0; `cargo test --all-targets --release` exit 0 |
 | R-03 | UB fenwick batch4 (o purga) | 🔴 | ✅ 2026-10-11 | Purgados `prefix_sum_batch4_avx2` + `prefix_sum_batch8_avx2` + 2 tests (0 llamadores, P-08); `cargo test --lib --release` 459 passed, 0 failed |
 | R-04 | git init + .gitignore | 🟠 | ✅ 2026-10-11 | `git init` + `git add -A` + `git commit` exit 0; `.gitignore` limpio (sin duplicados; `GEMINI.md`/`AGENTS.md` trackeados) |
-| R-05 | env vars SSOT + doc | 🟠 | TODO | |
+| R-05 | env vars SSOT + doc | 🟠 | ✅ 2026-10-11 | `docs/manuals/MUD_ENV_REFERENCE.md` (117 vars `R` + 7 shell‑vars + 7 retiradas); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)` (Código: 117 · mud.sh: 51 · Docs §1: 123 · Retiradas §3: 6) |
 | R-06 | `MUD_AUDIT_LATEST` actualizado | 🟡 | ✅ 2026-10-11 | este plan + auditoría |
 | R-10 | Cabeza entrenada == cabeza evaluada | 🔴 | TODO | |
 | R-11 | Backward SiLU | 🔴 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 5/55 (R-01, R-02, R-03, R-04, R-06) · F0 es la ola activa.
+**Estado global:** 6/55 (R-01, R-02, R-03, R-04, R-05, R-06) · F0 es la ola activa.
 
 ---
 
