@@ -1,0 +1,37 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// 🚀 EDGE-07: VULKAN ZERO-COPY BACKPROPAGATION
+// Computes Gradient dL/dW = X^T * dL/dY using shared memory and subgroup reductions.
+
+layout(local_size_x = 32, local_size_y = 8) in; // 256 threads
+
+layout(std430, set = 0, binding = 0) buffer InputX { float x[]; };
+layout(std430, set = 0, binding = 1) buffer GradY { float grad_y[]; }; // dL/dY
+layout(std430, set = 0, binding = 2) buffer GradW { float grad_w[]; }; // Output dL/dW
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;       // Columns (Input dimension)
+    uint n_out;      // Rows (Output dimension)
+    uint batch_size; // Number of tokens in batch
+} pcs;
+
+void main() {
+    uint col = gl_GlobalInvocationID.x; // Corresponds to input dimension (x)
+    uint row = gl_GlobalInvocationID.y; // Corresponds to output dimension (y)
+    
+    if (col >= pcs.n_in || row >= pcs.n_out) return;
+
+    float local_grad = 0.0;
+    
+    // Accumulate gradient over the batch
+    // grad_w[row, col] = SUM_{b in batch} ( grad_y[b, row] * x[b, col] )
+    for (uint b = 0; b < pcs.batch_size; b++) {
+        float x_val = x[b * pcs.n_in + col];
+        float gy_val = grad_y[b * pcs.n_out + row];
+        local_grad += gy_val * x_val;
+    }
+    
+    // Write gradient to memory (Atomic not needed because each thread handles a unique (row, col) cell)
+    grad_w[row * pcs.n_in + col] = local_grad;
+}

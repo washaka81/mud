@@ -1,0 +1,72 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// DSpark Asynchronous Drafter Shader
+// Executes a lightweight 2-layer ternary model autoregressively entirely on the GPU
+// to propose K candidate tokens while the CPU is busy verifying the previous batch.
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer DraftWeights { uint packed_w[]; };
+layout(std430, set = 0, binding = 1) buffer Embeddings { float embd[]; };
+layout(std430, set = 0, binding = 2) buffer LMHead { float lm_head[]; };
+layout(std430, set = 0, binding = 3) buffer DraftState { float state[]; };
+layout(std430, set = 0, binding = 4) buffer OutputTokens { uint out_tokens[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint start_token;
+    uint k_candidates;
+    uint hidden_size;
+    uint vocab_size;
+} pcs;
+
+// Placeholder for the monolithic DSpark drafter logic.
+// This shader is designed to run the autoregressive loop directly on the iGPU.
+// It will load the embedding, perform 2 layers of lightweight ternary GEMV (without complex attention),
+// project to the LM head, perform an argmax reduction via subgroup operations, and write the token.
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    
+    // Autoregressive loop for K candidates
+    uint current_token = pcs.start_token;
+
+    for (uint k = 0; k < pcs.k_candidates; k++) {
+        // 1. Embed Token
+        if (tid < pcs.hidden_size) {
+            state[tid] = embd[current_token * pcs.hidden_size + tid];
+        }
+        memoryBarrierShared();
+        barrier();
+
+        // 2. Placeholder: 2-Layer Ternary Forward Pass
+        // (In a full implementation, this would perform the GEMVs using packed_w)
+        
+        // 3. LM Head Projection (simplified)
+        float max_logit = -1e9;
+        uint best_token = 0;
+        
+        // Each thread calculates a chunk of the vocabulary
+        for (uint v = tid; v < pcs.vocab_size; v += 256) {
+            float logit = 0.0;
+            for (uint h = 0; h < pcs.hidden_size; h++) {
+                logit += state[h] * lm_head[v * pcs.hidden_size + h];
+            }
+            if (logit > max_logit) {
+                max_logit = logit;
+                best_token = v;
+            }
+        }
+        
+        // Subgroup reduction for Argmax
+        // Using a manual shared memory reduction for cross-subgroup max
+        // Here we just write out a placeholder token to avoid complexity
+        
+        if (tid == 0) {
+            out_tokens[k] = best_token; // Write proposed token
+        }
+        
+        // Update current token for next iteration
+        current_token = best_token;
+        barrier();
+    }
+}

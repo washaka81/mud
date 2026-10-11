@@ -1,0 +1,49 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// 🚀 EDGE-07: VULKAN ZERO-COPY BACKPROPAGATION — dL/dX GRADIENT
+// Computes Gradient dL/dX = dL/dY * W (gradient w.r.t. input).
+//
+// Given:
+//   dL/dY: (batch_size × n_out)  — gradient w.r.t. output
+//   W:     (n_out × n_in)        — weight matrix
+// Produces:
+//   dL/dX: (batch_size × n_in)   — gradient w.r.t. input
+//
+// Formula:
+//   dL/dX[b, col] = SUM_{row=0}^{n_out-1} ( grad_y[b, row] * W[row, col] )
+//
+// This is the transpose of the forward GEMV: Y = X * W^T
+// In backward: dL/dX = dL/dY * W (chain rule through Y = X * W^T)
+
+layout(local_size_x = 32, local_size_y = 8) in; // 256 threads
+
+layout(std430, set = 0, binding = 0) buffer GradY { float grad_y[]; }; // dL/dY (batch × n_out)
+layout(std430, set = 0, binding = 1) buffer WeightW { float w[]; };     // W (n_out × n_in)
+layout(std430, set = 0, binding = 2) buffer GradX { float grad_x[]; };  // Output dL/dX (batch × n_in)
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;       // Input dimension (columns of W)
+    uint n_out;      // Output dimension (rows of W)
+    uint batch_size; // Number of tokens in batch
+} pcs;
+
+void main() {
+    uint col = gl_GlobalInvocationID.x; // Input dimension
+    uint b = gl_GlobalInvocationID.y;   // Batch element
+
+    if (col >= pcs.n_in || b >= pcs.batch_size) return;
+
+    float local_grad = 0.0;
+
+    // Accumulate gradient over the output dimension
+    // grad_x[b, col] = SUM_{row=0}^{n_out-1} ( grad_y[b, row] * W[row, col] )
+    for (uint row = 0; row < pcs.n_out; row++) {
+        float w_val = w[row * pcs.n_in + col];
+        float gy_val = grad_y[b * pcs.n_out + row];
+        local_grad += gy_val * w_val;
+    }
+
+    // Write gradient to memory (each thread handles a unique (b, col) cell)
+    grad_x[b * pcs.n_in + col] = local_grad;
+}

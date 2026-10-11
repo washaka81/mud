@@ -1,0 +1,115 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_ballot      : enable
+
+// ============================================================
+// ternary_backward_opt.comp — Zero-Copy Backprop with Tiling
+// ============================================================
+// Computes dL/dW = X^T * dL/dY using shared memory tiles.
+//
+// Strategy: each workgroup handles a (TILE_K x TILE_N) output
+// tile of grad_w. Activations X are loaded into shared memory
+// in TILE_K × TILE_X strips for coalesced access.
+//
+// Matches existing buffer layout in VulkanContext::run_qat_backward_async.
+// ============================================================
+
+// Tuning: 32 threads/wg in X (input tile), 8 in Y (output tile)
+// This gives 256 threads per workgroup — optimal for iGPU & dGPU
+#define TILE_X 32u   // Threads covering input dimension per tile
+#define TILE_Y 8u    // Threads covering output dimension
+
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+// Buffer 0: Input activations X[batch_size, n_in]
+layout(std430, set = 0, binding = 0) readonly buffer InputX {
+    float x[];
+};
+// Buffer 1: Output gradients dL/dY[batch_size, n_out]
+layout(std430, set = 0, binding = 1) readonly buffer GradY {
+    float grad_y[];
+};
+// Buffer 2: Weight gradients dL/dW[n_out, n_in] — output
+layout(std430, set = 0, binding = 2) buffer GradW {
+    float grad_w[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;        // Input dimension (columns of W)
+    uint n_out;       // Output dimension (rows of W)
+    uint batch_size;  // Batch size (number of tokens)
+} pcs;
+
+// Shared memory: cache X rows for the current tile
+// s_x[batch_lane][x_lane] — 8 batch rows × 32 input cols
+shared float s_x[TILE_Y][TILE_X];   // 32×8×4 = 1KB
+
+// Shared memory: cache grad_y for the current tile
+// s_gy[batch_lane][y_lane] — 8 batch rows × 8 output cols
+shared float s_gy[TILE_Y][TILE_Y];  // 8×8×4 = 256B
+
+void main() {
+    // This thread computes grad_w[out_row, in_col]
+    uint in_col  = gl_WorkGroupID.x * TILE_X + gl_LocalInvocationID.x;
+    uint out_row = gl_WorkGroupID.y * TILE_Y + gl_LocalInvocationID.y;
+
+    float acc = 0.0;
+
+    // Tile across batch dimension for coalesced loads
+    uint num_batch_tiles = (pcs.batch_size + TILE_Y - 1u) / TILE_Y;
+
+    for (uint bt = 0u; bt < num_batch_tiles; bt++) {
+        uint b_base = bt * TILE_Y;
+
+        // === Load tile of X into shared memory ===
+        // Thread (lx, ly) loads x[b_base + ly, wg_x_base + lx]
+        {
+            uint b      = b_base + gl_LocalInvocationID.y;
+            uint x_col  = gl_WorkGroupID.x * TILE_X + gl_LocalInvocationID.x;
+
+            if (b < pcs.batch_size && x_col < pcs.n_in) {
+                s_x[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
+                    x[b * pcs.n_in + x_col];
+            } else {
+                s_x[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
+            }
+        }
+
+        // === Load tile of grad_y into shared memory ===
+        // All threads in the workgroup cooperatively load grad_y[b_base..., out_row_tile]
+        // We need grad_y[batch, out_row] for out_row in [wg_y_base, wg_y_base+TILE_Y)
+        // Thread (lx, ly) covers: batch = b_base + (lx % TILE_Y), out = wg_y_base + ly
+        // But we only have lx in [0..32), so use modulo
+        {
+            uint b_idx    = gl_LocalInvocationID.x % TILE_Y;
+            uint out_idx  = gl_LocalInvocationID.y; // already in [0, TILE_Y)
+            uint b_global = b_base + b_idx;
+            uint o_global = gl_WorkGroupID.y * TILE_Y + out_idx;
+
+            if (b_global < pcs.batch_size && o_global < pcs.n_out) {
+                s_gy[b_idx][out_idx] = grad_y[b_global * pcs.n_out + o_global];
+            } else {
+                s_gy[b_idx][out_idx] = 0.0;
+            }
+        }
+
+        barrier();
+        memoryBarrierShared();
+
+        // === Accumulate using shared tiles ===
+        // grad_w[out_row, in_col] += SUM_b( grad_y[b, out_row] * x[b, in_col] )
+        // Using shared: s_gy[b_local][local_y] * s_x[b_local][local_x]
+        uint tile_size = min(TILE_Y, pcs.batch_size - b_base);
+        for (uint bi = 0u; bi < tile_size; bi++) {
+            acc += s_gy[bi][gl_LocalInvocationID.y] *
+                   s_x[bi][gl_LocalInvocationID.x];
+        }
+
+        barrier();
+    }
+
+    // Write result — each thread writes a unique (out_row, in_col) cell
+    if (out_row < pcs.n_out && in_col < pcs.n_in) {
+        grad_w[out_row * pcs.n_in + in_col] = acc;
+    }
+}

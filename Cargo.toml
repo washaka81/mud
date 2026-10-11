@@ -1,0 +1,306 @@
+[package]
+name = "forge_llm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alejandro Fonda <alejandro.fonda@gmail.com>"]
+description = "Ultra-optimized Ternary MoE inference engine (MUD architecture)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/washaka81/mud"
+readme = "README.md"
+default-run = "forge_llm"
+
+[[bin]]
+name = "check_scales"
+path = "tools/check_scales.rs"
+
+[[bin]]
+name = "extract_code_docs"
+path = "tools/extract_code_docs.rs"
+
+
+
+[dependencies]
+# Memory mapping for loading .mud files efficiently
+memmap2 = "0.9.3"
+half = { version = "2.3.1", features = ["num-traits"] }
+
+# Vulkan ecosystem for iGPU compute offloading
+vulkano = "0.34.0"
+vulkano-shaders = "0.34.0"
+
+# Core utilities
+log = "0.4.20"
+env_logger = "0.10.1"
+anyhow = "1.0.75"
+thiserror = "1.0"
+rand = "0.10.1"
+rand_distr = "0.5.1"
+crossterm = "0.29.0"
+unicode-width = "0.2.2"
+sysinfo = "0.38.4"
+serde_json = "1.0.149"
+byteorder = "1.5.0"
+parking_lot = "0.12.5"
+rayon = "1.12.0"
+zip = "8.6.0"
+pdf-extract = "0.10.0"
+roxmltree = "0.21.1"
+safetensors = "0.4.3"
+ctrlc = "3.4.0"
+# LZ4 lossless compression for KV cache (Delta + LZ4, stream I)
+lz4_flex = "0.11.2"
+forge_autograd = { version = "0.1.0", path = "forge_autograd" }
+ratatui = "0.26.1"
+comfy-table = "7.1.0"
+gguf = "0.1.2"
+candle-core = "0.10.2"
+serde = { version = "1.0.228", features = ["derive"] }
+wait-timeout = "0.2.1"
+bytemuck = "1.25.0"
+core_affinity = "0.8.3"
+ash = "0.38.0"
+gpu-allocator = "0.28.0"
+
+# ── SEC-H2 (2026-07-27): property-based fuzzing for untrusted loaders ────────
+# `proptest` generates mutated byte sequences to verify `MudFile::load` and
+# `GGUFModel::load` never panic on attacker-controlled input (CWE-1188).
+proptest = { version = "1.5", optional = true }
+
+[features]
+default = []
+unsafe-rce = []
+unsafe-cli = []
+# SEC-H2: enable property-based fuzzing tests with `--features proptest`
+proptest = ["dep:proptest"]
+
+[[bin]]
+name = "forge_llm"
+path = "src/main.rs"
+
+[[bin]]
+name = "model_dumper"
+path = "tools/model_dumper.rs"
+
+
+
+
+[[bin]]
+name = "step_inference"
+path = "tools/step_inference.rs"
+
+
+
+
+
+
+
+
+
+
+
+
+[[bin]]
+name = "universal_converter"
+path = "tools/universal_converter/main.rs"
+
+
+
+
+
+[lib]
+name = "forge_llm"
+crate-type = ["cdylib", "lib"]
+
+[build-dependencies]
+# Used to compile ASM files during the build process
+cc = "1.0.83"
+
+
+
+
+
+
+
+[[bin]]
+name = "recalibration_projector"
+path = "tools/recalibration_projector.rs"
+
+[[bin]]
+name = "run_trainer"
+path = "tools/run_trainer.rs"
+
+
+
+
+[[bin]]
+name = "diagnose_model"
+path = "tools/diagnose_model.rs"
+
+
+
+
+
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+# Target CPU features should be specified during compilation (e.g. RUSTFLAGS="-C target-cpu=native")
+# mud.sh automatically sets RUSTFLAGS="-C target-cpu=native" for all cargo invocations.
+
+# ── SECURITY FEATURES (V25 audit SEC-1/SEC-2 + SEC-H2 2026-07-27) ────────────
+# Default builds ship with NO arbitrary code execution primitives. Opt-in only.
+# - `unsafe-rce`    : enables `RlvrCritic::evaluate_rust_code` (executes `rustc`
+#                     on attacker-controlled code in the corpus). Use ONLY in
+#                     research/eval contexts, never in production serving.
+# - `unsafe-cli`    : enables `TerminalSandbox::execute_command` (executes
+#                     `bash -c <attacker-string>`). Same caveat.
+# - `proptest`      : enables property-based fuzzing tests for untrusted
+#                     loaders (`MudFile::load`, GGUF loader). Run with
+#                     `cargo test --lib --features proptest -- --test-threads=2`.
+# Production builds MUST be `cargo build --release` (no feature flags) so
+# these paths are dead-code-eliminated from the binary entirely.
+# (The [features] table with `default`, `unsafe-rce`, `unsafe-cli`, and
+#  `proptest` lives near the dependency declarations above.)
+
+
+
+
+
+
+[[bin]]
+name = "mud_forge"
+path = "tools/mud_forge.rs"
+
+[[bin]]
+name = "iteration_validator"
+path = "tools/iteration_validator.rs"
+
+[[bin]]
+name = "conversion_verifier"
+path = "tools/conversion_verifier.rs"
+
+[[bin]]
+name = "training_estimator"
+path = "tools/training_estimator.rs"
+
+# ── D4: Pipeline overlap benchmark (CPU struct overhead + GPU throughput) ──────
+[[bin]]
+name = "pipeline_overlap_bench"
+path = "tools/pipeline_overlap_bench.rs"
+
+# ── Stream C: GEMV auto-threshold bench (CPU vs GPU break-even) ───────────────
+[[bin]]
+name = "gemv_auto_bench"
+path = "tools/gemv_auto_bench.rs"
+
+# ── Stream K: Loss certification bench (STE QAT loss-must-fall gate) ──────────
+[[bin]]
+name = "loss_certification_bench"
+path = "tools/loss_certification_bench.rs"
+
+# ── L-12: Structural healthcheck for .mud models ──────────────────────────────
+[[bin]]
+name = "training_healthcheck"
+path = "tools/training_healthcheck.rs"
+
+
+[[bin]]
+name = "boundary_validator"
+path = "tools/boundary_validator.rs"
+
+
+
+
+
+
+
+
+
+
+
+[[bin]]
+name = "train_telemetry"
+path = "tools/train_telemetry.rs"
+
+[[bin]]
+name = "cmud_train"
+path = "tools/cmud_train.rs"
+
+[[bin]]
+name = "cmud_audit"
+path = "tools/cmud_audit.rs"
+
+[[bin]]
+name = "cmud_bench"
+path = "tools/cmud_bench.rs"
+
+[[bin]]
+name = "cmud_gradtest"
+path = "tools/cmud_gradtest.rs"
+
+[[bin]]
+name = "cmud_manifold_validator"
+path = "tools/cmud_manifold_validator.rs"
+
+[[bin]]
+name = "circuit_telemetry"
+path = "tools/circuit_telemetry.rs"
+
+[[bin]]
+name = "debate_telemetry"
+path = "tools/debate_telemetry.rs"
+
+[[bin]]
+name = "mud_full_audit"
+path = "tools/mud_full_audit.rs"
+
+[[bin]]
+name = "scale_audit"
+path = "tools/scale_audit.rs"
+
+[[bin]]
+name = "bonsai_gguf_to_mud"
+path = "tools/bonsai_gguf_to_mud.rs"
+
+# ── SPRINT-2: SlimeX file fusion (merge N .mud → 1 via MudFileMerger). ───────
+[[bin]]
+name = "slimex_fuse"
+path = "tools/slimex_fuse.rs"
+
+# ── Universal Converter Audit: precise bitnet_scale-correct fidelity auditor ─
+[[bin]]
+name = "precise_converter_audit"
+path = "tools/precise_converter_audit.rs"
+
+# ── SPRINT-3: CMUD perplexity benchmark (baseline vs C-MUD think). ───────────
+[[bin]]
+name = "cmud_perplexity"
+path = "tools/cmud_perplexity.rs"
+
+# ── Fenwick Tree benchmark (F4): Linear vs Fenwick vs ASM/pointer. ───────────
+[[bin]]
+name = "fenwick_bench"
+path = "tools/fenwick_bench.rs"
+
+# ── SPRINT-6: Comprehensive ASM kernel benchmark suite (AVX2 vs Scalar). ──────
+[[bin]]
+name = "asm_kernel_bench"
+path = "tools/asm_kernel_bench.rs"
+
+# ── Inference coherence tool: measures success, deviation, coherence path. ─────
+[[bin]]
+name = "inference_coherence"
+path = "tools/inference_coherence.rs"
+
+# ── mHC scale SGD stress test + benchmark (Vulkan/ash) ───────────────────────
+[[bin]]
+name = "mhc_stress_bench"
+path = "tools/mhc_stress_bench.rs"
+
+# ── AutoFinetune: model-aware hyperparameter search ───────────────────────────
+[[bin]]
+name = "autofinetune"
+path = "tools/autofinetune.rs"

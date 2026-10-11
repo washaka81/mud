@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(mkdir)",
+      "Exec(tar)",
+      "Exec(ls)",
+      "Exec(chmod)"
+    ]
+  }
+}

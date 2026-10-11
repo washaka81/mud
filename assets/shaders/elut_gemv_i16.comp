@@ -1,0 +1,93 @@
+#version 460
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+
+// SlimeShader: ELUT 4-bit GEMV with i16 Accumulation
+// Operates natively on SlimeRegister format: [JEPA(16) | MatMul(16)]
+
+layout(local_size_x = 32) in;
+
+// In/Out workspace: each uint is a SlimeRegister [jepa:16 | accum:16]
+layout(std430, set = 0, binding = 0) readonly buffer InputX { uint x_registers[]; };
+// Weights: ELUT packed (8 nibbles per uint = 8 weights per uint)
+layout(std430, set = 0, binding = 1) readonly buffer Weights { uint packed_w[]; };
+// Output Workspace
+layout(std430, set = 0, binding = 2) buffer OutputY { uint y_registers[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint n_in;
+    uint n_out;
+    uint do_residual;
+} pcs;
+
+shared int shared_sum[32];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+
+    if (row >= pcs.n_out) return;
+
+    uint lane_id = gl_LocalInvocationID.x;
+    int local_sum = 0;
+
+    // 8 weights per uint
+    uint blocks_per_row = pcs.n_in / 8;
+    uint row_offset = row * blocks_per_row;
+
+    for (uint b = lane_id; b < blocks_per_row; b += 32) {
+        uint w_bits = packed_w[row_offset + b];
+        uint x_base = b * 8;
+
+        #pragma unroll
+        for (uint i = 0; i < 8; i++) {
+            uint nibble = (w_bits >> (i * 4)) & 0xFu;
+            if (nibble != 0u) {
+                // Read input register i16 and sign-extend to i32
+                uint reg_in = x_registers[x_base + i];
+                int x_val = int(reg_in & 0xFFFFu);
+                if ((reg_in & 0x8000u) != 0u) {
+                    x_val |= int(0xFFFF0000u); // Sign extend
+                }
+                
+                // ELUT: 0x1 -> +x, 0xF -> -x
+                if (nibble == 1u) {
+                    local_sum += x_val;
+                } else {
+                    local_sum -= x_val;
+                }
+            }
+        }
+    }
+
+    int total_sum = subgroupAdd(local_sum);
+
+    if (subgroupElect()) {
+        shared_sum[gl_SubgroupID] = total_sum;
+    }
+    barrier();
+
+    if (lane_id == 0) {
+        int workgroup_sum = 0;
+        for (uint i = 0; i < gl_NumSubgroups; i++) {
+            workgroup_sum += shared_sum[i];
+        }
+
+        uint old_reg = y_registers[row]; // Fetch to preserve JEPA bits
+        
+        int final_accum = workgroup_sum;
+        if (pcs.do_residual == 1u) {
+            int old_accum = int(old_reg & 0xFFFFu);
+            if ((old_reg & 0x8000u) != 0u) {
+                old_accum |= int(0xFFFF0000u);
+            }
+            final_accum += old_accum;
+        }
+
+        // Clamp to i16 range to prevent overflow
+        final_accum = clamp(final_accum, -32767, 32767);
+        
+        // Write back while preserving upper 16 bits (JEPA state)
+        uint new_reg = (old_reg & 0xFFFF0000u) | (uint(final_accum) & 0xFFFFu);
+        y_registers[row] = new_reg;
+    }
+}

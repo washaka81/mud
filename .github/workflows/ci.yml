@@ -1,0 +1,121 @@
+# L-12: CI health battery — unit tests, clippy, P-13 properties, optional model healthcheck
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Library tests that touch ash skip gracefully if Vulkan is missing.
+  MUD_USE_VULKAN: "0"
+
+jobs:
+  health-battery:
+    name: L-12 health battery
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (all-targets, all-features, -D warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Unit tests (lib, release)
+        run: cargo test --lib --release -- --test-threads=2
+
+      - name: P-13 property tests (release)
+        run: cargo test --lib --release p13 -- --test-threads=1
+
+      - name: Stream K loss_cert unit tests (release)
+        run: cargo test --lib --release loss_cert -- --test-threads=1
+
+      - name: All-targets tests (release)
+        run: cargo test --all-targets --release
+
+      - name: Build audit bins
+        run: cargo build --release --bin training_healthcheck --bin mud_full_audit --bin loss_certification_bench --bin pipeline_overlap_bench
+
+      - name: Model healthcheck + full audit (if .mud present)
+        run: |
+          MODEL=""
+          if [ -f models/smollm2.mud ]; then MODEL=models/smollm2.mud
+          elif [ -f models/test_model.mud ]; then MODEL=models/test_model.mud
+          elif ls models/*.mud 1>/dev/null 2>&1; then MODEL=$(ls models/*.mud | head -n1)
+          fi
+          if [ -n "$MODEL" ]; then
+            echo "Running healthcheck on $MODEL"
+            cargo run --quiet --bin training_healthcheck -- "$MODEL"
+            echo "Running full ledger audit on $MODEL"
+            cargo run --quiet --bin mud_full_audit -- "$MODEL"
+          else
+            echo "No models/*.mud in checkout — skipping model audit (OK for pure code PRs)"
+          fi
+
+      # Optional heavy e2e (enable with repo variable / manual): loss-must-fall on real model
+      - name: Stream K e2e loss cert (optional)
+        if: ${{ vars.MUD_CI_LOSS_CERT == '1' }}
+        run: |
+          MODEL=""
+          if [ -f models/smollm2.mud ]; then MODEL=models/smollm2.mud
+          elif ls models/*.mud 1>/dev/null 2>&1; then MODEL=$(ls models/*.mud | head -n1)
+          fi
+          if [ -z "$MODEL" ]; then
+            echo "No model — skip e2e loss cert"
+            exit 0
+          fi
+          MUD_LOSS_CERT_FAST=1 MUD_GPU_GEMV=0 MUD_USE_VULKAN=0 \
+            cargo run --release --bin loss_certification_bench -- --fast "$MODEL"
+
+  # ── Nightly cert-loss job (D4: Phase D training scale validation) ───────────
+  nightly-cert-loss:
+    name: Nightly cert-loss (loss-must-fall gate)
+    runs-on: ubuntu-latest
+    if: github.repository == 'washaka81/mud'
+    env:
+      CARGO_TERM_COLOR: always
+      MUD_USE_VULKAN: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build loss certification bench
+        run: cargo build --release --bin loss_certification_bench --bin pipeline_overlap_bench
+
+      - name: Nightly cert-loss (fast gate)
+        run: |
+          MODEL=""
+          if [ -f models/smollm2.mud ]; then MODEL=models/smollm2.mud
+          elif ls models/*.mud 1>/dev/null 2>&1; then MODEL=$(ls models/*.mud | head -n1)
+          fi
+          if [ -z "$MODEL" ]; then
+            echo "No model — skip nightly cert-loss"
+            exit 0
+          fi
+          echo "Running nightly cert-loss on $MODEL"
+          MUD_LOSS_CERT_FAST=1 MUD_GPU_GEMV=0 MUD_USE_VULKAN=0 \
+            cargo run --release --bin loss_certification_bench -- --fast "$MODEL"
+
+      - name: Pipeline overlap struct benchmark
+        run: cargo run --release --bin pipeline_overlap_bench

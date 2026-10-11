@@ -1,0 +1,43 @@
+#version 450
+
+// 🚀 D5: Generic element-wise operations for STP + JEPA (safe on Iris Xe, no QKV shader)
+// Modos (push constant `mode`):
+//   0: add         — out[i] = in[i] + target[i]           (STP gradient injection)
+//   1: subtract    — out[i] = in[i] - target[i]           (STP vector differences)
+//   2: clamp       — out[i] = clamp(in[i], p0, p1)        (mHC scale SGD clamp)
+//   3: sigmoid     — out[i] = 1 / (1 + exp(-in[i]))       (JEPA gate)
+//   4: ema         — out[i] = p0 * in[i] + p1 * target[i] (JEPA EMA update)
+//   5: normalize   — out[i] = (in[i] - p0) / p1           (JEPA z-score normalization)
+//   6: axpy        — out[i] = in[i] + p0 * target[i]      (STP gradient injection)
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer Input { float in_w[]; };
+layout(std430, set = 0, binding = 1) buffer Output { float out_w[]; };
+layout(std430, set = 0, binding = 2) buffer Target { float target_w[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint n_elements;
+    uint mode;
+    float param0;
+    float param1;
+} pcs;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pcs.n_elements) return;
+
+    float v = in_w[i];
+    float t = target_w[i];
+
+    switch (pcs.mode) {
+        case 0u:  out_w[i] = v + t; break;                    // add
+        case 1u:  out_w[i] = v - t; break;                    // subtract
+        case 2u:  out_w[i] = clamp(v, pcs.param0, pcs.param1); break; // clamp
+        case 3u:  out_w[i] = 1.0 / (1.0 + exp(-v)); break;    // sigmoid
+        case 4u:  out_w[i] = pcs.param0 * v + pcs.param1 * t; break; // ema
+        case 5u:  out_w[i] = (v - pcs.param0) / pcs.param1; break;    // normalize
+        case 6u:  out_w[i] = v + pcs.param0 * t; break;       // axpy
+        default:  out_w[i] = v; break;                        // passthrough
+    }
+}

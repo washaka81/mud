@@ -1,0 +1,1 @@
+/home/ale/proyectos/forge_llm/forge_autograd/target/debug/libforge_autograd.rlib: /home/ale/proyectos/forge_llm/forge_autograd/target/package/forge_autograd-0.1.0/src/avx_math.rs /home/ale/proyectos/forge_llm/forge_autograd/target/package/forge_autograd-0.1.0/src/lib.rs

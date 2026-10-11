@@ -1,0 +1,1030 @@
+use crate::asm;
+use crate::mud::routing::MudRouter;
+use crate::mud::{dequantize_ternary_row, MudFile, MudTensorType};
+
+// ============================================================
+// MUD FORMAT ROUNDTRIP
+// ============================================================
+
+#[test]
+fn test_mud_save_load_roundtrip() {
+    let path = "/tmp/test_mud_roundtrip.mud";
+    let _ = std::fs::remove_file(path);
+
+    let data: Vec<u8> = (0..128).map(|i| if i < 64 { 0x11 } else { 0x22 }).collect();
+    let tensor = crate::mud::MudTensor {
+        name: "test.weight".into(),
+        t_type: MudTensorType::Ternary2Bit,
+        shape: vec![16, 16],
+        data_ptr: data.as_ptr(),
+        offset: 0,
+        data_base: 0,
+        mmap: None,
+        owned_data: Some(data),
+    };
+
+    let mut tensors = std::collections::HashMap::new();
+    tensors.insert("test.weight".into(), tensor);
+
+    let skill = crate::mud::MudSkill {
+        name: "core".into(),
+        tensors,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let mut skills = std::collections::HashMap::new();
+    skills.insert("core".into(), skill);
+
+    let file = MudFile {
+        mmap: None,
+        skills,
+        global_metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("hidden_size".into(), "512".into());
+            m.insert("num_layers".into(), "2".into());
+            m.insert("num_experts".into(), "8".into());
+            m.insert("ffn_hidden".into(), "2048".into());
+            m.insert("num_heads".into(), "8".into());
+            m.insert("max_seq_len".into(), "4096".into());
+            m
+        },
+        path: None,
+    };
+
+    file.save(path).expect("save should succeed");
+    let loaded = MudFile::load(path).expect("load should succeed");
+
+    let core = loaded.skills.get("core").expect("core skill");
+    let t = core.tensors.get("test.weight").expect("tensor");
+    assert_eq!(t.name, "test.weight");
+    assert_eq!(t.t_type, MudTensorType::Ternary2Bit);
+    assert_eq!(t.shape, vec![16, 16]);
+
+    let _ = std::fs::remove_file(path);
+}
+
+// ============================================================
+// DEQUANTIZE TERNARY ROW
+// ============================================================
+
+#[test]
+fn test_dequantize_ternary_row_all_zeros() {
+    let packed: Vec<u32> = vec![0u32; 4];
+    let mut out = [0.0f32; 32];
+    unsafe {
+        dequantize_ternary_row(packed.as_ptr(), &mut out, 32);
+    }
+    for v in out.iter() {
+        assert_eq!(*v, 0.0, "all zeros failed");
+    }
+}
+
+#[test]
+fn test_dequantize_ternary_row_all_ones() {
+    let packed: Vec<u32> = vec![0x1111_1111u32; 4];
+    let mut out = [0.0f32; 32];
+    unsafe {
+        dequantize_ternary_row(packed.as_ptr(), &mut out, 32);
+    }
+    for v in out.iter() {
+        assert_eq!(*v, 1.0, "all ones failed");
+    }
+}
+
+#[test]
+fn test_dequantize_ternary_row_all_neg_ones() {
+    let packed: Vec<u32> = vec![0xFFFF_FFFFu32; 4];
+    let mut out = [0.0f32; 32];
+    unsafe {
+        dequantize_ternary_row(packed.as_ptr(), &mut out, 32);
+    }
+    for v in out.iter() {
+        assert_eq!(*v, -1.0, "all neg ones failed");
+    }
+}
+
+#[test]
+fn test_dequantize_ternary_row_mixed() {
+    // 0x01F0: LSB first: bits[0..3]=0 (0->0), bits[4..7]=F (F->-1),
+    //                bits[8..11]=1 (1->+1), bits[12..15]=0 (0->0)
+    let packed = [0x01F0u32];
+    let mut out = [0.0f32; 4];
+    unsafe {
+        dequantize_ternary_row(packed.as_ptr(), &mut out, 4);
+    }
+    assert_eq!(out[0], 0.0, "bits 0-3=0 -> 0");
+    assert_eq!(out[1], -1.0, "bits 4-7=F -> -1");
+    assert_eq!(out[2], 1.0, "bits 8-11=1 -> +1");
+    assert_eq!(out[3], 0.0, "bits 12-15=0 -> 0");
+}
+
+#[test]
+fn test_dequantize_ternary_row_remainder() {
+    let packed = [0x1111_1111u32, 0u32];
+    let mut out = [0.0f32; 12];
+    unsafe {
+        dequantize_ternary_row(packed.as_ptr(), &mut out, 12);
+    }
+    for (i, val) in out.iter().enumerate().take(8) {
+        assert_eq!(*val, 1.0, "remainder full block idx {i}");
+    }
+    for (i, val) in out.iter().enumerate().skip(8) {
+        assert_eq!(*val, 0.0, "remainder out of range idx {i}");
+    }
+}
+
+// ============================================================
+// TERNARY GEMV: ASM vs SCALAR REFERENCE
+// ============================================================
+
+fn scalar_ternary_gemv(x: &[f32], weights: &[u32], scale: f32, n: usize) -> f32 {
+    let mut sum = 0.0f32;
+    let u32_count = n / 8;
+    let remainder = n % 8;
+
+    for i in 0..u32_count {
+        let val = weights[i];
+        for j in 0..8 {
+            let bits = (val >> (j * 4)) & 15;
+            let w = match bits {
+                1 => 1.0,
+                15 => -1.0,
+                _ => 0.0,
+            };
+            sum += w * x[i * 8 + j];
+        }
+    }
+
+    if remainder > 0 {
+        let val = weights[u32_count];
+        for j in 0..remainder {
+            let bits = (val >> (j * 4)) & 15;
+            let w = match bits {
+                1 => 1.0,
+                15 => -1.0,
+                _ => 0.0,
+            };
+            sum += w * x[u32_count * 8 + j];
+        }
+    }
+
+    sum * scale
+}
+
+fn make_ternary_packed(values: &[i8]) -> Vec<u32> {
+    let n = values.len();
+    let u32_count = n.div_ceil(8);
+    let mut packed = vec![0u32; u32_count];
+    for i in 0..n {
+        let code = match values[i] {
+            1 => 1u32,
+            -1 => 15u32,
+            _ => 0u32,
+        };
+        packed[i / 8] |= code << ((i % 8) * 4);
+    }
+    packed
+}
+
+#[test]
+fn test_ternary_gemv_asm_vs_scalar_random() {
+    let n = 512;
+    let mut x = vec![0.0f32; n];
+    for (i, val) in x.iter_mut().enumerate() {
+        *val = (i as f32 * 0.1).sin() * 3.0;
+    }
+    let mut ternary_vals = vec![0i8; n];
+    for (i, val) in ternary_vals.iter_mut().enumerate() {
+        *val = match i % 3 {
+            0 => 1,
+            1 => -1,
+            _ => 0,
+        };
+    }
+    let packed = make_ternary_packed(&ternary_vals);
+    let scale = 0.5;
+
+    let mut asm_out = 0.0f32;
+    unsafe {
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut asm_out, scale);
+    }
+    let ref_out = scalar_ternary_gemv(&x, &packed, scale, n);
+
+    let rel_err = (asm_out - ref_out).abs() / ref_out.abs().max(1e-10);
+    assert!(
+        rel_err < 1e-4,
+        "ASM vs scalar GEMV relative error: {rel_err:.2e} (asm={asm_out}, ref={ref_out})"
+    );
+}
+
+#[test]
+fn test_ternary_gemv_asm_accumulate() {
+    let n = 256;
+    let x = vec![1.0f32; n];
+    let packed = make_ternary_packed(&vec![1i8; n]);
+    let scale = 1.0;
+
+    let mut out = 42.0f32;
+    unsafe {
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out, scale);
+    }
+    let expected = n as f32 * scale;
+    assert_eq!(out, expected, "ASM should overwrite existing value");
+}
+
+#[test]
+fn test_ternary_gemv_4rows_consistency() {
+    let n = 256;
+    let x = vec![0.5f32; n];
+
+    let mut single_results = [0.0f32; 4];
+    for (row, res) in single_results.iter_mut().enumerate() {
+        let packed = make_ternary_packed(&vec![1i8 - (row as i8 * 2).signum(); n]);
+        unsafe {
+            asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), res, 0.5);
+        }
+    }
+
+    let mut quad_results = [0.0f32; 4];
+    let stride = n / 8;
+    let all_weights: Vec<u32> = (0..4)
+        .flat_map(|row| make_ternary_packed(&vec![1i8 - (row as i8 * 2).signum(); n]))
+        .collect();
+    unsafe {
+        asm::ternary_gemv_4rows(
+            n,
+            x.as_ptr(),
+            all_weights.as_ptr(),
+            quad_results.as_mut_ptr(),
+            0.5,
+            stride,
+        );
+    }
+
+    for row in 0..4 {
+        let rel_err =
+            (quad_results[row] - single_results[row]).abs() / single_results[row].abs().max(1e-10);
+        assert!(
+            rel_err < 1e-4,
+            "4rows row {row} mismatch: quad={} single={}",
+            quad_results[row],
+            single_results[row]
+        );
+    }
+}
+
+// ============================================================
+// T-SAR QUANTIZATION ACCURACY
+// ============================================================
+
+#[test]
+fn test_tsar_quantization_roundtrip() {
+    let n = 512;
+    let x: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.1).sin() * 2.0).collect();
+
+    let absmax = x.iter().map(|v| v.abs()).fold(1e-8f32, f32::max);
+    let q_scale = 127.0 / absmax;
+    let mut x_q = vec![0i8; n];
+    for i in 0..n {
+        x_q[i] = (x[i] * q_scale).round().clamp(-127.0, 127.0) as i8;
+    }
+    let inv_q_scale = absmax / 127.0;
+
+    let mut max_err = 0.0f32;
+    let mut sum_sq_err = 0.0f32;
+    for i in 0..n {
+        let reconstructed = x_q[i] as f32 * inv_q_scale;
+        let err = (reconstructed - x[i]).abs();
+        max_err = max_err.max(err);
+        sum_sq_err += err * err;
+    }
+    let rmse = (sum_sq_err / n as f32).sqrt();
+
+    assert!(
+        max_err < inv_q_scale * 1.5,
+        "T-SAR max quantization error too high: {max_err} > {}",
+        inv_q_scale * 1.5
+    );
+    assert!(rmse < inv_q_scale * 0.5, "T-SAR RMSE too high: {rmse}");
+}
+
+#[test]
+fn test_tsar_symmetry() {
+    let n = 128;
+    let x: Vec<f32> = (0..n).map(|i| (i as f32 - 64.0) * 0.5).collect();
+
+    let absmax = x.iter().map(|v| v.abs()).fold(1e-8f32, f32::max);
+    let q_scale = 127.0 / absmax;
+    let mut x_q = vec![0i8; n];
+    for i in 0..n {
+        x_q[i] = (x[i] * q_scale).round().clamp(-127.0, 127.0) as i8;
+    }
+
+    for i in 0..n {
+        let reconstructed = x_q[i] as f32 * (absmax / 127.0);
+        let rel_err = (reconstructed - x[i]).abs() / x[i].abs().max(1e-10);
+        if x[i].abs() > 1.0 {
+            assert!(
+                rel_err < 0.1,
+                "T-SAR symmetry error at {i}: x={}, reconstructed={}, rel_err={rel_err:.4}",
+                x[i],
+                reconstructed
+            );
+        }
+    }
+}
+
+#[test]
+fn test_tsar_edge_cases() {
+    let test_cases = [
+        ("all zeros", vec![0.0f32; 64]),
+        ("constant", vec![std::f32::consts::PI; 64]),
+        ("small values", vec![1e-6f32; 64]),
+        ("large values", vec![1e6f32; 64]),
+        ("mixed signs", {
+            let mut v = vec![0.0f32; 64];
+            for (i, val) in v.iter_mut().enumerate() {
+                *val = if i % 2 == 0 { 10.0 } else { -10.0 };
+            }
+            v
+        }),
+    ];
+
+    for (name, x) in &test_cases {
+        let absmax = x.iter().map(|v| v.abs()).fold(1e-8f32, f32::max);
+        let q_scale = 127.0 / absmax;
+        let mut x_q = vec![0i8; x.len()];
+        for (i, val) in x_q.iter_mut().enumerate() {
+            *val = (x[i] * q_scale).round().clamp(-127.0, 127.0) as i8;
+        }
+
+        for &v in &x_q {
+            assert!(v >= -127, "T-SAR {name}: value {v} out of [-127, 127]");
+        }
+    }
+}
+
+// L-04: PEXT / 2-bit unpack tests removed with ternary_pext.s
+
+// ============================================================
+// RMSNORM CORRECTNESS
+// ============================================================
+
+#[test]
+fn test_rms_norm_scale_known_values() {
+    let n = 128;
+    let x: Vec<f32> = vec![1.0f32; n];
+    let eps = 1e-6;
+
+    let scale = unsafe { asm::rms_norm_scale_asm(n, x.as_ptr(), eps) };
+
+    let sum_sq: f32 = x.iter().map(|v| v * v).sum();
+    let expected = 1.0 / ((sum_sq / n as f32) + eps).sqrt();
+
+    let rel_err = (scale - expected).abs() / expected;
+    assert!(
+        rel_err < 1e-5,
+        "RMSNorm scale error: {scale} vs {expected} (rel_err={rel_err:.2e})"
+    );
+}
+
+#[test]
+fn test_rms_norm_numerical_stability() {
+    let n = 256;
+    let cases: Vec<(&str, Vec<f32>)> = vec![
+        ("zeros", vec![0.0f32; n]),
+        ("tiny", vec![1e-20f32; n]),
+        ("mixed_magnitude", {
+            let mut v = vec![1.0f32; n];
+            v[0] = 1e10;
+            v[1] = -1e10;
+            v
+        }),
+    ];
+
+    for (name, x) in &cases {
+        let scale = unsafe { asm::rms_norm_scale_asm(n, x.as_ptr(), 1e-6) };
+        assert!(
+            scale.is_finite(),
+            "RMSNorm {name}: scale not finite ({scale})"
+        );
+        assert!(
+            scale > 0.0,
+            "RMSNorm {name}: scale should be positive ({scale})"
+        );
+    }
+}
+
+// ============================================================
+// DOT PRODUCT CORRECTNESS
+// ============================================================
+#[test]
+fn test_dot_product_avx2_known() {
+    let a: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let b: Vec<f32> = vec![8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+    let expected: f32 = 1.0 * 8.0
+        + 2.0 * 7.0
+        + 3.0 * 6.0
+        + 4.0 * 5.0
+        + 5.0 * 4.0
+        + 6.0 * 3.0
+        + 7.0 * 2.0
+        + 8.0 * 1.0;
+    let result = unsafe { asm::dot_product_avx2(8, a.as_ptr(), b.as_ptr()) };
+    let rel_err = (result - expected).abs() / expected.abs();
+    assert!(
+        rel_err < 1e-6,
+        "dot product: {result} vs {expected} (rel_err={rel_err:.2e})"
+    );
+}
+
+#[test]
+fn test_dot_product_symmetry() {
+    let n = 256;
+    let a: Vec<f32> = (0..n).map(|i| i as f32 * 0.1).collect();
+    let b: Vec<f32> = (0..n).map(|i| (n - i) as f32 * 0.05).collect();
+
+    let ab = unsafe { asm::dot_product_avx2(n, a.as_ptr(), b.as_ptr()) };
+    let ba = unsafe { asm::dot_product_avx2(n, b.as_ptr(), a.as_ptr()) };
+
+    let rel_err = (ab - ba).abs() / ab.abs().max(1e-10);
+    assert!(rel_err < 1e-6, "dot product asymmetry: {ab} vs {ba}");
+}
+
+// ============================================================
+// SiLU ACTIVATION
+// ============================================================
+
+#[test]
+fn test_silu_known_values() {
+    // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    let test_vals = [
+        (-3.0, -3.0 / (1.0 + (3.0f32).exp())),
+        (0.0, 0.0),
+        (3.0, 3.0 / (1.0 + (-3.0f32).exp())),
+    ];
+    let src: Vec<f32> = test_vals.iter().map(|(x, _)| *x).collect();
+    let mut dst = vec![0.0f32; test_vals.len()];
+
+    unsafe {
+        asm::silu_vectorial_avx2(test_vals.len(), src.as_ptr(), dst.as_mut_ptr());
+    }
+
+    for (i, (x, expected)) in test_vals.iter().enumerate() {
+        let rel_err = (dst[i] - expected).abs() / expected.abs().max(1e-10);
+        let got = dst[i];
+        assert!(
+            rel_err < 1e-5,
+            "SiLU({}): {} vs {} (rel_err={:.2e})",
+            x,
+            got,
+            expected,
+            rel_err
+        );
+    }
+}
+
+// ============================================================
+// ROUTING CORRECTNESS
+// ============================================================
+
+#[test]
+fn test_router_route_in_place_distribution() {
+    let num_experts = 8;
+    let top_k = 2;
+    let router = MudRouter::new(num_experts, top_k);
+
+    let logits = vec![1.0, 0.5, 0.0, -0.5, -1.0, -1.5, -2.0, -2.5];
+    let mut indexed = Vec::with_capacity(num_experts);
+    let mut results = Vec::with_capacity(8);
+
+    let z_loss = router.route_in_place(&logits, &mut indexed, &mut results, None);
+
+    assert!(!results.is_empty(), "route_in_place returned empty");
+    assert!(results.len() <= top_k, "route_in_place returned too many");
+    assert!(z_loss.is_finite(), "z_loss not finite: {z_loss}");
+
+    let probs_sum: f32 = results.iter().map(|(_, p)| p).sum();
+    let rel_err = (probs_sum - 1.0).abs();
+    assert!(
+        rel_err < 1e-5,
+        "route_in_place probabilities sum to {probs_sum} != 1.0"
+    );
+}
+
+#[test]
+fn test_router_route_by_hash_deterministic() {
+    let num_experts = 8;
+    let top_k = 2;
+    let router = MudRouter::new(num_experts, top_k);
+
+    let x: Vec<f32> = (0..32).map(|i| i as f32 * 0.1).collect();
+    let mut r1 = Vec::new();
+    let mut r2 = Vec::new();
+
+    router.route_by_hash(&x, &mut r1);
+    router.route_by_hash(&x, &mut r2);
+
+    assert_eq!(r1, r2, "hash routing should be deterministic");
+    assert_eq!(r1.len(), top_k, "hash routing should return exactly top_k");
+}
+
+#[test]
+fn test_router_route_by_hash_caps_at_num_experts() {
+    let num_experts = 3;
+    let top_k = 8;
+    let router = MudRouter::new(num_experts, top_k);
+
+    let x: Vec<f32> = (0..32).map(|i| i as f32 * 0.25).collect();
+    let mut results = Vec::new();
+
+    router.route_by_hash(&x, &mut results);
+
+    assert_eq!(
+        results.len(),
+        num_experts,
+        "hash routing should not exceed expert count"
+    );
+    let probs_sum: f32 = results.iter().map(|(_, p)| *p).sum();
+    assert!(
+        (probs_sum - 1.0).abs() < 1e-5,
+        "hash routing probabilities sum to {probs_sum} != 1.0"
+    );
+}
+
+#[test]
+fn test_router_route_by_hash_zero_top_k() {
+    let router = MudRouter::new(4, 0);
+    let x: Vec<f32> = (0..32).map(|i| i as f32).collect();
+    let mut results = Vec::new();
+
+    router.route_by_hash(&x, &mut results);
+
+    assert!(results.is_empty(), "zero top_k should select no experts");
+}
+
+#[test]
+fn test_router_q_head_stochastic() {
+    let num_experts = 8;
+    let top_k = 2;
+    let router = MudRouter::new(num_experts, top_k);
+
+    let logits = vec![1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3];
+    let mut indexed = Vec::with_capacity(num_experts);
+    let mut results = Vec::with_capacity(8);
+
+    let z_loss = router.route_by_q_head(&logits, 0.1, 42, &mut indexed, &mut results);
+
+    assert!(!results.is_empty(), "Q-head routing returned empty");
+    assert!(results.len() <= top_k, "Q-head routing too many results");
+    assert!(z_loss.is_finite(), "Q-head z_loss not finite: {z_loss}");
+}
+
+// ============================================================
+// NaN / Inf STABILITY
+// ============================================================
+
+#[test]
+fn test_ternary_gemv_nan_input() {
+    // Contract (2026-07-15 polish): non-finite scalar result is sanitized to 0.0
+    // so QAT cannot poison residual streams with a single bad GEMV.
+    let n = 64;
+    let x: Vec<f32> = vec![f32::NAN; n];
+    let packed = make_ternary_packed(&vec![1i8; n]);
+    let mut out = 1.0f32;
+    unsafe {
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out, 1.0);
+    }
+    assert!(
+        out == 0.0 && out.is_finite(),
+        "GEMV NaN input must sanitize to 0.0, got {out}"
+    );
+}
+
+#[test]
+fn test_ternary_gemv_inf_input() {
+    let n = 64;
+    let x: Vec<f32> = vec![f32::INFINITY; n];
+    let packed = make_ternary_packed(&vec![1i8; n]);
+    let mut out = 1.0f32;
+    unsafe {
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out, 1.0);
+    }
+    assert!(
+        out == 0.0 && out.is_finite(),
+        "GEMV Inf input must sanitize to 0.0, got {out}"
+    );
+}
+
+#[test]
+fn test_rms_norm_nan_input() {
+    // L-08 contract: non-finite → sanitize to 0.0 (training safety)
+    let n = 128;
+    let x: Vec<f32> = vec![f32::NAN; n];
+    let scale = unsafe { asm::rms_norm_scale_asm(n, x.as_ptr(), 1e-6) };
+    assert!(
+        scale == 0.0 && scale.is_finite(),
+        "RMSNorm NaN input must sanitize to 0.0, got {scale}"
+    );
+}
+
+#[test]
+fn test_dot_product_nan_input() {
+    // L-08 contract: non-finite → sanitize to 0.0
+    let n = 64;
+    let a: Vec<f32> = vec![f32::NAN; n];
+    let b: Vec<f32> = vec![1.0f32; n];
+    let result = unsafe { asm::dot_product_avx2(n, a.as_ptr(), b.as_ptr()) };
+    assert!(
+        result == 0.0 && result.is_finite(),
+        "dot product NaN input must sanitize to 0.0, got {result}"
+    );
+}
+
+#[test]
+fn test_silu_nan_input_sanitized() {
+    let n = 16;
+    let src = vec![f32::NAN; n];
+    let mut dst = vec![1.0f32; n];
+    unsafe {
+        asm::silu_vectorial_avx2(n, src.as_ptr(), dst.as_mut_ptr());
+    }
+    assert!(
+        dst.iter().all(|&v| v == 0.0 && v.is_finite()),
+        "silu NaN input must sanitize lanes to 0.0, got {dst:?}"
+    );
+}
+
+// ============================================================
+// SUM SQUARES
+// ============================================================
+
+#[test]
+fn test_sum_squares_known() {
+    let x: Vec<f32> = (0..128).map(|i| i as f32 * 0.5).collect();
+    let expected: f32 = x.iter().map(|v| v * v).sum();
+    let result = unsafe { asm::sum_squares_avx2(128, x.as_ptr()) };
+    let rel_err = (result - expected).abs() / expected.abs();
+    assert!(
+        rel_err < 1e-5,
+        "sum_squares: {result} vs {expected} (rel_err={rel_err:.2e})"
+    );
+}
+
+// ============================================================
+// TERNARY GEMV SCALING
+// ============================================================
+
+#[test]
+fn test_ternary_gemv_scale_effect() {
+    let n = 128;
+    let x: Vec<f32> = vec![2.0f32; n];
+    let packed = make_ternary_packed(&vec![1i8; n]);
+
+    let mut out1 = 0.0f32;
+    let mut out2 = 0.0f32;
+    unsafe {
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out1, 1.0);
+        asm::ternary_gemv(n, x.as_ptr(), packed.as_ptr(), &mut out2, 2.5);
+    }
+
+    let rel_err = (out2 - 2.5 * out1).abs() / (2.5 * out1).abs().max(1e-10);
+    assert!(
+        rel_err < 1e-5,
+        "GEMV scale factor mismatch: {out2} vs {} (rel_err={rel_err:.2e})",
+        2.5 * out1
+    );
+}
+
+// ============================================================
+// QUANTIZATION NOISE BOUND
+// ============================================================
+
+// L-04: T-SAR / ternary_lut tests removed with ternary_lut.s + ternary_pext.s
+
+// ============================================================
+// E2E SMOKE TESTS — Model loading & error handling
+// ============================================================
+
+#[test]
+fn test_mud_load_nonexistent_file() {
+    let result = MudFile::load("/tmp/nonexistent_model_xyz.mud");
+    assert!(result.is_err(), "Should fail on nonexistent file");
+}
+
+#[test]
+fn test_mud_load_invalid_magic() {
+    std::fs::write("/tmp/test_bad_magic.mud", b"BADDATA").unwrap();
+    let result = MudFile::load("/tmp/test_bad_magic.mud");
+    assert!(result.is_err(), "Should fail on invalid magic");
+    let _ = std::fs::remove_file("/tmp/test_bad_magic.mud");
+}
+
+// ============================================================
+// SEC-H1: loader header caps (DoS hardening)
+// ============================================================
+
+#[test]
+fn test_mud_load_meta_count_above_cap_rejected() {
+    // Magic + u32 meta_count = u32::MAX + 8 zero pad bytes (≥16 to clear the
+    // mmap.len() < 16 file-too-small check first).
+    let mut buf = b"MUD\x01".to_vec();
+    buf.extend_from_slice(&(u32::MAX).to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    let path = "/tmp/test_sec_h1_meta_count.mud";
+    std::fs::write(path, &buf).unwrap();
+    let err = MudFile::load(path)
+        .err()
+        .expect("should reject meta_count > MAX_META_ENTRIES");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SEC-H1") && msg.contains("meta_count"),
+        "Error should mention SEC-H1 + meta_count, got: {msg}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn test_mud_load_tensor_count_above_cap_rejected() {
+    // Magic + meta_count=0 + tensor_count=u32::MAX + 4 zero pad bytes (≥16 to
+    // clear the file-too-small check first).
+    let mut buf = b"MUD\x01".to_vec();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // meta_count = 0
+    buf.extend_from_slice(&(u32::MAX).to_le_bytes()); // tensor_count = huge
+    buf.extend_from_slice(&[0u8; 4]);
+    let path = "/tmp/test_sec_h1_tensor_count.mud";
+    std::fs::write(path, &buf).unwrap();
+    let err = MudFile::load(path)
+        .err()
+        .expect("should reject tensor_count > MAX_TENSOR_ENTRIES");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SEC-H1") && msg.contains("tensor_count"),
+        "Error should mention SEC-H1 + tensor_count, got: {msg}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn test_mud_load_meta_value_above_string_cap_rejected() {
+    // Magic + meta_count=1 + k_len=1 ("k") + v_len=u32::MAX (above MAX_STRING_LEN).
+    let mut buf = b"MUD\x01".to_vec();
+    buf.extend_from_slice(&1u32.to_le_bytes()); // meta_count
+    buf.extend_from_slice(&1u32.to_le_bytes()); // k_len
+    buf.extend_from_slice(b"k");              // key
+    buf.extend_from_slice(&(u32::MAX).to_le_bytes()); // v_len
+    let path = "/tmp/test_sec_h1_meta_v_len.mud";
+    std::fs::write(path, &buf).unwrap();
+    let err = MudFile::load(path)
+        .err()
+        .expect("should reject meta value len > MAX_STRING_LEN");
+    let msg = err.to_string();
+    assert!(msg.contains("SEC-H1"), "Error should mention SEC-H1, got: {msg}");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn test_collect_files_max_depth_constant() {
+    // SEC-H7: functional test. Build a deeper-than-cap directory chain and
+    // confirm we stop descending; without the cap this would be a deep stack
+    // of read_dir syscalls (and would loop forever on a symlink loop).
+    use crate::mud::corpus::COLLECT_FILES_MAX_DEPTH;
+    use std::path::PathBuf;
+    let prev_text_only = std::env::var("MUD_TRAIN_TEXT_ONLY").ok();
+    std::env::set_var("MUD_TRAIN_TEXT_ONLY", "0");
+    // Build a chain deeper than MAX_DEPTH; place a .rs file at the bottom.
+    let root = std::env::temp_dir().join(format!(
+        "mud_sec_h7_tree_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut cur = root.clone();
+    for _ in 0..COLLECT_FILES_MAX_DEPTH + 4 {
+        cur = cur.join("d");
+    }
+    std::fs::create_dir_all(&cur).unwrap();
+    std::fs::write(cur.join("deep.rs"), "fn x() {}").unwrap();
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    crate::mud::corpus::collect_files(&root, &mut files, false);
+    // Two cases (both acceptable): the cap was hit → empty (didn't descend),
+    // OR the cap didn't trigger because the project root (not /tmp). Either
+    // way the key invariant is the function returned within microseconds and
+    // did not blow the stack. The real gate is that compile-time +
+    // depth-bounded recursion prevented OOM. We assert the cap was hit
+    // (no file collected) because the build chain exceeds MAX_DEPTH.
+    assert_eq!(
+        files.len(),
+        0,
+        "SEC-H7: walk should not descend past the cap when not at project root"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    match prev_text_only {
+        Some(v) => std::env::set_var("MUD_TRAIN_TEXT_ONLY", v),
+        None => std::env::remove_var("MUD_TRAIN_TEXT_ONLY"),
+    }
+}
+
+#[test]
+fn test_slime_workspace_creation_no_core() {
+    unsafe {
+        std::env::remove_var("MUD_MAX_POS");
+        std::env::remove_var("MUD_HCA_WINDOW");
+        std::env::remove_var("MUD_HCA_RATIO");
+    }
+    let ws = crate::mud::slime::SlimeWorkspace::new(64, 128, 4, 2, 16, 64, 30, 128.0);
+    let pol = crate::mud::kv_context::KvContextPolicy::from_parts(128, 256, 10);
+    assert_eq!(ws.registers.len(), 64);
+    assert_eq!(ws.dense_kv_elems(), 30 * 2 * pol.dense_cap * 16);
+    assert_eq!(ws.norm_i8.len(), 64);
+    assert_eq!(ws.scores.len(), pol.scores_len());
+}
+
+#[test]
+fn test_real_model_loads_successfully() {
+    let model_path = "models/bitnet-b1.58-2B-4T.mud";
+    if !std::path::Path::new(model_path).exists() {
+        eprintln!("Skipping real model load test: {model_path} not found");
+        return;
+    }
+    let file = MudFile::load(model_path);
+    assert!(file.is_ok(), "Should load real model file");
+    let file = file.unwrap();
+    assert!(file.skills.contains_key("core"), "Should have core skill");
+}
+
+// ============================================================
+// SEC-H2 (2026-07-27): Property-based fuzzing for untrusted loaders
+// CWE-1188 — verifies MudFile::load never panics on attacker-controlled
+// byte sequences (only returns Err). Run with:
+//   cargo test --lib --features proptest -- --test-threads=2
+// ============================================================
+
+#[cfg(feature = "proptest")]
+mod sec_h2_fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Write `bytes` to a temp file, call `MudFile::load`, and assert it
+    /// never panics — only returns Ok or Err.
+    fn load_bytes_no_panic(bytes: &[u8]) {
+        let path = format!(
+            "/tmp/mud_fuzz_{}.bin",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let _ = std::fs::write(&path, bytes);
+        let _result = MudFile::load(&path); // MUST NOT panic
+        let _ = std::fs::remove_file(&path);
+    }
+
+    proptest! {
+        /// Property 1: Arbitrary byte sequences (including empty, single byte,
+        /// random sizes 0..4096) must never panic MudFile::load.
+        #[test]
+        fn fuzz_mud_load_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
+            load_bytes_no_panic(&bytes);
+        }
+
+        /// Property 2: MUD magic prefix followed by arbitrary bytes must not panic.
+        /// The magic "MUD\x01" + random meta_count + random body.
+        #[test]
+        fn fuzz_mud_load_with_magic(
+            meta_count in 0u32..=5000,
+            tail in prop::collection::vec(any::<u8>(), 0..2048),
+        ) {
+            let mut bytes = b"MUD\x01".to_vec();
+            bytes.extend_from_slice(&meta_count.to_le_bytes());
+            bytes.extend_from_slice(&tail);
+            load_bytes_no_panic(&bytes);
+        }
+
+        /// Property 3: MUDEXEC trailer with arbitrary offset must not panic
+        /// and must be rejected by the SEC-H9 validation.
+        #[test]
+        fn fuzz_mud_exec_trailer(
+            mud_offset in any::<u64>(),
+            prefix in prop::collection::vec(any::<u8>(), 0..512),
+        ) {
+            let mut bytes = prefix;
+            // Ensure total is at least 16 + 8 (trailer) bytes
+            if bytes.len() < 32 {
+                bytes.resize(32, 0);
+            }
+            bytes.extend_from_slice(&mud_offset.to_le_bytes());
+            bytes.extend_from_slice(b"MUDEXEC\0");
+            load_bytes_no_panic(&bytes);
+        }
+
+        /// Property 4: Valid-ish header with meta + tensor entries within and
+        /// above SEC-H1 caps must not panic (only return Err on cap violation).
+        #[test]
+        fn fuzz_mud_load_cap_boundaries(
+            meta_count in prop::sample::select(vec![0u32, 1, 100, 4095, 4096, 4097, u32::MAX]),
+            tensor_count in prop::sample::select(vec![0u32, 1, 500, 65535, 65536, 65537, u32::MAX]),
+            tail in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let mut bytes = b"MUD\x01".to_vec();
+            bytes.extend_from_slice(&meta_count.to_le_bytes());
+            // Add minimal meta entries space (won't be valid but must not panic)
+            bytes.extend_from_slice(&tail);
+            bytes.extend_from_slice(&tensor_count.to_le_bytes());
+            bytes.extend_from_slice(&[0u8; 8]);
+            load_bytes_no_panic(&bytes);
+        }
+
+        /// Property 5: Random byte sequences that happen to start with the MUD
+        /// magic but have corrupted length fields must not cause OOB panics.
+        #[test]
+        fn fuzz_mud_truncated_after_magic(
+            k_len in any::<u32>(),
+            v_len in any::<u32>(),
+            body in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            // meta_count = 1, then bogus lengths
+            let mut bytes = b"MUD\x01".to_vec();
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // meta_count = 1
+            bytes.extend_from_slice(&k_len.to_le_bytes());
+            bytes.extend_from_slice(&body);
+            bytes.extend_from_slice(&v_len.to_le_bytes());
+            load_bytes_no_panic(&bytes);
+        }
+
+        /// Property 6: File with exactly the MUD magic at offset 0 but very
+        /// short body — must not panic on reads past the mmap boundary.
+        #[test]
+        fn fuzz_mud_very_short_files(
+            extra in prop::collection::vec(any::<u8>(), 0..20),
+        ) {
+            let mut bytes = b"MUD\x01".to_vec();
+            bytes.extend_from_slice(&extra);
+            load_bytes_no_panic(&bytes);
+        }
+    }
+}
+
+/// SEC-H2 fallback test (no proptest feature enabled): verifies the
+/// guarantee holds at least for a fixed set of adversarial inputs so the
+/// gate is not silently absent in default builds.
+#[cfg(not(feature = "proptest"))]
+#[test]
+fn test_sec_h2_no_panic_on_garbage_inputs() {
+    let adversarial: &[&[u8]] = &[
+        b"",
+        b"\x00",
+        b"\xff",
+        b"MUD\x01",
+        b"MUD\x01\x00\x00\x00\x00", // meta_count = 0, truncated
+        b"MUD\x01\xff\xff\xff\xff\xff\xff\xff\xff", // meta_count = u32::MAX
+        b"MUDEXEC\x00", // false trailer magic
+        b"RANDOM GARBAGE DATA HERE NOT VALID",
+    ];
+    for bytes in adversarial {
+        let path = format!(
+            "/tmp/mud_fuzz_static_{}.bin",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let _ = std::fs::write(&path, bytes);
+        let _ = MudFile::load(&path);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Regression test for the panic uncovered by proptest fuzzing (SEC-H2).
+/// The minimal failing input from proptest was:
+///   meta_count = 100, tensor_count = 0, tail = []
+/// i.e. magic + meta_count=100 + tensor_count=0 + 8 zero bytes = 20 bytes.
+/// Without the SEC-H2 panic-fix, the meta loop iterates 100 times, reads
+/// 2 entries from the trailing zero bytes, then the 3rd iteration tries
+/// `mmap[20..24]` which panics with "range end index 24 out of range for
+/// slice of length 20" (CWE-125 OOB read surfaced as DoS panic).
+#[test]
+fn test_sec_h2_regression_truncated_meta_loop_no_panic() {
+    // magic + meta_count=100 + tensor_count=0 + 8 zero pad
+    let mut bytes = b"MUD\x01".to_vec();
+    bytes.extend_from_slice(&100u32.to_le_bytes()); // meta_count within SEC-H1 cap
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // tensor_count = 0
+    bytes.extend_from_slice(&[0u8; 8]); // pad to ≥16 bytes for the file-too-small check
+    let path = "/tmp/mud_sec_h2_regression_truncated_meta.bin";
+    std::fs::write(path, &bytes).unwrap();
+    let result = MudFile::load(path);
+    // MUST return Err (not panic). The error must mention SEC-H2 truncation.
+    assert!(
+        result.is_err(),
+        "truncated meta loop should return Err, not Ok or panic"
+    );
+    let msg = result.err().unwrap().to_string();
+    assert!(
+        msg.contains("SEC-H2") || msg.contains("bogus") || msg.contains("truncated"),
+        "error should mention SEC-H2/truncation, got: {msg}"
+    );
+    let _ = std::fs::remove_file(path);
+}
