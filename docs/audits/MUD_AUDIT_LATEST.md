@@ -11,12 +11,15 @@
 
 **Estado resumido (SSOT de estado: `GEMINI.md` §0.3):**
 
-* 🔴 `cargo test --lib --release` **FALLA** (UB en `fenwick.rs:307-312`; en debug pasa ⇒ `./mud.sh ci` lo oculta).
-* 🔴 El **CI no puede ejecutarse** (`on:` anidado dentro de un job, `.github/workflows/ci.yml:76-88`).
-* 🔴 El **trainer no entrena la cabeza evaluada** (`token_embd` vs `output.weight`, nunca sincronizada).
-* 🔴 **Backward ≠ forward** en el FFN (SiLU vs derivada ReLU²) y el mHC omite `alpha`/`(1-gate)·beta`.
-* 🟠 Formato ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); **LM head en f32 denso** (77.6 MB/token en `ale.mud`), single-thread.
-* 🟠 Inferencia medida: **~46 tok/s** y salida incoherente; sin validación `metadata↔shape` (OOB/OOM); parser GGUF sin cotas.
+* ✅ `cargo test --lib --release` **PASA** (462 passed / 0 failed / 2 ignored) — UB fenwick purgado (R-03); flaky `grad_checkpoint` env-race arreglado vía `CheckpointPolicy::from_env`.
+* ✅ **CI ejecutable** — `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); `actionlint .github/workflows/ci.yml` exit 0 (R-01); `./mud.sh ci` release + all-targets + all-features (R-02).
+* ✅ **R-10**: el trainer SÍ entrena la cabeza evaluada — `sync_shadow_to_mud` espeja `token_embd.weight`→`output.weight` (+ `output.prq_scale`) vía `sync_tied_output_weight`. `models/ale.mud` confirma head separado.
+* ✅ **R-05**: env vars SSOT (`MUD_ENV_REFERENCE.md`, 117 `R` + 7 shell + 6 retiradas); `./mud.sh env-audit` → `OK — 0 divergencias`.
+* 🔴 **Backward ≠ forward** en el FFN (SiLU vs derivada ReLU²) y el mHC omite `alpha`/`(1-gate)·beta` (R-11/R-12).
+* 🟠 Formato ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); **LM head en f32 denso** (77.6 MB/token en `ale.mud`), single-thread (R-42/R-40).
+* 🟠 Inferencia medida: **~46 tok/s** y salida incoherente; sin validación `metadata↔shape` (OOB/OOM, R-30/R-31); parser GGUF sin cotas (R-32).
+
+**Progreso del plan maestro:** 7/55 (R-01, R-02, R-03, R-04, R-05, R-06, R-10) · Ola 0 (F0) cerrada; Ola 1 (F1) activa con R-10 ✅.
 
 ## Histórico
 
