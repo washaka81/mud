@@ -37,8 +37,8 @@
 | Comprobación | Resultado | Nota |
 |---|---|---|
 | `cargo clippy --all-targets` | **0 warnings** ✅ | dev profile `[V]` |
-| `cargo test --lib --release` | **460 passed / 1 FAILED / 2 ignored** ❌ | `mud::fenwick::tests::test_fenwick_f32_prefix_sum_batch4_avx2` `[V]` |
-| `cargo test --lib` (debug) | 461 passed ✅ | el fallo sólo aparece optimizado `[V]` |
+| `cargo test --lib --release` | **459 passed / 0 failed / 2 ignored** ✅ | UB fenwick purgado (R-03, 2026-10-11) — 2 tests de batch4/batch8 eliminados |
+| `cargo test --lib` (debug) | 459 passed ✅ | |
 | `./mud.sh ci` | corre `cargo test --lib` (**debug**) + `clippy --lib` | nunca detecta el fallo release; no usa `--all-targets` `[V]` |
 | CI remoto | inválido → no ejecuta | `[V]` |
 | Repositorio git | **no existe** (`fatal: no es un repositorio git`) | sin historia, sin diff, sin auditoría de cambios `[V]` |

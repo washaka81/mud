@@ -39,8 +39,8 @@
 | Comando | Resultado | Uso |
 |---|---|---|
 | `cargo clippy --all-targets` | 0 warnings ✅ | se mantiene como gate |
-| `cargo test --lib --release` | **460 pass / 1 fail / 2 ignored** ❌ | gate que hoy **no** existe en CI |
-| `cargo test --lib` (debug) | 461 pass ✅ | lo único que corre `./mud.sh ci` |
+| `cargo test --lib --release` | **459 pass / 0 fail / 2 ignored** ✅ | UB fenwick purgado (R-03, 2026-10-11) |
+| `cargo test --lib` (debug) | 459 pass ✅ | (2 tests de batch4/batch8 eliminados) |
 | `./mud.sh ci` | debug + `clippy --lib` | debe pasar a `--all-targets` + release + `--all-features` |
 | Inferencia `models/ale.mud` | ~46 tok/s (22 ms/token), salida incoherente | métrica de partida para F3 |
 | `output.weight` vs checkpoint | valores idénticos (head no entrenada) | prueba de F1-01 |
@@ -225,10 +225,10 @@ flowchart LR
 
 | ID | Título | Sev | Estado | Evidencia |
 |---|---|---|---|---|
-| R-01 | CI workflow válido | 🔴 | TODO | |
-| R-02 | `mud.sh ci` con release + all-targets | 🔴 | TODO | |
-| R-03 | UB fenwick batch4 (o purga) | 🔴 | TODO | |
-| R-04 | git init + .gitignore | 🟠 | TODO | |
+| R-01 | CI workflow válido | 🔴 | ✅ 2026-10-11 | `actionlint .github/workflows/ci.yml` exit 0; `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); guard slug → `washaka81/mud` |
+| R-02 | `mud.sh ci` con release + all-targets | 🔴 | ✅ 2026-10-11 | `cargo clippy --all-targets --all-features -D warnings` 0 warnings; `cargo test --lib --release` 459/0; `cargo test --all-targets --release` exit 0 |
+| R-03 | UB fenwick batch4 (o purga) | 🔴 | ✅ 2026-10-11 | Purgados `prefix_sum_batch4_avx2` + `prefix_sum_batch8_avx2` + 2 tests (0 llamadores, P-08); `cargo test --lib --release` 459 passed, 0 failed |
+| R-04 | git init + .gitignore | 🟠 | ✅ 2026-10-11 | `git init` + `git add -A` + `git commit` exit 0; `.gitignore` limpio (sin duplicados; `GEMINI.md`/`AGENTS.md` trackeados) |
 | R-05 | env vars SSOT + doc | 🟠 | TODO | |
 | R-06 | `MUD_AUDIT_LATEST` actualizado | 🟡 | ✅ 2026-10-11 | este plan + auditoría |
 | R-10 | Cabeza entrenada == cabeza evaluada | 🔴 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 1/55 (R-06) · F0 es la ola activa.
+**Estado global:** 5/55 (R-01, R-02, R-03, R-04, R-06) · F0 es la ola activa.
 
 ---
 

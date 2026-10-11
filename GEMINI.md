@@ -27,18 +27,19 @@
 >
 > | Hecho | Evidencia |
 > |---|---|
-> | `cargo test --lib --release` **FALLA** (460 pass / 1 fail): UB en `fenwick.rs:307-312` (`_mm256_storeu_ps` sobre binding inmutable) | `cargo test --lib --release` |
-> | El **CI no puede ejecutarse**: `on:` anidado dentro del job `nightly-cert-loss` (`.github/workflows/ci.yml:76-88`) | GitHub rechaza el workflow |
-> | `./mud.sh ci` corre tests en **debug** ⇒ el fallo release queda invisible | `mud.sh:513` |
+> | `cargo test --lib --release` **PASA** (459 pass / 0 fail / 2 ignored): UB fenwick purgado (R-03, 2026-10-11) | `cargo test --lib --release` |
+> | CI workflow **válido**: `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); slug `washaka81/mud` (R-01) | `actionlint .github/workflows/ci.yml` exit 0 |
+> | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`) | `mud.sh` `ci)` case |
+> | Repo con **git init** + `.gitignore` limpio (R-04) | `git status` limpio tras commit |
 > | El **trainer no entrena la cabeza evaluada**: usa `token_embd`, inferencia usa `output.weight`, que `checkpoint.rs` nunca escribe (valores idénticos base↔checkpoint) | `train_step.rs:160`, `inference.rs:395` |
 > | **Backward ≠ forward**: FFN `silu(gate)·up` vs derivada ReLU²; mHC omite `alpha` y `(1-gate)·beta` | `slime_forward.rs:613-637` vs `slime_backward.rs:1109-1170`, `:1055-1066` |
 > | **Deriva de escala PRQ** sin punto fijo (`×0.52` por guardado); deadzone **0.7·s** (conversor) vs **0.5·s** (checkpoint) | forense binaria; `quantizer.rs:125` vs `checkpoint.rs:211` |
 > | Wire format ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); LM head en **f32 denso** (77.6 MB/token en `ale.mud`), single-thread | `mod.rs:145`, `asm/lm_head.s` |
 > | Inferencia medida: **~46 tok/s** en `models/ale.mud` (9 % del BW), salida **incoherente** | `MUD_INFER_MAX_TOKENS=512` |
 > | Sin validación `metadata↔shape` ⇒ OOB/OOM alcanzables; parser GGUF sin cotas; 19 `unsafe` sin `// SAFETY:` | `inference.rs:350-433`, `gguf/mod.rs`, auditoría §4 |
-> | Repo **sin `.git`**; 9 env vars documentadas y ausentes; `rayon` sigue en `Cargo.toml` | `git status`, `grep` |
+> | 9 env vars documentadas y ausentes; `rayon` sigue en `Cargo.toml` (R-66) | `grep` |
 >
-> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug), "0 OOB", "Rayon removed from runtime crate", "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local).
+> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 459 en release tras purgar batch4/batch8 UB, R-03), "0 OOB" (falso, ver R-30/R-31), "Rayon removed from runtime crate" (`rayon` sigue en `[dependencies]`, R-66), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67).
 >
 > **Regla nueva (R-73):** toda fila de estado exige `(comando, salida, fecha)`. Prohibido `COMPLETADO` sin ejecución.
 
@@ -58,9 +59,9 @@
 - Rayon **no se usa** en `src/`, pero sigue declarado en `Cargo.toml:44` (deuda R-66); AOT corpus cache; converter `--check` / auditors
 - Compute stack: `docs/architecture/MUD_COMPUTE_STACK.md`
 - Register bit packing: `docs/architecture/MUD_REGISTER_BIT_PACKING.md`
-- **461 lib tests en debug / 460+1 fallo en release** (ver §0.3); clippy-clean target (P-06); `./mud.sh ci|audit-full`
-- **F4 Fenwick trees** (`src/mud/fenwick.rs`, 802 LOC, 25 tests) — `FenwickF32`/`FenwickU32`/`FenwickI32`/`FenwickLogF32` + AVX2/BMI1/BMI2 batch ops
-- **Sprint 4b:** `prefix_sum_batch4_avx2` + `find_kth_walk` (BMI1/BMI2) — ⚠️ **retirado 2026-10-11:** el batch4 tiene UB y 0 llamadores (R-03); `find_kth_walk` sigue vivo
+- **459 lib tests en debug / 459 en release / 0 fallos** (R-03: purgados `prefix_sum_batch4_avx2` + `prefix_sum_batch8_avx2` por UB + 0 llamadores); clippy-clean target (P-06); `./mud.sh ci|audit-full`
+- **F4 Fenwick trees** (`src/mud/fenwick.rs`) — `FenwickF32`/`FenwickU32`/`FenwickI32`/`FenwickLogF32` + AVX2/BMI1/BMI2 ops (`find_kth_avx2` LIVE en `debate_trainer.rs:557`; `find_kth_walk` test-only, sin UB)
+- **Sprint 4b:** `prefix_sum_batch4_avx2` **PURGADO** (R-03, 2026-10-11): UB `_mm256_storeu_ps` sobre binding inmutable + 0 llamadores de producción → eliminado bajo P-08. `find_kth_walk` (BMI1/BMI2) sigue vivo (test-only).
 - **Sprints 6-7:** Security documentation (`docs/seguridad/THREAT_MODEL.md`, `HARDENING.md`, `INCIDENT_RESPONSE.md`)
 - **ASM kernel benchmarks:** 16 kernels (8.8× geometric mean)
 - **Fenwick benchmarks:** 10 benchmarks (19.5× geometric mean)
