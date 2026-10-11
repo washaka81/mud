@@ -31,13 +31,13 @@
 > | CI workflow **válido**: `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); slug `washaka81/mud` (R-01) | `actionlint .github/workflows/ci.yml` exit 0 |
 > | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`) | `mud.sh` `ci)` case |
 > | Repo con **git init** + `.gitignore` limpio (R-04) | `git status` limpio tras commit |
-> | El **trainer no entrena la cabeza evaluada**: usa `token_embd`, inferencia usa `output.weight`, que `checkpoint.rs` nunca escribe (valores idénticos base↔checkpoint) | `train_step.rs:160`, `inference.rs:395` |
+> | ✅ **R-10**: el trainer SÍ entrena la cabeza evaluada — `sync_shadow_to_mud` espeja `token_embd.weight`→`output.weight` (+ `output.prq_scale`) vía `sync_tied_output_weight`; inferencia (`inference.rs:395`) y trainer (`train_step.rs:593`) coinciden. No-op para modelos *tied*. | `checkpoint.rs` + tests; `cargo test --lib --release` 462/0 |
 > | **Backward ≠ forward**: FFN `silu(gate)·up` vs derivada ReLU²; mHC omite `alpha` y `(1-gate)·beta` | `slime_forward.rs:613-637` vs `slime_backward.rs:1109-1170`, `:1055-1066` |
 > | **Deriva de escala PRQ** sin punto fijo (`×0.52` por guardado); deadzone **0.7·s** (conversor) vs **0.5·s** (checkpoint) | forense binaria; `quantizer.rs:125` vs `checkpoint.rs:211` |
 > | Wire format ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); LM head en **f32 denso** (77.6 MB/token en `ale.mud`), single-thread | `mod.rs:145`, `asm/lm_head.s` |
 > | Inferencia medida: **~46 tok/s** en `models/ale.mud` (9 % del BW), salida **incoherente** | `MUD_INFER_MAX_TOKENS=512` |
 > | Sin validación `metadata↔shape` ⇒ OOB/OOM alcanzables; parser GGUF sin cotas; 19 `unsafe` sin `// SAFETY:` | `inference.rs:350-433`, `gguf/mod.rs`, auditoría §4 |
-> | 9 env vars documentadas y ausentes; `rayon` sigue en `Cargo.toml` (R-66) | `grep` |
+> | ✅ **R-05**: env vars SSOT (117 `R` + 7 shell + 6 retiradas en `MUD_ENV_REFERENCE.md`); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)`. `rayon` sigue en `Cargo.toml` (R-66) | `bash mud.sh env-audit` exit 0 |
 >
 > **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 459 en release tras purgar batch4/batch8 UB, R-03), "0 OOB" (falso, ver R-30/R-31), "Rayon removed from runtime crate" (`rayon` sigue en `[dependencies]`, R-66), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67).
 >

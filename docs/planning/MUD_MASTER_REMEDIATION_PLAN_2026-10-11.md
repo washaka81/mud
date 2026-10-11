@@ -226,12 +226,12 @@ flowchart LR
 | ID | Título | Sev | Estado | Evidencia |
 |---|---|---|---|---|
 | R-01 | CI workflow válido | 🔴 | ✅ 2026-10-11 | `actionlint .github/workflows/ci.yml` exit 0; `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); guard slug → `washaka81/mud` |
-| R-02 | `mud.sh ci` con release + all-targets | 🔴 | ✅ 2026-10-11 | `cargo clippy --all-targets --all-features -D warnings` 0 warnings; `cargo test --lib --release` 459/0; `cargo test --all-targets --release` exit 0 |
+| R-02 | `mud.sh ci` con release + all-targets | 🔴 | ✅ 2026-10-11 | `cargo clippy --all-targets --all-features -D warnings` 0 warnings; `cargo test --lib --release` 462/0; `cargo test --all-targets --release` exit 0 |
 | R-03 | UB fenwick batch4 (o purga) | 🔴 | ✅ 2026-10-11 | Purgados `prefix_sum_batch4_avx2` + `prefix_sum_batch8_avx2` + 2 tests (0 llamadores, P-08); `cargo test --lib --release` 459 passed, 0 failed |
 | R-04 | git init + .gitignore | 🟠 | ✅ 2026-10-11 | `git init` + `git add -A` + `git commit` exit 0; `.gitignore` limpio (sin duplicados; `GEMINI.md`/`AGENTS.md` trackeados) |
 | R-05 | env vars SSOT + doc | 🟠 | ✅ 2026-10-11 | `docs/manuals/MUD_ENV_REFERENCE.md` (117 vars `R` + 7 shell‑vars + 7 retiradas); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)` (Código: 117 · mud.sh: 51 · Docs §1: 123 · Retiradas §3: 6) |
 | R-06 | `MUD_AUDIT_LATEST` actualizado | 🟡 | ✅ 2026-10-11 | este plan + auditoría |
-| R-10 | Cabeza entrenada == cabeza evaluada | 🔴 | TODO | |
+| R-10 | Cabeza entrenada == cabeza evaluada | 🔴 | ✅ 2026-10-11 | `sync_shadow_to_mud` ahora espeja `token_embd.weight`→`output.weight` (+`output.prq_scale`) via `sync_tied_output_weight` (R-05.3/§1.12 docs); no-op para modelos tied. Test: `output.weight` byte-idéntico a `token_embd.weight` tras sync; modelo tied no sintetiza head. Conf. base: `models/ale.mud` tiene `output.weight` separado. `cargo test --lib --release` 462/0; clippy 0. |
 | R-11 | Backward SiLU | 🔴 | TODO | |
 | R-12 | Backward mHC con factores | 🔴 | TODO | |
 | R-13 | Deadzone SSOT | 🔴 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 6/55 (R-01, R-02, R-03, R-04, R-05, R-06) · F0 es la ola activa.
+**Estado global:** 7/55 (R-01…R-06 + R-10) · F0 cerrada; Ola 1 (F1) activa con R-10 ✅.
 
 ---
 
