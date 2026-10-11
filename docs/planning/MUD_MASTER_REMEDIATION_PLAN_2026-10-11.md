@@ -232,7 +232,7 @@ flowchart LR
 | R-05 | env vars SSOT + doc | 🟠 | ✅ 2026-10-11 | `docs/manuals/MUD_ENV_REFERENCE.md` (117 vars `R` + 7 shell‑vars + 7 retiradas); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)` (Código: 117 · mud.sh: 51 · Docs §1: 123 · Retiradas §3: 6) |
 | R-06 | `MUD_AUDIT_LATEST` actualizado | 🟡 | ✅ 2026-10-11 | este plan + auditoría |
 | R-10 | Cabeza entrenada == cabeza evaluada | 🔴 | ✅ 2026-10-11 | `sync_shadow_to_mud` ahora espeja `token_embd.weight`→`output.weight` (+`output.prq_scale`) via `sync_tied_output_weight` (R-05.3/§1.12 docs); no-op para modelos tied. Test: `output.weight` byte-idéntico a `token_embd.weight` tras sync; modelo tied no sintetiza head. Conf. base: `models/ale.mud` tiene `output.weight` separado. `cargo test --lib --release` 462/0; clippy 0. |
-| R-11 | Backward SiLU | 🔴 | TODO | |
+| R-11 | Backward FFN SiLU vs ReLU² | 🔴 | ✅ 2026-10-11 | `slime_backward.rs` activación FFN reemplazada: `ReLU² (g²·up)` → `SiLU` (`silu(gate)*up`) vía `ezop::silu_backward_avx2` (AVX2 + scalar fallback, σ vía exp2_approx = forward `silu_vectorial`; NaN→0.5 P-17). Test `test_silu_backward_matches_reference` (analítico vs exact f64, tol 1e-2 AVX2 / 1e-5 scalar + regresión `silu'(1)≠2`). `cargo test --lib --release` 463/0/2. |
 | R-12 | Backward mHC con factores | 🔴 | TODO | |
 | R-13 | Deadzone SSOT | 🔴 | TODO | |
 | R-14 | Escala PRQ con punto fijo | 🔴 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 7/55 (R-01…R-06 + R-10) · F0 cerrada; Ola 1 (F1) activa con R-10 ✅.
+**Estado global:** 8/55 (R-01…R-06 + R-10 + R-11) · F0 cerrada; Ola 1 (F1) activa.
 
 ---
 

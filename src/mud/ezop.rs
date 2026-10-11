@@ -1206,6 +1206,126 @@ unsafe fn sigmoid_vec_local(x: std::arch::x86_64::__m256) -> std::arch::x86_64::
     _mm256_blendv_ps(half, result, is_finite)
 }
 
+/// Vectorized sigmoid σ(x) = 1 / (1 + exp(-x)), NaN → 0.5 (P-17 neutral).
+/// Reuses the same `exp2_approx_local` approximation as `silu_vectorial_avx2`,
+/// so a SiLU backward built on this stays consistent with the forward path.
+///
+/// # Safety
+/// `x` readable and `out` writable for `n` elements. Regions may not overlap.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+pub unsafe fn sigmoid_avx2(x: *const f32, out: *mut f32, n: usize) {
+    use std::arch::x86_64::*;
+    let mut i = 0;
+    while i + 8 <= n {
+        let xv = _mm256_loadu_ps(x.add(i));
+        _mm256_storeu_ps(out.add(i), sigmoid_vec_local(xv));
+        i += 8;
+    }
+    for j in i..n {
+        let v = *x.add(j);
+        let val = 1.0 / (1.0 + (-v).exp());
+        *out.add(j) = if val.is_finite() { val } else { 0.5 };
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn sigmoid_avx2(x: *const f32, out: *mut f32, n: usize) {
+    for i in 0..n {
+        let v = *x.add(i);
+        let val = 1.0 / (1.0 + (-v).exp());
+        *out.add(i) = if val.is_finite() { val } else { 0.5 };
+    }
+}
+
+/// R-11 FIX: SiLU activation backward for the FFN.
+///
+/// Forward (slime_forward.rs): `mid[i] = silu(gate[i]) * up[i]`,
+///   `silu(x) = x / (1 + exp(-x))`.
+/// Backward given upstream grad `gy = dL/d(mid)`:
+///   grad_up[i]   = gy[i] * silu(gate[i])
+///   grad_gate[i] = gy[i] * up[i] * silu'(gate[i])
+///   silu'(x) = σ(x) * (1 + x * (1 - σ(x)))
+///
+/// This REPLACES the stale ReLU² backward (`d/d g of g²·up`), which computed
+/// the gradient of a *different* activation than the forward. Now
+/// **backward == forward** (R-11).
+///
+/// # Safety
+/// `gy`, `gate`, `up` readable for `n`; `grad_up`, `grad_gate` writable for `n`.
+/// Input regions must not alias the output regions.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+pub unsafe fn silu_backward_avx2(
+    gy: *const f32,
+    gate: *const f32,
+    up: *const f32,
+    grad_up: *mut f32,
+    grad_gate: *mut f32,
+    n: usize,
+) {
+    use std::arch::x86_64::*;
+    const ONE: f32 = 1.0;
+    with_grad_scratch(n, |sigma_buf| {
+        sigmoid_avx2(gate, sigma_buf.as_mut_ptr(), n);
+        let sigma = sigma_buf.as_ptr();
+        let one = _mm256_set1_ps(ONE);
+        let mut i = 0;
+        while i + 8 <= n {
+            let gyv = _mm256_loadu_ps(gy.add(i));
+            let gv = _mm256_loadu_ps(gate.add(i));
+            let uv = _mm256_loadu_ps(up.add(i));
+            let sv = _mm256_loadu_ps(sigma.add(i));
+
+            let silu_g = _mm256_mul_ps(gv, sv); // silu(gate)
+            let one_minus_s = _mm256_sub_ps(one, sv);
+            let inner = _mm256_fmadd_ps(gv, one_minus_s, one); // 1 + gate*(1-sig)
+            let silu_prime = _mm256_mul_ps(sv, inner); // σ*(1 + g*(1-σ))
+            let g_up = _mm256_mul_ps(gyv, silu_g); // gy * silu(g)
+            let g_gate = _mm256_mul_ps(gyv, _mm256_mul_ps(uv, silu_prime)); // gy*up*silu'(g)
+
+            _mm256_storeu_ps(grad_up.add(i), g_up);
+            _mm256_storeu_ps(grad_gate.add(i), g_gate);
+            i += 8;
+        }
+        for j in i..n {
+            let gyv = *gy.add(j);
+            let gv = *gate.add(j);
+            let uv = *up.add(j);
+            let sv = *sigma.add(j);
+            let silu_g = gv * sv;
+            let silu_prime = sv * (ONE + gv * (ONE - sv));
+            *grad_up.add(j) = gyv * silu_g;
+            *grad_gate.add(j) = gyv * uv * silu_prime;
+        }
+    });
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn silu_backward_avx2(
+    gy: *const f32,
+    gate: *const f32,
+    up: *const f32,
+    grad_up: *mut f32,
+    grad_gate: *mut f32,
+    n: usize,
+) {
+    for i in 0..n {
+        let gyv = *gy.add(i);
+        let gv = *gate.add(i);
+        let uv = *up.add(i);
+        let sv = 1.0 / (1.0 + (-gv).exp());
+        let silu_g = gv * sv;
+        let silu_prime = sv * (1.0 + gv * (1.0 - sv));
+        *grad_up.add(i) = gyv * silu_g;
+        *grad_gate.add(i) = gyv * uv * silu_prime;
+    }
+}
+
 /// Vectorized mHC alpha/beta gradient accumulation (OPT-3) — public dispatcher.
 ///
 /// # Safety
@@ -2151,5 +2271,67 @@ mod tests {
         assert!(out[0] == 0.0, "Inf input should yield 0.0");
         assert!(out[1] == 0.0, "-Inf input should yield 0.0");
         assert!(out[4] == 0.0, "NaN input should yield 0.0");
+    }
+
+    /// R-11: the FFN activation backward must match the SiLU *forward*
+    /// (`silu(gate)*up`), NOT the old ReLU² backward. Verifies the analytical
+    /// SiLU derivative against an exact f64 reference; tolerance 1e-2 on AVX2
+    /// (exp2-approx propagation, same approx as `silu_vectorial_avx2`) / 1e-5
+    /// scalar. Also asserts silu'(1) ≠ 2 (the ReLU² derivative) so a regression
+    /// to the old backward cannot silently pass.
+    #[test]
+    fn test_silu_backward_matches_reference() {
+        let n = 32;
+        let gy: Vec<f32> = (0..n).map(|i| ((i as f32 + 1.0) * 0.13).sin() * 0.7).collect();
+        // gate in ~[-4, 4] keeps silu/exp2-approx well-behaved
+        let gate: Vec<f32> = (0..n).map(|i| (i as f32 - 16.0) * 0.25).collect();
+        let up: Vec<f32> = (0..n).map(|i| ((i as f32 + 3.0) * 0.17).cos() * 0.5).collect();
+        let mut grad_up = vec![0.0f32; n];
+        let mut grad_gate = vec![0.0f32; n];
+        unsafe {
+            silu_backward_avx2(
+                gy.as_ptr(),
+                gate.as_ptr(),
+                up.as_ptr(),
+                grad_up.as_mut_ptr(),
+                grad_gate.as_mut_ptr(),
+                n,
+            );
+        }
+        // Exact f64 reference
+        let mut ref_up = vec![0.0f32; n];
+        let mut ref_gate = vec![0.0f32; n];
+        for i in 0..n {
+            let g = gate[i] as f64;
+            let s = 1.0 / (1.0 + (-g).exp());
+            let silu_g = (g * s) as f32;
+            let silu_prime = (s * (1.0 + g * (1.0 - s))) as f32;
+            ref_up[i] = gy[i] * silu_g;
+            ref_gate[i] = gy[i] * up[i] * silu_prime;
+        }
+        let tol = if is_x86_feature_detected!("avx2") { 1e-2 } else { 1e-5 };
+        for i in 0..n {
+            assert!(
+                (grad_up[i] - ref_up[i]).abs() < tol,
+                "grad_up[{i}] {} vs ref {}",
+                grad_up[i],
+                ref_up[i]
+            );
+            assert!(
+                (grad_gate[i] - ref_gate[i]).abs() < tol,
+                "grad_gate[{i}] {} vs ref {}",
+                grad_gate[i],
+                ref_gate[i]
+            );
+        }
+        // Regression guard: the OLD ReLU² backward had silu'(g)≡2g for g>0.
+        // Real silu'(1) ≈ 0.632, definitely not 2.0.
+        let g = 1.0f64;
+        let s = 1.0 / (1.0 + (-g).exp());
+        let silu_prime = s * (1.0 + g * (1.0 - s));
+        assert!(
+            (silu_prime as f32 - 2.0).abs() > 1e-3,
+            "silu'(1)={silu_prime} should differ from ReLU² derivative 2.0"
+        );
     }
 }

@@ -1099,65 +1099,25 @@ pub fn backward_slime_block(
         );
     }
 
-    // 2. FFN ReLU² Activation Backward
-    // Forward: ffn_mid_f32[i] = (if g > 0.0 { g * g } else { 0.0 }) * up[i]
-    // AVX2: branchless SiLU backward using blendv (8 f32/iter)
-    if ffn_mid >= 8 && std::is_x86_feature_detected!("avx2") {
-        unsafe {
-            use std::arch::x86_64::*;
-            let gy_ptr = b_ws.grad_ffn_mid.as_ptr();
-            let g_ptr = tape.ffn_gate_f32.as_ptr();
-            let u_ptr = tape.ffn_up_f32.as_ptr();
-            let up_grad_ptr = b_ws.grad_ffn_up.as_mut_ptr();
-            let gate_grad_ptr = b_ws.grad_ffn_gate.as_mut_ptr();
-            let zero = _mm256_setzero_ps();
-            let two = _mm256_set1_ps(2.0);
-            let mut i = 0;
-            while i + 8 <= ffn_mid {
-                let gy = _mm256_loadu_ps(gy_ptr.add(i));
-                let g = _mm256_loadu_ps(g_ptr.add(i));
-                let u = _mm256_loadu_ps(u_ptr.add(i));
-
-                let g_sq = _mm256_mul_ps(g, g);        // g * g
-                let up_contrib = _mm256_mul_ps(gy, g_sq); // gy * g²
-                let gate_contrib = _mm256_mul_ps(gy, _mm256_mul_ps(two, _mm256_mul_ps(g, u))); // gy * 2*g*u
-
-                // Mask: g > 0.0 → use contrib, else 0
-                let mask = _mm256_cmp_ps(g, zero, _CMP_GT_OQ);
-                let up_grad = _mm256_blendv_ps(zero, up_contrib, mask);
-                let gate_grad = _mm256_blendv_ps(zero, gate_contrib, mask);
-
-                _mm256_storeu_ps(up_grad_ptr.add(i), up_grad);
-                _mm256_storeu_ps(gate_grad_ptr.add(i), gate_grad);
-                i += 8;
-            }
-            // Scalar remainder
-            for j in i..ffn_mid {
-                let gy = b_ws.grad_ffn_mid[j];
-                let g = tape.ffn_gate_f32[j];
-                let u = tape.ffn_up_f32[j];
-                if g > 0.0 {
-                    b_ws.grad_ffn_up[j] = gy * (g * g);
-                    b_ws.grad_ffn_gate[j] = gy * (2.0 * g * u);
-                } else {
-                    b_ws.grad_ffn_up[j] = 0.0;
-                    b_ws.grad_ffn_gate[j] = 0.0;
-                }
-            }
-        }
-    } else {
-        for i in 0..ffn_mid {
-            let gy = b_ws.grad_ffn_mid[i];
-            let g = tape.ffn_gate_f32[i];
-            let u = tape.ffn_up_f32[i];
-            if g > 0.0 {
-                b_ws.grad_ffn_up[i] = gy * (g * g);
-                b_ws.grad_ffn_gate[i] = gy * (2.0 * g * u);
-            } else {
-                b_ws.grad_ffn_up[i] = 0.0;
-                b_ws.grad_ffn_gate[i] = 0.0;
-            }
-        }
+    // 2. FFN SiLU Activation Backward (R-11 FIX: was ReLU², mismatched forward)
+    // Forward: ffn_mid_f32[i] = silu(gate[i]) * up[i]
+    //   silu(x) = x * σ(x);  silu'(x) = σ(x) * (1 + x*(1-σ(x)))
+    //   grad_up[i]   = gy[i] * silu(gate[i])
+    //   grad_gate[i] = gy[i] * up[i] * silu'(gate[i])
+    // AVX2 (8 f32/iter) via ezop, with scalar fallback. Reuses the exp2
+    // approximation of silu_vectorial_avx2 so backward==forward to ~1e-3.
+    let gy_ptr = b_ws.grad_ffn_mid.as_ptr();
+    let g_ptr = tape.ffn_gate_f32.as_ptr();
+    let u_ptr = tape.ffn_up_f32.as_ptr();
+    unsafe {
+        crate::mud::ezop::silu_backward_avx2(
+            gy_ptr,
+            g_ptr,
+            u_ptr,
+            b_ws.grad_ffn_up.as_mut_ptr(),
+            b_ws.grad_ffn_gate.as_mut_ptr(),
+            ffn_mid,
+        );
     }
 
     // 3. FFN Up & Gate Projection Backward (Ternary STE)
