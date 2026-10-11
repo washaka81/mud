@@ -122,7 +122,9 @@ pub fn ternarize_f32_and_pack(
         let row_packed = &mut packed_u32s[row * u32s_per_row..(row + 1) * u32s_per_row];
         let start = row * n_cols;
         let dampened_scale = row_scales[row];
-        let delta = 0.7 * dampened_scale;
+        // R-13 SSOT: TERNARY_DEADZONE (0.7) — was hardcode 0.7, now uses the
+        // single project constant so conversor/trainer/checkpoint always agree.
+        let delta = forge_llm::mud::constants::TERNARY_DEADZONE * dampened_scale;
 
         // Branchless quantization: q ∈ {-1, 0, +1} without branches
         // q = (w > delta) as i32 - (w < -delta) as i32

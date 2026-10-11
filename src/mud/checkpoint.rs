@@ -677,9 +677,9 @@ fn pack_ternary(ternary_data: &[f32]) -> Vec<u8> {
     let u32_count = ternary_data.len().div_ceil(8);
     let mut packed_vec = vec![0u32; u32_count];
     for (i, &v) in ternary_data.iter().enumerate() {
-        let bit = if v > 0.5 {
+        let bit = if v > crate::mud::constants::TERNARY_DEADZONE {
             0x1u32
-        } else if v < -0.5 {
+        } else if v < -crate::mud::constants::TERNARY_DEADZONE {
             0xFu32
         } else {
             0x0u32
@@ -959,7 +959,8 @@ mod tests {
             let row_u32_start = r * cols / 8;
             for c in 0..cols {
                 let val = (weights[start + c] / s).round().clamp(-1.0, 1.0);
-                let bit = if val > 0.5 { 0x1u32 } else if val < -0.5 { 0xFu32 } else { 0x0u32 };
+                // R-13: helper uses TERNARY_DEADZONE (== production pack threshold)
+                let bit = if val > crate::mud::constants::TERNARY_DEADZONE { 0x1u32 } else if val < -crate::mud::constants::TERNARY_DEADZONE { 0xFu32 } else { 0x0u32 };
                 let u32_idx = row_u32_start + c / 8;
                 let bit_shift = (c % 8) * 4;
                 let u32_val = unsafe {
@@ -977,6 +978,43 @@ mod tests {
 
         assert_eq!(ref_packed.len(), direct_packed.len());
         assert_eq!(ref_packed, direct_packed, "direct pack must match reference pack_ternary");
+    }
+
+    /// R-13: the unified deadzone `TERNARY_DEADZONE` (0.7) is applied by
+    /// `pack_ternary`. A normalized value in the (0.5, 0.7] band that the OLD
+    /// 0.5 threshold would have packed as ±1 must now pack to 0 (dead) — i.e.
+    /// conversor ↔ checkpoint ↔ trainer now agree.
+    #[test]
+    fn test_ternary_deadzone_unified_boundary() {
+        use crate::mud::constants::TERNARY_DEADZONE;
+        assert!((TERNARY_DEADZONE - 0.7).abs() < 1e-6, "SSOT must be 0.7");
+        // 0.6 ∈ (0.5, 0.7] → dead under 0.7 (was ±1 under old 0.5)
+        let dead = pack_ternary(&[0.6f32]);
+        assert_eq!(dead, vec![0u8; 4], "0.6 should be dead (0) with 0.7 deadzone");
+        // > 0.7 → +1 (0x1 in low nibble)
+        let pos = pack_ternary(&[0.8f32]);
+        assert_eq!(pos, vec![0x1, 0, 0, 0]);
+        // < -0.7 → -1 (0xF)
+        let neg = pack_ternary(&[-0.8f32]);
+        assert_eq!(neg, vec![0xF, 0, 0, 0]);
+        // exactly at boundary: 0.7 is NOT > 0.7 → dead
+        let at = pack_ternary(&[0.7f32]);
+        assert_eq!(at, vec![0u8; 4], "0.7 == deadzone is exclusive (> not ≥)");
+    }
+
+    /// R-13 idempotency: packing the same weights twice yields byte-identical
+    /// codes + scales (convertir → guardar sin entrenar ⇒ hashes idénticos).
+    #[test]
+    fn test_pack_ternary_idempotent() {
+        let data: Vec<f32> = vec![
+            0.9, -0.9, 0.0, 0.5, -0.5, 0.3, -0.3, 0.0,
+            0.6, -0.65, 0.71, -0.71, 0.4, -0.4, 0.0, 0.0,
+            1.0, -1.0, 0.69, -0.72, 0.2, -0.2, 0.8, -0.8,
+        ];
+        let a = pack_ternary(&data);
+        let b = pack_ternary(&data);
+        assert_eq!(a, b, "pack_ternary must be deterministic/idempotent");
+        assert!(!a.iter().all(|&v| v == 0), "non-trivial input must produce non-zero codes");
     }
 
     #[test]

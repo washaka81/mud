@@ -4,7 +4,25 @@
 use std::sync::OnceLock;
 
 pub const DEPTH_DAMPENING_FACTOR: f32 = std::f32::consts::FRAC_1_SQRT_2;
-pub const SPARSITY_THRESHOLD_RATIO: f32 = 0.7;
+/// **SSOT — deadzone de empaquetado ternario.**
+/// Umbral de pack-to-zero: un peso `w` (normalizado por su fila `s`, i.e.
+/// `w_q = w/s`) se cuantiza a 0 cuando `|w_q| ≤ TERNARY_DEADZONE` (≈ 0.7), y a
+/// ±1 (→ ±s al des-quantizar) cuando `|w_q| > TERNARY_DEADZONE`.
+///
+/// **UNA única constante** usada por el conversor GGUF→.mud
+/// (`tools/universal_converter/quantizer.rs`), el pack STE del entrenador
+/// (`ezop::pack_elut_prq`, `optim.rs`), el sync de checkpoints
+/// (`corpus_trainer/alignment.rs`) y los tests de referencia en
+/// `checkpoint.rs`. Antes de R-13 el checkpoint/alignment usaba `0.5` (normalizado)
+/// mientras el conversor y el trainer usaban `0.7` — inconsistente: un peso en
+/// `|w_q|∈(0.5, 0.7]` se empaquetaba a 0 en el conversor pero a ±s en el
+/// checkpoint. Valor 0.7 ≈ 1/√2·(|w|_mean≈0.7·s) conserva ~92 % sparsity en bases
+/// convencionales. Ver `docs/planning/MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md` §R-13.
+pub const TERNARY_DEADZONE: f32 = 0.7;
+/// Alias histórico de `TERNARY_DEADZONE` (SSOT). Mantenido para compat con
+/// `ezop::pack_elut_prq`, `optim.rs` y `p13.rs`; importe `TERNARY_DEADZONE` en
+/// código nuevo.
+pub const SPARSITY_THRESHOLD_RATIO: f32 = TERNARY_DEADZONE;
 pub const NEURAL_KICK_JITTER: f32 = 1e-5;
 /// Absolute numerical floor for stability-critical divisions (SSOT).
 pub const EPSILON_FLOOR: f32 = 1e-8;

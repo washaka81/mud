@@ -247,9 +247,12 @@ impl MudCorpusTrainer {
                         let idx = row_start + c;
                         let w_f = w_fp32[idx];
                         let w_q = (w_f / scale).round().clamp(-1.0, 1.0);
-                        let bit = if w_q > 0.5 {
+                        // R-13 SSOT: TERNARY_DEADZONE (0.7) — was hardcode 0.5,
+                        // divergía del conversor (0.7·s) y del pack STE del
+                        // trainer (ezop::pack_elut_prq). Ahora todos coinciden.
+                        let bit = if w_q > crate::mud::constants::TERNARY_DEADZONE {
                             0x1u32
-                        } else if w_q < -0.5 {
+                        } else if w_q < -crate::mud::constants::TERNARY_DEADZONE {
                             0xFu32
                         } else {
                             0x0u32
