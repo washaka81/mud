@@ -1729,7 +1729,7 @@ impl MudCorpusTrainer {
                                 String::new()
                             };
                             let telem_line = format!(
-                                "[TELEM] step={} epoch={} block={}/{} loss={:.4} ppl={:.1} lr={:.6} loss_vel={:.6} tok/s={:.1} steps={} elapsed={:.1}s prog={:.1}% conf={:.2}% varh={:.6} varj={:.6} jepa={:.4} σ={:.1}% cog={:.4} grad_norm={:.4} entropy={:.3} stp_loss={:.5} traj_eff={:.4} n_act={}{cmud_part}{}",
+                                "[TELEM] step={} epoch={} block={}/{} loss={:.4} ppl={:.1} lr={:.6} loss_vel={:.6} tok/s={:.1} steps={} elapsed={:.1}s prog={:.1}% conf={:.2}% varh={:.6} varj={:.6} jepa={:.4} σ={:.1}% cog={:.4} grad_norm={:.4} entropy={:.3} stp_loss={:.5} traj_eff={:.4} n_act={} clip_coef={:.4}{cmud_part}{}",
                                 global_chunks_processed,
                                 epoch,
                                 c_idx + 1,
@@ -1753,6 +1753,7 @@ impl MudCorpusTrainer {
                                 chunk_metrics_stp_loss,
                                 traj_eff,
                                 chunk_metrics.n_samples,
+                                chunk_metrics.clip_coef,
                                 if dead { " DEAD_ACT" } else { "" },
                             );
                             let is_tui = std::env::var("MUD_CIRCUIT_TUI").is_ok();

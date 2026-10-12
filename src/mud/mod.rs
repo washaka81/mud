@@ -89,6 +89,12 @@ pub const MAX_TENSOR_ENTRIES: usize = 65_536;
 pub const MAX_STRING_LEN: usize = 4 * 1024 * 1024;
 /// A tensor's `shape` vec lives in this many dims (real max: 4 for To-BitNet).
 pub const MAX_SHAPE_DIMS: usize = 16;
+/// R-31: cap de magnitud por dimensión de tensor (1<<28 ≈ 268M). Dimensiones
+/// reales máximas: vocab ~200k, hidden/ffn ~16k. Un `u64 LE` arbitrario del
+/// header (hasta 2^64-1) sin cota permitía `product`/`*` con wrap en release
+/// (sin overflow-checks) → `expected_bytes` pequeño → OOB read. Con esta cota
+/// + aritmética checked, dims absurdas devuelven `Err` en vez de hacer wrap.
+pub const MAX_TENSOR_DIM: usize = 1 << 28;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MudTensorType {
@@ -140,13 +146,34 @@ impl Clone for MudTensor {
 
 impl MudTensor {
     pub fn data_size(&self) -> usize {
-        let elements: usize = self.shape.iter().product();
+        // R-31: saturating (nunca wrap). Un wrap a la baja/alta en release
+        // podía inframedir `expected_bytes` → OOB read. Saturar como máximo
+        // provoca un panic seguro en el slicing, jamás OOB.
+        let elements: usize = self
+            .shape
+            .iter()
+            .fold(1usize, |a, &d| a.saturating_mul(d));
         match self.t_type {
-            MudTensorType::Ternary2Bit => elements.div_ceil(8) * 4,
-            MudTensorType::Float32 => elements * 4,
-            MudTensorType::Float16 => elements * 2,
+            MudTensorType::Ternary2Bit => elements.div_ceil(8).saturating_mul(4),
+            MudTensorType::Float32 => elements.saturating_mul(4),
+            MudTensorType::Float16 => elements.saturating_mul(2),
             MudTensorType::Int4 => elements.div_ceil(2),
             MudTensorType::Uint8 => elements,
+        }
+    }
+
+    /// R-31: tamaño exacto con aritmética checked. `None` si hay overflow.
+    pub fn checked_data_size(&self) -> Option<usize> {
+        let mut elements = 1usize;
+        for &d in &self.shape {
+            elements = elements.checked_mul(d)?;
+        }
+        match self.t_type {
+            MudTensorType::Ternary2Bit => elements.div_ceil(8).checked_mul(4),
+            MudTensorType::Float32 => elements.checked_mul(4),
+            MudTensorType::Float16 => elements.checked_mul(2),
+            MudTensorType::Int4 => Some(elements.div_ceil(2)),
+            MudTensorType::Uint8 => Some(elements),
         }
     }
 }
@@ -575,13 +602,29 @@ impl MudFile {
                 anyhow::bail!("tensor shape rank {s_len} exceeds cap {MAX_SHAPE_DIMS} (SEC-H1)");
             }
             // SEC-H2: bounds-check for `s_len * 8` bytes (shape vector body).
-            if pos + 4 + s_len * 8 > mmap.len() {
+            // R-31: checked (un `s_len` gigante hacía wrap en `s_len * 8`).
+            let shape_bytes = s_len
+                .checked_mul(8)
+                .ok_or_else(|| anyhow::anyhow!("tensor shape body size overflow (R-31)"))?;
+            let shape_end = pos
+                .checked_add(4)
+                .and_then(|v| v.checked_add(shape_bytes))
+                .ok_or_else(|| anyhow::anyhow!("tensor shape body offset overflow (R-31)"))?;
+            if shape_end > mmap.len() {
                 anyhow::bail!("truncated tensor shape body (SEC-H2)");
             }
             pos += 4;
             let mut shape = Vec::with_capacity(s_len);
             for _ in 0..s_len {
-                shape.push(u64::from_le_bytes(mmap[pos..pos + 8].try_into()?) as usize);
+                let dim = u64::from_le_bytes(mmap[pos..pos + 8].try_into()?) as usize;
+                // R-31: cota de magnitud por dimensión (anti-wrap/OOM).
+                if dim > MAX_TENSOR_DIM {
+                    anyhow::bail!(
+                        "tensor '{}' dim {dim} exceeds cap {MAX_TENSOR_DIM} (R-31)",
+                        name
+                    );
+                }
+                shape.push(dim);
                 pos += 8;
             }
 
@@ -611,27 +654,55 @@ impl MudFile {
 
         for tensor in tensors.values_mut() {
             tensor.data_base = data_start;
-            let ptr_offset = data_start
-                .checked_add(tensor.offset)
-                .expect("load: data_start + tensor.offset overflow");
+            // R-31: checked_add + bail (el `.expect` anterior era un panic
+            // ante input no confiable; SEC-H2 exige solo `Err`).
+            let ptr_offset = data_start.checked_add(tensor.offset).ok_or_else(|| {
+                anyhow::anyhow!("load: data_start + tensor.offset overflow (R-31)")
+            })?;
 
-            let n_elements = tensor.shape.iter().product::<usize>();
+            // R-31: producto y tamaños con checked (release no tiene
+            // overflow-checks: `product`/`*`/`+` con wrap eludían el gate OOB).
+            let mut n_elements = 1usize;
+            for &d in &tensor.shape {
+                n_elements = n_elements.checked_mul(d).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "load: tensor '{}' shape product overflow (R-31)",
+                        tensor.name
+                    )
+                })?;
+            }
             let expected_bytes = match tensor.t_type {
-                MudTensorType::Ternary2Bit => n_elements.div_ceil(8) * 4,
-                MudTensorType::Float32 => n_elements * 4,
-                MudTensorType::Float16 => n_elements * 2,
+                MudTensorType::Ternary2Bit => n_elements
+                    .div_ceil(8)
+                    .checked_mul(4)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "load: tensor '{}' byte size overflow (R-31)",
+                            tensor.name
+                        )
+                    })?,
+                MudTensorType::Float32 => n_elements.checked_mul(4).ok_or_else(|| {
+                    anyhow::anyhow!("load: tensor '{}' byte size overflow (R-31)", tensor.name)
+                })?,
+                MudTensorType::Float16 => n_elements.checked_mul(2).ok_or_else(|| {
+                    anyhow::anyhow!("load: tensor '{}' byte size overflow (R-31)", tensor.name)
+                })?,
                 MudTensorType::Int4 => n_elements.div_ceil(2),
                 MudTensorType::Uint8 => n_elements,
             };
 
-            if ptr_offset + expected_bytes > mmap_len {
+            let end = ptr_offset.checked_add(expected_bytes).ok_or_else(|| {
+                anyhow::anyhow!("load: tensor '{}' end offset overflow (R-31)", tensor.name)
+            })?;
+            if end > mmap_len {
                 anyhow::bail!(
                     "CORRUPTION DETECTED: Tensor '{}' (type {:?}) requires {} bytes at offset 0x{:x}, but mmap only has {} bytes remaining.",
                     tensor.name, tensor.t_type, expected_bytes, ptr_offset, mmap_len.saturating_sub(ptr_offset)
                 );
             }
 
-            // SAFETY: ptr_offset + expected_bytes was validated against mmap_len on lines 335-339
+            // SAFETY: `end = ptr_offset + expected_bytes` (checked) ≤ mmap_len;
+            // el slice [ptr_offset, end) está dentro del mmap.
             tensor.data_ptr = unsafe { mmap.as_ptr().add(ptr_offset) };
         }
 
@@ -644,12 +715,124 @@ impl MudFile {
                 metadata: HashMap::new(),
             },
         );
-        Ok(Self {
+        let this = Self {
             mmap: Some(mmap),
             skills,
             global_metadata,
             path: Some(path.to_string()),
-        })
+        };
+        // R-30: metadata↔shapeFail-fast: un header válido con dims incoherentes
+        // (p.ej. `token_embd.weight` de 10 elementos con vocab=32000) antes
+        // producía OOB read / OOM en `inference.rs` (`from_raw_parts` con
+        // longitudes de metadata). Ahora es `Err` en carga.
+        this.validate_model_shapes()?;
+        Ok(this)
+    }
+
+    /// R-30: valida que cada tensor presente encaje con las dims declaradas en
+    /// `global_metadata` (`token_embd == [vocab,hidden]`,
+    /// `blk.N.attn_q == [n_heads*head_dim,hidden]`, …) con `checked_*`.
+    ///
+    /// Semántica:
+    /// - Sin dims completas en metadata → `Ok(())` (nada que cotejar; el
+    ///   forward exige metadata vía `expect_metadata` igualmente).
+    /// - Tensor ausente → se omite (el forward tolera nulos en opcionales).
+    /// - Tensor presente con shape incoherente → `Err` (no panic/OOB/OOM).
+    pub fn validate_model_shapes(&self) -> anyhow::Result<()> {
+        fn meta_usize(md: &std::collections::HashMap<String, String>, keys: &[&str]) -> Option<usize> {
+            keys.iter()
+                .filter_map(|k| md.get(*k))
+                .filter_map(|v| v.parse::<usize>().ok())
+                .next()
+        }
+        let md = &self.global_metadata;
+        let (hidden, layers, n_heads, n_kv, ffn_mid, vocab) = match (
+            meta_usize(md, &["hidden_size"]),
+            meta_usize(md, &["num_hidden_layers", "num_layers"]),
+            meta_usize(md, &["num_attention_heads", "num_heads"]),
+            meta_usize(md, &["num_key_value_heads", "num_kv_heads"]),
+            meta_usize(md, &["intermediate_size", "ffn_hidden"]),
+            meta_usize(md, &["vocab_size"]),
+        ) {
+            (Some(h), Some(l), Some(nh), Some(nkv), Some(f), Some(v)) => (h, l, nh, nkv, f, v),
+            _ => return Ok(()),
+        };
+        for (k, v) in [
+            ("hidden_size", hidden),
+            ("num_layers", layers),
+            ("n_heads", n_heads),
+            ("n_kv_heads", n_kv),
+            ("ffn_mid", ffn_mid),
+            ("vocab_size", vocab),
+        ] {
+            if v == 0 || v > MAX_TENSOR_DIM {
+                anyhow::bail!("R-30: metadata dim {k}={v} fuera de rango");
+            }
+        }
+        if n_heads == 0 || hidden % n_heads != 0 {
+            anyhow::bail!("R-30: hidden_size={hidden} no divisible por n_heads={n_heads}");
+        }
+        let head_dim = hidden / n_heads;
+        let q_rows = n_heads.checked_mul(head_dim).ok_or_else(|| {
+            anyhow::anyhow!("R-30: q_rows overflow (checked_mul)")
+        })?;
+        let kv_rows = n_kv.checked_mul(head_dim).ok_or_else(|| {
+            anyhow::anyhow!("R-30: kv_rows overflow (checked_mul)")
+        })?;
+        let core = match self.skills.get("core") {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        let check = |name: &str, expected: &[usize]| -> anyhow::Result<()> {
+            if let Some(t) = core.tensors.get(name) {
+                if t.shape != expected {
+                    anyhow::bail!(
+                        "R-30: tensor '{name}' shape {:?} incoherente con metadata (esperado {:?})",
+                        t.shape,
+                        expected
+                    );
+                }
+            }
+            Ok(())
+        };
+        // Embeddings / head.
+        check("token_embd.weight", &[vocab, hidden])?;
+        check("token_embd.prq_scale", &[vocab])?;
+        check("output.weight", &[vocab, hidden])?;
+        check("output.prq_scale", &[vocab])?;
+        check("output_norm.weight", &[hidden])?;
+        // Capas.
+        for blk in 0..layers {
+            let p = format!("blk.{blk}.");
+            let w = |n: &str| format!("{p}{n}.weight");
+            let s = |n: &str| format!("{p}{n}.prq_scale");
+            check(&w("attn_q"), &[q_rows, hidden])?;
+            check(&w("attn_k"), &[kv_rows, hidden])?;
+            check(&w("attn_v"), &[kv_rows, hidden])?;
+            check(&w("attn_o"), &[hidden, q_rows])?;
+            check(&s("attn_q"), &[q_rows])?;
+            check(&s("attn_k"), &[kv_rows])?;
+            check(&s("attn_v"), &[kv_rows])?;
+            check(&s("attn_o"), &[hidden])?;
+            check(&w("attn_norm"), &[hidden])?;
+            check(&w("ffn_norm"), &[hidden])?;
+            // FFN denso (naming universal: si hay triple denso se valida;
+            // si el modelo es MoE con expert.* se omite aquí).
+            let has_dense = core.tensors.contains_key(&w("ffn_up"))
+                || core.tensors.contains_key(&w("ffn_gate"))
+                || core.tensors.contains_key(&w("ffn_down"));
+            if has_dense {
+                check(&w("ffn_up"), &[ffn_mid, hidden])?;
+                check(&w("ffn_gate"), &[ffn_mid, hidden])?;
+                check(&w("ffn_down"), &[hidden, ffn_mid])?;
+                check(&s("ffn_up"), &[ffn_mid])?;
+                check(&s("ffn_gate"), &[ffn_mid])?;
+                check(&s("ffn_down"), &[hidden])?;
+            }
+            check(&format!("{p}mhc_alpha"), &[hidden])?;
+            check(&format!("{p}mhc_beta"), &[hidden])?;
+        }
+        Ok(())
     }
 
     pub fn get_tensor_ternary(&self, skill: &str, name: &str) -> Option<*const u32> {

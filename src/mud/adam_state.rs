@@ -171,6 +171,12 @@ pub fn adam_bias_scalars(step: u64, lr: f32, b1: f32, b2: f32) -> (f32, f32) {
 /// Full-matrix Adam step (updates `w`, `state.m`, `state.v` in place).
 /// Gradients should already be token-normalized if desired.
 ///
+/// R-18 (AdamW desacoplado): el decay NO entra en `gi` (momentos puros sobre
+/// el gradiente). Se aplica fuera como `w *= (1 - lr*wd)` ANTES del kernel
+/// (exacto: el update no depende de `w` una vez que el kernel recibe `wd=0`).
+/// El kernel ASM (`adam_step.s`) conserva su fórmula acoplada pero siempre se
+/// invoca con `wd=0`; ver nota en `adam_step.s:71`.
+///
 /// # Safety
 /// `w`, `g`, and `state` lengths must match; `adam_step_avx2` requires aligned-ish buffers.
 pub fn adam_step(
@@ -185,6 +191,18 @@ pub fn adam_step(
     if n == 0 {
         return;
     }
+    // Decoupled decay first (AdamW). Non-finite weights are left untouched
+    // here (el kernel los sanea vía gi=0 y el update los mueve igual).
+    if weight_decay.is_finite() && weight_decay != 0.0 && lr.is_finite() && lr != 0.0 {
+        let f = (1.0 - lr * weight_decay).clamp(0.0, 1.0);
+        if (f - 1.0).abs() > f32::EPSILON {
+            for wi in w.iter_mut().take(n) {
+                if wi.is_finite() {
+                    *wi *= f;
+                }
+            }
+        }
+    }
     state.step = state.step.saturating_add(1);
     let (lr_bc1, inv_bc2) = adam_bias_scalars(state.step, lr, ADAM_B1, ADAM_B2);
 
@@ -197,7 +215,7 @@ pub fn adam_step(
                 state.v.as_mut_ptr(),
                 g.as_ptr(),
                 clip_coef,
-                weight_decay,
+                0.0, // R-18: wd=0 — decay ya aplicado fuera (AdamW)
                 ADAM_B1,
                 ADAM_B2,
                 lr_bc1,
@@ -213,7 +231,7 @@ pub fn adam_step(
             &mut state.v[..n],
             lr_bc1,
             inv_bc2,
-            weight_decay,
+            0.0, // R-18: wd=0 — decay ya aplicado fuera (AdamW)
             clip_coef,
         );
     }
@@ -221,6 +239,8 @@ pub fn adam_step(
 
 /// Scalar Adam (bias-corrected), same formula as ASM.
 /// P-00: raw-pointer pass — no bounds checks, no iterator overhead.
+/// R-18: `wd` es legado — los wrappers (`adam_step`) siempre pasan `wd=0`
+/// (decay desacoplado aplicado fuera). Se conserva el parámetro por ABI.
 #[allow(clippy::too_many_arguments)]
 fn adam_step_scalar(
     w: &mut [f32],
@@ -312,6 +332,8 @@ pub unsafe fn peak_abs_avx2(g: *const f32, n: usize) -> f32 {
 
 /// SparseAdam AVX2 update loop for a single row. Processes 8 f32/iter via FMA.
 /// Assumes `max_abs >= SPARSE_ROW_EPS` (row already active).
+/// R-18: `weight_decay` es legado — el llamador (`sparse_adam_step`) pasa
+/// siempre `0.0` (decay desacoplado por fila fuera del kernel).
 ///
 /// # Safety
 /// - `wp`, `gp`, `mp`, `vp` must point to at least `cols` valid f32 values each.
@@ -384,6 +406,10 @@ pub unsafe fn sparse_adam_row_avx2(
 }
 
 /// SparseAdam: only rows whose max |g| ≥ [`SPARSE_ROW_EPS`] are updated.
+/// R-18: AdamW desacoplado por fila activa — `w_fila *= (1-lr*wd)` antes del
+/// kernel de fila (que recibe `wd=0`). Las filas inactivas no se tocan
+/// (ni update ni decay): es la concesión de esparsidad documentada; el decay
+/// total coincide con AdamW denso salvo filas bajo el umbral de actividad.
 #[allow(clippy::too_many_arguments)]
 pub fn sparse_adam_step(
     w: &mut [f32],
@@ -439,6 +465,20 @@ pub fn sparse_adam_step(
         if max_abs < SPARSE_ROW_EPS {
             continue;
         }
+        // R-18: decoupled decay on the active row only, then pure-grad kernel.
+        if weight_decay.is_finite() && weight_decay != 0.0 && lr.is_finite() && lr != 0.0 {
+            let f = (1.0 - lr * weight_decay).clamp(0.0, 1.0);
+            if (f - 1.0).abs() > f32::EPSILON {
+                unsafe {
+                    for c in 0..cols {
+                        let p = wp.add(start + c);
+                        if (*p).is_finite() {
+                            *p *= f;
+                        }
+                    }
+                }
+            }
+        }
         if use_avx {
             unsafe {
                 let row_wp = wp.add(start);
@@ -446,7 +486,7 @@ pub fn sparse_adam_step(
                 let row_vp = vp.add(start);
                 sparse_adam_row_avx2(
                     row_wp, row_ptr, row_mp, row_vp,
-                    cols, lr_bc1, inv_bc2, clip_coef, weight_decay,
+                    cols, lr_bc1, inv_bc2, clip_coef, 0.0, // R-18: wd=0
                 );
             }
         } else {
@@ -456,7 +496,7 @@ pub fn sparse_adam_step(
                     if !gi.is_finite() {
                         gi = 0.0;
                     }
-                    gi = gi * clip_coef + weight_decay * *wp.add(start + c);
+                    gi *= clip_coef; // R-18: sin término wd*w (AdamW)
                     *mp.add(start + c) = ADAM_B1 * *mp.add(start + c) + (1.0 - ADAM_B1) * gi;
                     *vp.add(start + c) = ADAM_B2 * *vp.add(start + c) + (1.0 - ADAM_B2) * gi * gi;
                     let denom = (*vp.add(start + c) * inv_bc2).sqrt() + ADAM_EPS;
@@ -695,5 +735,34 @@ mod tests {
         assert!((g[3] - (-1.5)).abs() < 1e-6);
         assert!(g[4] == 0.0);
         assert!((g[5] - 2.0).abs() < 1e-6);
+    }
+
+    /// R-18 (AdamW desacoplado): con `g=0` los momentos NO se contaminan
+    /// (`m=v=0` tras el paso) y el peso decae exactamente `lr*wd*w`
+    /// (sin amplificación por momento). Con el Adam+L2 acoplado anterior,
+    /// `gi = wd*w` contaminaba `m,v` y el update era `lr*m/(sqrt(v)+eps)`
+    /// sobre un gradiente fantasma.
+    #[test]
+    fn test_adamw_decoupled_zero_grad_r18() {
+        let n = 16;
+        let mut w = vec![1.0f32; n];
+        let g = vec![0.0f32; n];
+        let mut state = AdamState::zeros(n);
+        let lr = 0.01f32;
+        let wd = 0.01f32;
+        adam_step(&mut w, &g, &mut state, lr, wd, 1.0);
+        // Momentos limpios: el decay no entra en gi.
+        for (i, (mi, vi)) in state.m.iter().zip(state.v.iter()).enumerate() {
+            assert_eq!(*mi, 0.0, "R-18: m[{i}] contaminado por WD");
+            assert_eq!(*vi, 0.0, "R-18: v[{i}] contaminado por WD");
+        }
+        // Decoupled decay exacto: w *= (1-lr*wd); update de momento = 0.
+        let expected = 1.0 - lr * wd;
+        for (i, wi) in w.iter().enumerate() {
+            assert!(
+                (*wi - expected).abs() < 1e-6,
+                "R-18: w[{i}]={wi} debe ser {expected} (decay desacoplado)",
+            );
+        }
     }
 }

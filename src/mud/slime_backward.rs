@@ -196,17 +196,21 @@ impl SlimeLayerShadowF32 {
 }
 
 /// Unpacks Ternary2Bit (ELUT 4-bit nibbles, 8 weights per u32) into a flat f32 vector using PRQ scales.
+/// R-15 canonical wire format: per-row padded `rows * cols.div_ceil(8) * 4`
+/// bytes (same as converter `quantizer.rs` + `stable_pack_ternary_rows` +
+/// `pack_ternary_into`). Each row starts at `r * row_words` u32 words.
 pub fn unpack_ternary2bit_to_f32(packed: &[u8], scales: &[f32], cols: usize, out: &mut [f32]) {
     let rows = scales.len();
+    let row_words = cols.div_ceil(8);
     assert_eq!(out.len(), rows * cols);
-    assert_eq!(packed.len(), (rows * cols).div_ceil(8) * 4);
+    assert_eq!(packed.len(), rows * row_words * 4);
 
     let packed_u32 = packed.as_ptr() as *const u32;
     let out_p = out.as_mut_ptr();
     let lut = super::TERNARY_LUT;
     for (r, &scale) in scales.iter().enumerate() {
         let row_base = (r * cols) as isize;
-        let u32_base = row_base / 8;
+        let u32_base = (r * row_words) as isize;
         let full_groups = cols / 8;
         let rem = cols % 8;
         for g in 0..full_groups {
@@ -524,6 +528,10 @@ pub struct SlimeBackwardWorkspace {
     pub class_logits: Vec<f32>,
     pub prob_q: Vec<f32>,
     pub d_logits: Vec<f32>,
+    /// R-19: per-class ternary scales for sampled-softmax rows (target + negs).
+    /// Same STE preprocessing for every row; per-class `scale_up` keeps logits
+    /// coherently renormalized.
+    pub class_scales: Vec<f32>,
     pub grad_in: Vec<f32>,
     pub grad_out: Vec<f32>,
     pub neg_ids: Vec<usize>,
@@ -573,6 +581,7 @@ impl SlimeBackwardWorkspace {
             class_logits: vec![0.0; num_classes],
             prob_q: vec![0.0; num_classes],
             d_logits: vec![0.0; num_classes],
+            class_scales: vec![1.0; num_classes],
             grad_in: vec![0.0; hidden],
             grad_out: vec![0.0; hidden],
             neg_ids: vec![0; num_neg],

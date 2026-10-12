@@ -7,7 +7,8 @@
 //! Covered kernels:
 //! - `dequantize_ternary_row` (`mod.rs`) — 8 values/u32, nibble `j` at `(val >> j*4) & 0xF`
 //! - `pack_ternary_into` (`ezop.rs`) — inverse of the above
-//! - `pack_elut_prq` (`ezop.rs`) — 2 values/byte (`b0 | b1<<4`), row-major `start/2 + c`
+//! - `pack_elut_prq` (`ezop.rs`) — R-15 canonical per-row padded
+//!   (`rows * cols.div_ceil(8) * 4` bytes, nibble `j*4` in row `r` word `r*row_words+j/8`)
 //! - `unpack_ternary2bit_to_f32` (`slime_backward.rs`) — per-row PRQ scale × LUT
 //! - the extraction pattern in `tools/training_healthcheck.rs`:
 //!   `u32_idx = offset/8; shift = (offset%8)*4; bits = (*(ptr+u32_idx) >> shift) & 0xF`
@@ -76,12 +77,14 @@ pub fn check_nibble_formula_consistency(n: usize) -> bool {
 }
 
 /// ELUT 2-values/byte round-trip: `pack_elut_prq` (raw ptr) → manual decode.
-/// Validates the `start/2 + c` byte layout and low/high nibble assignment.
+/// R-15 canonical per-row padded layout (`row_bytes = cols.div_ceil(8)*4`).
 pub fn check_elut_2perbyte_roundtrip(rows: usize, cols: usize) -> bool {
     let total = rows * cols;
+    let row_words = cols.div_ceil(8);
+    let row_bytes = row_words * 4;
     let mut shadow = vec![0.0f32; total];
     let mut scales = vec![0.0f32; rows];
-    let mut packed = vec![0u8; total.div_ceil(2)];
+    let mut packed = vec![0u8; rows * row_bytes];
     // deterministic ±values around threshold
     for (i, v) in shadow.iter_mut().enumerate() {
         *v = match i % 3 {
@@ -99,18 +102,27 @@ pub fn check_elut_2perbyte_roundtrip(rows: usize, cols: usize) -> bool {
             packed.as_mut_ptr(),
         );
     }
-    // manual decode matching the documented layout
-    for e in 0..total {
-        let byte = packed[e / 2];
-        let nibble = if e % 2 == 0 { byte & 0xF } else { (byte >> 4) & 0xF };
-        let got = TERNARY_LUT[nibble as usize];
-        let expected = match e % 3 {
-            0 => 1.0,
-            1 => -1.0,
-            _ => 0.0,
-        };
-        if (got - expected).abs() > 1e-6 {
-            return false;
+    // manual decode matching the canonical per-row padded layout
+    for r in 0..rows {
+        for c in 0..cols {
+            // nibble index within the row: col c lives in u32 word c/8, nibble c%8
+            let word = u32::from_le_bytes([
+                packed[r * row_bytes + (c / 8) * 4],
+                packed[r * row_bytes + (c / 8) * 4 + 1],
+                packed[r * row_bytes + (c / 8) * 4 + 2],
+                packed[r * row_bytes + (c / 8) * 4 + 3],
+            ]);
+            let nibble = ((word >> ((c % 8) * 4)) & 0xF) as u8;
+            let got = TERNARY_LUT[nibble as usize];
+            let e = r * cols + c;
+            let expected = match e % 3 {
+                0 => 1.0,
+                1 => -1.0,
+                _ => 0.0,
+            };
+            if (got - expected).abs() > 1e-6 {
+                return false;
+            }
         }
     }
     true
@@ -120,7 +132,11 @@ pub fn check_elut_2perbyte_roundtrip(rows: usize, cols: usize) -> bool {
 /// `dequantize_ternary_row` per row × that row's scale.
 pub fn check_unpack_matches_dequant(rows: usize, cols: usize) -> bool {
     let total = rows * cols;
-    let u32s = total.div_ceil(8);
+    // R-15: per-row padded canonical (`rows * cols.div_ceil(8) * 4`).
+    // NOTE: only comparable to flat `dequantize_ternary_row` when cols % 8 == 0
+    // (all production dims); otherwise the row padding has no flat equivalent.
+    let row_words = cols.div_ceil(8);
+    let u32s = rows * row_words;
     let mut packed = vec![0u32; u32s];
     let mut scales = vec![0.0f32; rows];
     for (r, s) in scales.iter_mut().enumerate() {
@@ -131,10 +147,10 @@ pub fn check_unpack_matches_dequant(rows: usize, cols: usize) -> bool {
                 1 => -1.0,
                 _ => 0.0,
             };
-            let k = r * cols + c;
+            let k = r * row_words + c / 8;
             if v.abs() > 0.0 {
                 let bits = if v > 0.0 { 0x1u32 } else { 0xFu32 };
-                packed[k / 8] |= bits << ((k % 8) * 4);
+                packed[k] |= bits << ((c % 8) * 4);
             }
         }
     }

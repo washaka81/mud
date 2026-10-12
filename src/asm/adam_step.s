@@ -1,5 +1,10 @@
 /* adam_step_avx2 — Adam optimizer step (AVX2 + FMA), AT&T syntax
  *
+ * R-18 (AdamW): los llamadores Rust (`adam_state::adam_step`) aplican el
+ * weight decay de forma DESACOPLADA (`w *= 1-lr*wd`) ANTES del kernel y
+ * siempre pasan `wd=0`. La fórmula `g = grads*clip + wd*w` de abajo queda
+ * como `g = grads*clip` en la práctica; se conserva por ABI.
+ *
  * void adam_step_avx2(
  *   size_t  n,          rdi
  *   float*  w,          rsi

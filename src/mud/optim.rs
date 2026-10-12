@@ -328,6 +328,57 @@ unsafe fn update_prq_scales_only(
     }
 }
 
+// ── R-17: global gradient clipping ─────────────────────────────────────
+// Norma global sobre TODOS los tensores de gradiente (no solo la activación
+// `grad_in` por par). `clip_coef = min(1, thresh / global_norm)`; todos los
+// grads se escalan por `clip_coef` antes del optimizer step.
+
+/// Suma de cuadrados global sobre una lista de slices de gradiente.
+/// No-alloc, escalar (fuera del hot path por chunk, no por par).
+pub fn global_grad_norm_sq(grads: &[&[f32]]) -> f64 {
+    let mut acc = 0.0f64;
+    for g in grads {
+        let mut s = 0.0f64;
+        for &v in g.iter() {
+            if v.is_finite() {
+                s += (v as f64) * (v as f64);
+            }
+        }
+        acc += s;
+    }
+    acc
+}
+
+/// Escala todos los grads por `coef` (in-place). NaN/Inf → 0 (P-17).
+pub fn scale_all_grads(grads: &mut [&mut [f32]], coef: f32) {
+    if (coef - 1.0).abs() < f32::EPSILON {
+        return;
+    }
+    for g in grads.iter_mut() {
+        for v in g.iter_mut() {
+            if v.is_finite() {
+                *v *= coef;
+            } else {
+                *v = 0.0;
+            }
+        }
+    }
+}
+
+/// Coeficiente de clip global: `min(1, thresh / sqrt(norm_sq))`.
+/// `norm_sq` no-finita o ≤ 0 ⇒ 1.0 (sin escalado); thresh ≤ 0 ⇒ 1.0.
+pub fn global_clip_coef(norm_sq: f64, thresh: f32) -> f32 {
+    if !norm_sq.is_finite() || norm_sq <= 0.0 || !thresh.is_finite() || thresh <= 0.0 {
+        return 1.0;
+    }
+    let norm = norm_sq.sqrt() as f32;
+    if !norm.is_finite() || norm <= thresh {
+        1.0
+    } else {
+        thresh / norm
+    }
+}
+
 // ── Dispatcher: apply strategy + STE pack to ELUT 4-bit ──────────────────────
 
 /// Apply optimizer according to [`OptimizerStrategy`], then STE-pack to ELUT 4-bit.
@@ -521,11 +572,13 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                     let sw = (shadow_ptr as *const f32).wrapping_add(start_row * cols);
                     let sc = (scales_p as *mut f32).wrapping_add(start_row);
                     let pk = packed_p as *mut u8;
+                    // R-15: per-row padded canonical pack (no RMW, no cross-row
+                    // sharing). Row `abs_row` starts at `abs_row * row_bytes`.
+                    let row_words = cols.div_ceil(8);
+                    let row_bytes = row_words * 4;
                     unsafe {
-                        // Pack row range into global buffer (absolute nibble indices)
                         for r in 0..nrows {
                             let abs_row = start_row + r;
-                            let row_start = abs_row * cols;
                             let mut abs_sum = 0.0f32;
                             for c in 0..cols {
                                 abs_sum += (*sw.add(r * cols + c)).abs();
@@ -533,23 +586,15 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                             let s = ((abs_sum / cols as f32) * std::f32::consts::FRAC_1_SQRT_2)
                                 .max(crate::mud::constants::EPSILON_FLOOR);
                             *sc.add(r) = s;
-                            let threshold = s * crate::mud::constants::SPARSITY_THRESHOLD_RATIO;
-                            for c in 0..cols {
-                                let idx = row_start + c;
-                                let v = *sw.add(r * cols + c);
-                                let bit = if v > threshold {
-                                    0x1u8
-                                } else if v < -threshold {
-                                    0xFu8
-                                } else {
-                                    0x0u8
-                                };
-                                let byte_idx = idx / 2;
-                                let nibble_pos = (idx % 2) * 4;
-                                let current = *pk.add(byte_idx);
-                                let mask = !(0xFu8 << nibble_pos);
-                                *pk.add(byte_idx) = (current & mask) | (bit << nibble_pos);
-                            }
+                            let delta = s * crate::mud::constants::TERNARY_DEADZONE;
+                            let word_ptr =
+                                pk.add(abs_row * row_bytes) as *mut u32;
+                            crate::mud::ezop::pack_ternary_into(
+                                sw.add(r * cols),
+                                cols,
+                                delta,
+                                word_ptr,
+                            );
                         }
                     }
                 });
@@ -627,5 +672,33 @@ mod tests {
         assert_eq!(w[1], 4.0);
         assert_eq!(w[2], 0.0);
         assert_eq!(w[3], 0.0);
+    }
+
+    /// R-17: gradiente artificial grande ⇒ `clip_coef < 1` y norma post-clip == clip.
+    #[test]
+    fn test_global_clip_large_grad_r17() {
+        let mut g1 = vec![10.0f32; 64];
+        let mut g2 = vec![-5.0f32; 64];
+        let norm_sq = global_grad_norm_sq(&[&g1, &g2]);
+        // norm² = 64*100 + 64*25 = 8000 → norm ≈ 89.44
+        assert!((norm_sq - 8000.0).abs() < 1e-3, "norm_sq={norm_sq}");
+        let coef = global_clip_coef(norm_sq, 1.0);
+        assert!(coef < 1.0, "coef={coef} debe ser < 1 con grad grande");
+        assert!((coef - 1.0 / (8000.0f64.sqrt() as f32)).abs() < 1e-6);
+        scale_all_grads(&mut [&mut g1, &mut g2], coef);
+        let post = global_grad_norm_sq(&[&g1, &g2]).sqrt();
+        assert!(
+            (post - 1.0).abs() < 1e-4,
+            "R-17: norma post-clip={post} debe ser == thresh=1.0"
+        );
+    }
+
+    /// R-17: gradiente pequeño ⇒ `clip_coef == 1` (sin escalado).
+    #[test]
+    fn test_global_clip_small_grad_noop() {
+        let g = vec![0.01f32; 16];
+        let norm_sq = global_grad_norm_sq(&[&g]);
+        let coef = global_clip_coef(norm_sq, 1.0);
+        assert_eq!(coef, 1.0, "grad pequeño no debe clipearse");
     }
 }

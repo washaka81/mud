@@ -238,6 +238,14 @@ pub fn forward_last_hidden_and_head(
         .and_then(|v| v.parse().ok())
         .unwrap_or(10000.0);
 
+    // R-30: defensa en profundidad — revalida metadata↔shape aquí también
+    // (cubre `MudFile`s construidos a mano que no pasaron por `load`).
+    mud.validate_model_shapes()?;
+    // R-31: división verificada (load ya exige hidden % n_heads == 0).
+    if n_heads == 0 || !hidden_size.is_multiple_of(n_heads) {
+        anyhow::bail!("R-30: hidden_size={hidden_size} no divisible por n_heads={n_heads}");
+    }
+
     let mut layers: Vec<SlimeLayer> = Vec::new();
     for blk in 0..num_layers {
         let prefix = format!("blk.{}.", blk);
@@ -305,7 +313,10 @@ pub fn forward_last_hidden_and_head(
         if blk == 0 {
             log::info!("[Inference] weight_type={}", if is_f32 { "Float32" } else { "Ternary2Bit" });
         }
-        let head_d = hidden_size / n_heads;
+        // R-31: división verificada por bloque (n_heads>0 garantizado arriba).
+        let head_d = hidden_size.checked_div(n_heads).ok_or_else(|| {
+            anyhow::anyhow!("R-30: hidden_size/n_heads división por cero")
+        })?;
         layers.push(SlimeLayer {
             q_w: t("attn_q"),
             k_w: t("attn_k"),
@@ -347,15 +358,42 @@ pub fn forward_last_hidden_and_head(
         .tensors
         .get("token_embd.weight")
         .ok_or_else(|| anyhow::anyhow!("Missing token_embd.weight"))?;
-    let mut emb_f32 = vec![0.0f32; vocab_size * hidden_size];
+    // R-30: longitudes derivadas del SHAPE validado, nunca de metadata.
+    // Un shape incoherente aquí es `Err`, no OOB/OOM.
+    let (emb_vocab, emb_hidden) = match emb_tensor.shape.as_slice() {
+        [v, h] => (*v, *h),
+        other => anyhow::bail!("R-30: token_embd.weight shape {other:?} debe ser [vocab,hidden]"),
+    };
+    if emb_vocab != vocab_size || emb_hidden != hidden_size {
+        anyhow::bail!(
+            "R-30: token_embd.weight shape [{emb_vocab},{emb_hidden}] incoherente con metadata [{vocab_size},{hidden_size}]"
+        );
+    }
+    let emb_elems = emb_vocab.checked_mul(emb_hidden).ok_or_else(|| {
+        anyhow::anyhow!("R-31: token_embd.weight elements overflow")
+    })?;
+    // R-31: cap de alloc (anti-OOM ante header corrupto que pasó el load).
+    const MAX_INFER_ELEMENTS: usize = 1 << 30;
+    if emb_elems > MAX_INFER_ELEMENTS {
+        anyhow::bail!("R-31: token_embd.weight {emb_elems} elementos excede el cap de inferencia");
+    }
+    let mut emb_f32 = vec![0.0f32; emb_elems];
     let emb_rms_sum_local = if emb_tensor.t_type == MudTensorType::Float32 {
         let emb_data_ptr = emb_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_tensor.data_ptr as *const f32);
+        if emb_tensor
+            .owned_data
+            .as_ref()
+            .map(|d| d.len() < emb_elems * 4)
+            .unwrap_or(false)
+        {
+            anyhow::bail!("R-30: token_embd.weight owned_data más corto que su shape");
+        }
         let emb_f32_slice =
-            unsafe { std::slice::from_raw_parts(emb_data_ptr, vocab_size * hidden_size) };
+            unsafe { std::slice::from_raw_parts(emb_data_ptr, emb_elems) };
         emb_f32.copy_from_slice(emb_f32_slice);
         emb_f32_slice.iter().map(|&x| x * x).sum::<f32>() / (hidden_size as f32)
     } else {
@@ -363,30 +401,44 @@ pub fn forward_last_hidden_and_head(
             .tensors
             .get("token_embd.prq_scale")
             .ok_or_else(|| anyhow::anyhow!("Missing token_embd.prq_scale"))?;
+        if emb_scales_tensor.shape != [emb_vocab] {
+            anyhow::bail!(
+                "R-30: token_embd.prq_scale shape {:?} debe ser [{emb_vocab}]",
+                emb_scales_tensor.shape
+            );
+        }
         let emb_packed_ptr = emb_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr())
             .unwrap_or(emb_tensor.data_ptr);
+        let emb_row_bytes = emb_hidden.div_ceil(8).checked_mul(4).ok_or_else(|| {
+            anyhow::anyhow!("R-31: token_embd row bytes overflow")
+        })?;
+        let emb_expect = emb_vocab.checked_mul(emb_row_bytes).ok_or_else(|| {
+            anyhow::anyhow!("R-31: token_embd packed bytes overflow")
+        })?;
         let emb_byte_len = emb_tensor
             .owned_data
             .as_ref()
             .map(|d| d.len())
-            .unwrap_or_else(|| {
-                let n: usize = vocab_size * hidden_size;
-                n.div_ceil(8) * 4
-            });
+            .unwrap_or(emb_expect);
+        if emb_byte_len != emb_expect {
+            anyhow::bail!(
+                "R-30: token_embd.weight bytes {emb_byte_len} != shape {emb_expect}"
+            );
+        }
         let emb_packed: &[u8] = unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
         let emb_scales_ptr = emb_scales_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_scales_tensor.data_ptr as *const f32);
-        let emb_scales: &[f32] = unsafe { std::slice::from_raw_parts(emb_scales_ptr, vocab_size) };
+        let emb_scales: &[f32] = unsafe { std::slice::from_raw_parts(emb_scales_ptr, emb_vocab) };
         slime_backward::unpack_ternary2bit_to_f32(
             emb_packed,
             emb_scales,
-            hidden_size,
+            emb_hidden,
             &mut emb_f32,
         );
         emb_f32.iter().map(|&x| x * x).sum::<f32>() / (hidden_size as f32)
@@ -397,31 +449,70 @@ pub fn forward_last_hidden_and_head(
     let mut out_f32_owned: Option<Vec<f32>> = if tied_output {
         None
     } else {
-        let mut out_dq = vec![0.0f32; vocab_size * hidden_size];
+        // R-30: igual que el embedding — shape validado + checked + cap.
+        let (out_vocab, out_hidden) = match out_tensor.shape.as_slice() {
+            [v, h] => (*v, *h),
+            other => anyhow::bail!("R-30: output.weight shape {other:?} debe ser [vocab,hidden]"),
+        };
+        if out_vocab != vocab_size || out_hidden != hidden_size {
+            anyhow::bail!(
+                "R-30: output.weight shape [{out_vocab},{out_hidden}] incoherente con metadata [{vocab_size},{hidden_size}]"
+            );
+        }
+        let out_elems = out_vocab.checked_mul(out_hidden).ok_or_else(|| {
+            anyhow::anyhow!("R-31: output.weight elements overflow")
+        })?;
+        if out_elems > MAX_INFER_ELEMENTS {
+            anyhow::bail!("R-31: output.weight {out_elems} elementos excede el cap de inferencia");
+        }
+        let mut out_dq = vec![0.0f32; out_elems];
         if out_tensor.t_type == MudTensorType::Float32 {
             let out_data_ptr = out_tensor
                 .owned_data
                 .as_ref()
                 .map(|d| d.as_ptr() as *const f32)
                 .unwrap_or(out_tensor.data_ptr as *const f32);
+            if out_tensor
+                .owned_data
+                .as_ref()
+                .map(|d| d.len() < out_elems * 4)
+                .unwrap_or(false)
+            {
+                anyhow::bail!("R-30: output.weight owned_data más corto que su shape");
+            }
             let out_f32_slice =
-                unsafe { std::slice::from_raw_parts(out_data_ptr, vocab_size * hidden_size) };
+                unsafe { std::slice::from_raw_parts(out_data_ptr, out_elems) };
             out_dq.copy_from_slice(out_f32_slice);
         } else {
             let out_scales_tensor = core
                 .tensors
                 .get("output.prq_scale")
                 .ok_or_else(|| anyhow::anyhow!("Missing output.prq_scale"))?;
+            if out_scales_tensor.shape != [out_vocab] {
+                anyhow::bail!(
+                    "R-30: output.prq_scale shape {:?} debe ser [{out_vocab}]",
+                    out_scales_tensor.shape
+                );
+            }
             let out_packed_ptr = out_tensor
                 .owned_data
                 .as_ref()
                 .map(|d| d.as_ptr())
                 .unwrap_or(out_tensor.data_ptr);
+            let out_row_bytes = out_hidden.div_ceil(8).checked_mul(4).ok_or_else(|| {
+                anyhow::anyhow!("R-31: output row bytes overflow")
+            })?;
+            let out_expect = out_vocab.checked_mul(out_row_bytes).ok_or_else(|| {
+                anyhow::anyhow!("R-31: output packed bytes overflow")
+            })?;
             let out_byte_len = out_tensor
                 .owned_data
                 .as_ref()
                 .map(|d| d.len())
-                .unwrap_or_else(|| (vocab_size * hidden_size).div_ceil(8) * 4);
+                .unwrap_or(out_expect);
+            if out_byte_len != out_expect {
+                anyhow::bail!("R-30: output.weight bytes {out_byte_len} != shape {out_expect}");
+            }
             let out_packed: &[u8] =
                 unsafe { std::slice::from_raw_parts(out_packed_ptr, out_byte_len) };
             let out_scales_ptr = out_scales_tensor
@@ -430,11 +521,11 @@ pub fn forward_last_hidden_and_head(
                 .map(|d| d.as_ptr() as *const f32)
                 .unwrap_or(out_scales_tensor.data_ptr as *const f32);
             let out_scales: &[f32] =
-                unsafe { std::slice::from_raw_parts(out_scales_ptr, vocab_size) };
+                unsafe { std::slice::from_raw_parts(out_scales_ptr, out_vocab) };
             slime_backward::unpack_ternary2bit_to_f32(
                 out_packed,
                 out_scales,
-                hidden_size,
+                out_hidden,
                 &mut out_dq,
             );
         }
@@ -483,6 +574,13 @@ pub fn forward_last_hidden_and_head(
         .tensors
         .get("output_norm.weight")
         .ok_or_else(|| anyhow::anyhow!("Missing output_norm.weight"))?;
+    // R-30: shape del norm validada (evita OOB si el tensor es más corto).
+    if out_norm_tensor.shape != [hidden_size] {
+        anyhow::bail!(
+            "R-30: output_norm.weight shape {:?} debe ser [{hidden_size}]",
+            out_norm_tensor.shape
+        );
+    }
     let out_norm_ptr = out_norm_tensor
         .owned_data
         .as_ref()
@@ -491,7 +589,10 @@ pub fn forward_last_hidden_and_head(
     let out_norm_slice: &[f32] =
         unsafe { std::slice::from_raw_parts(out_norm_ptr as *const f32, hidden_size) };
 
-    let head_dim = hidden_size / n_heads;
+    // R-31: ya validado arriba (hidden % n_heads == 0).
+    let head_dim = hidden_size.checked_div(n_heads).ok_or_else(|| {
+        anyhow::anyhow!("R-30: hidden_size/n_heads división por cero")
+    })?;
     let computed_max_emb = emb_slice
         .iter()
         .map(|v| v.abs())

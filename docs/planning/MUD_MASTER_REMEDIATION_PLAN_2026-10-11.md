@@ -236,14 +236,14 @@ flowchart LR
 | R-12 | Backward mHC con factores | 🔴 | ✅ 2026-10-11 | `ezop::mhc_activation_backward[_avx2]` aplica `grad_out *= alpha` y `grad_branch *= (1-gate)·beta` (gate=sigmoid(v_jepa)) en BOTH rutas (F32 `slime_backward.rs:~628` + ternaria `~1053`); dispatcher null-alpha/beta (base α=β=1) no rompe; `kinetic_lambda=0.005` preservado. Test `test_mhc_activation_backward_matches_reference` (α=0.85/β=1.2, tol 1e-2 AVX2/scalar). `cargo test --lib --release` 464/0/2. |
 | R-13 | Deadzone SSOT | 🔴 | ✅ 2026-10-11 | `TERNARY_DEADZONE=0.7` en `constants.rs` (alias `SPARSITY_THRESHOLD_RATIO`); TODOS los sitios 0.5·s → SSOT: `quantizer.rs:125` (conversor), `alignment.rs:249` (pack de entrenamiento, el outlier productivo), `checkpoint.rs` emb+layer pack (`0.5f32*s`→`TERNARY_DEADZONE*s`). Tests `test_ternary_deadzone_unified_boundary` + `test_pack_ternary_idempotent`. `cargo test --lib --release` 466/0/2. |
 | R-14 | Escala PRQ con punto fijo | 🔴 | ✅ 2026-10-11 | `stable_pack_ternary_rows` (helper compartido, emb+layer) preserva `s_old` cuando los códigos no cambian (save→load→save bit-estable) y recomputa `s_new=absmean/√2` SOLO cuando `ΔW` real mueve los códigos (Phase-1 pack con s_old → byte-diff → Phase-2 repack). Mata la deriva ×0.52/sesión. Tests `test_prq_scale_stable_roundtrip` (5 ciclos, ±1e-6) + `test_prq_scale_recomputes_on_movement`. `cargo test --lib --release -- --test-threads=2` 468/0/2 ✅; clippy 0. |
-| R-15 | Empaquetado determinista | 🟠 | TODO | |
-| R-16 | `scale_up` en backward | 🟠 | TODO | |
-| R-17 | Clip global de gradiente | 🟠 | TODO | |
-| R-18 | AdamW decoupled | 🟠 | TODO | |
-| R-19 | Función de score del sampled softmax | 🟠 | TODO | |
-| R-20 | chunked Muon + scales_only | 🟡 | TODO | |
-| R-30 | Validación metadata↔shape | 🔴 | TODO | |
-| R-31 | Aritmética checked en loader | 🔴 | TODO | |
+| R-15 | Empaquetado determinista | 🟠 | ✅ 2026-10-12 | Convención única acolchada por fila (`rows*div_ceil(cols,8)*4`, = conversor+unpack+stable_pack): `pack_elut_prq` delega en `pack_ternary_rows_canonical` (nueva); `unpack_ternary2bit_to_f32` indexa por fila (`r*row_words`, antes `row_base/8` plano); path paralelo `optim.rs` sin RMW ni sharing entre filas; `pointer_audit` actualizado. Tests `test_pack_unpack_pack_bit_exact_r15` (pack→unpack→pack bit-exacto + determinismo) + `odd_cols` a 4 bytes. `cargo test --lib --release -- --test-threads=2` 480/0/2; clippy 0. |
+| R-16 | `scale_up` en backward | 🟠 | ✅ 2026-10-12 | `train_step.rs` d_logits: `*temp` → `*scale_up*temp` (chain rule de `logit=dot·scale_up·temp`; subestimaba 1..128×). Test `test_head_grad_includes_scale_up_r16` (analítico vs finite-diff + regresión fórmula vieja). `cargo test --lib --release -- --test-threads=2` 480/0/2. |
+| R-17 | Clip global de gradiente | 🟠 | ✅ 2026-10-12 | `optim.rs`: `global_grad_norm_sq` + `global_clip_coef` + `scale_all_grads` (norma global pesos+mHC+output_norm, `MUD_GRAD_CLIP`); `train_step.rs` aplica antes del optimizer (CPU+GPU) y publica `clip_coef` en `TrainChunkMetrics` + `[TELEM] clip_coef=`. Tests `test_global_clip_large_grad_r17` (norma post==thresh) + noop. 480/0/2. |
+| R-18 | AdamW decoupled | 🟠 | ✅ 2026-10-12 | `adam_state.rs`: decay desacoplado `w*=(1-lr·wd)` ANTES del kernel (momentos puros; kernel ASM recibe `wd=0`, nota en `adam_step.s`); `sparse_adam_step` igual por fila activa (documentado). Test `test_adamw_decoupled_zero_grad_r18` (m=v=0 con g=0, w decae exacto). 480/0/2. |
+| R-19 | Función de score del sampled softmax | 🟠 | ✅ 2026-10-12 | `train_step.rs`: MISMO STE para target+negs (cada fila su escala `class_scales`, buffer nuevo en workspace) + `scale_up` por clase en forward y backward; documentado que negs uniformes ⇒ logQ constante. Hallazgo: la rama AVX2 anterior era incorrecta (`clamp(v,±s)·s`, no ternaria) y solo tocaba el target. Test `test_sampled_softmax_separable_batch_r19` (loss<0.1, nc=64). 480/0/2. |
+| R-20 | chunked Muon + scales_only | 🟡 | ✅ 2026-10-12 | Muon: stride compacto en copy-in/out del último chunk parcial (la norma/vista `[..rows*current]` mezclaba datos con padding) — el test nuevo FALLABA antes (Δ=0.136) y pasa después. `checkpoint.rs` scales_only: `absmean` → `absmean/√2` (escribía ×√2). Test `test_chunked_muon_matches_per_chunk_reference_r20` (cols=10/chunk=8). 480/0/2. |
+| R-30 | Validación metadata↔shape | 🔴 | ✅ 2026-10-12 | `mod.rs::validate_model_shapes` (emb/head/normas/attn QKVO+scales/FFN denso/mhc vs dims, `hidden%n_heads==0`, checked) llamada en `load` + al inicio del forward (defensa en profundidad); `inference.rs` deriva longitudes del shape (no metadata) con checked + cap OOM. Tests R-30 ×3 (ok/mismatch/no-divisible). `diagnose_model models/ale.mud` 🟢 119 tensores. 480/0/2. |
+| R-31 | Aritmética checked en loader | 🔴 | ✅ 2026-10-12 | `mod.rs`: `MAX_TENSOR_DIM=1<<28`, shape-body/offset/producto/`expected_bytes`/`end` todo checked+bail (el `.expect` panickeaba = SEC-H2); `data_size` saturating + `checked_data_size`. Tests R-31 ×2 (overflow→None, dim gigante→Err R-31 sin panic). 480/0/2. |
 | R-32 | Cotas parser GGUF | 🟠 | TODO | |
 | R-33 | ECC parity bounds | 🟡 | TODO | |
 | R-34 | worm embedding row | 🟡 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 10/55 (R-01…R-06 + R-10 + R-11 + R-12 + R-13) · F0 cerrada; Ola 1 (F1) activa.
+**Estado global:** 19/55 (R-01…R-06 + R-10…R-20 + R-30 + R-31) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30/R-31 ✅, resto TODO).
 
 ---
 

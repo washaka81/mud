@@ -263,10 +263,15 @@ pub fn chunked_muon_step(
             continue;
         }
 
-        // Copy chunk out of `grad` into scratch chunk_buf (rows × current_chunk_cols).
+        // Copy chunk out of `grad` into scratch chunk_buf, COMPACT
+        // (stride `current_chunk_cols`, not `chunk_cols`): the norm, the NS
+        // view `[..rows*current]` and the rescale below all assume a dense
+        // prefix. R-20: the old code stored rows with stride `chunk_cols`
+        // but read `[..rows*current]` — for a partial last chunk the norm
+        // mixed data with padding zeros and NS ran on the wrong slice.
         for r in 0..rows {
             let src_start = r * cols + c_start;
-            let dst_start = r * chunk_cols;
+            let dst_start = r * current_chunk_cols;
             chunk_buf[dst_start..dst_start + current_chunk_cols]
                 .copy_from_slice(&grad[src_start..src_start + current_chunk_cols]);
         }
@@ -302,9 +307,9 @@ pub fn chunked_muon_step(
             *v *= g_norm;
         }
 
-        // Copy the orthogonalized chunk back into `grad`.
+        // Copy the orthogonalized chunk back into `grad` (compact stride).
         for r in 0..rows {
-            let src_start = r * chunk_cols;
+            let src_start = r * current_chunk_cols;
             let dst_start = r * cols + c_start;
             grad[dst_start..dst_start + current_chunk_cols]
                 .copy_from_slice(&chunk_buf[src_start..src_start + current_chunk_cols]);
@@ -369,8 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ns_vulkan_matches_cpu_if_available() {
-        // Force Vulkan attempt; skip quietly if no device.
+    fn test_ns_vulkan_matches_cpu_if_available() {        // Force Vulkan attempt; skip quietly if no device.
         // Use a *local* AshContext so we don't pin a process-global GPU context
         // that can hang teardown under cargo test.
         std::env::set_var("MUD_USE_VULKAN", "1");
@@ -417,5 +421,50 @@ mod tests {
         );
         // Explicit drop before test ends
         drop(ctx);
+    }
+
+    /// R-20: chunked Muon con `cols` no múltiplo de `chunk_cols` debe equivaler
+    /// a NS por chunk (referencia CPU), incluido el último chunk parcial.
+    /// Cubre el stride del último chunk (copy-in/out con stride `chunk_cols`).
+    #[test]
+    fn test_chunked_muon_matches_per_chunk_reference_r20() {
+        let rows = 4usize;
+        let cols = 10usize; // no múltiplo de chunk_cols=8 → último chunk de 2
+        let chunk = 8usize;
+        let ns = 3usize;
+        let base: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i * 2654435761 % 97) as f32 / 97.0 - 0.5) * 0.4)
+            .collect();
+        let mut got = base.clone();
+        chunked_muon_step(&mut got, rows, cols, chunk, ns);
+        // Referencia: NS-CPU independiente por chunk (mismo tratamiento por
+        // chunk: normalizar por la norma del chunk → NS → re-escalar).
+        let mut expected = base.clone();
+        let n_chunks = cols.div_ceil(chunk);
+        for c in 0..n_chunks {
+            let s = c * chunk;
+            let e = (s + chunk).min(cols);
+            let w = e - s;
+            let mut buf = vec![0.0f32; rows * w];
+            for r in 0..rows {
+                buf[r * w..r * w + w]
+                    .copy_from_slice(&expected[r * cols + s..r * cols + e]);
+            }
+            newton_schulz_orthogonalize_cpu(&mut buf, rows, w, ns);
+            for r in 0..rows {
+                expected[r * cols + s..r * cols + e]
+                    .copy_from_slice(&buf[r * w..r * w + w]);
+            }
+        }
+        let max_delta = got
+            .iter()
+            .zip(expected.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_delta < 1e-4,
+            "R-20: chunked vs per-chunk NS max_delta={max_delta} (stride último chunk?)"
+        );
+        assert!(got.iter().all(|g| g.is_finite()));
     }
 }

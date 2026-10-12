@@ -266,6 +266,7 @@ impl MudCorpusTrainer {
         let mut class_logits = std::mem::take(&mut backward_ws.class_logits);
         let mut prob_q = std::mem::take(&mut backward_ws.prob_q);
         let mut d_logits = std::mem::take(&mut backward_ws.d_logits);
+        let mut class_scales = std::mem::take(&mut backward_ws.class_scales);
         let mut grad_in = std::mem::take(&mut backward_ws.grad_in);
         let mut grad_out = std::mem::take(&mut backward_ws.grad_out);
         let mut neg_ids = std::mem::take(&mut backward_ws.neg_ids);
@@ -303,6 +304,7 @@ impl MudCorpusTrainer {
         class_logits.resize(num_classes, 0.0);
         prob_q.resize(num_classes, 0.0);
         d_logits.resize(num_classes, 0.0);
+        class_scales.resize(num_classes, 1.0);
         grad_in.resize(hidden_size, 0.0);
         grad_out.resize(hidden_size, 0.0);
         neg_ids.resize(num_neg, 0);
@@ -599,43 +601,6 @@ impl MudCorpusTrainer {
                 target_id,
                 &mut class_embs_flat[0..hidden_size],
             );
-            let scale = if emb_lazy {
-                let absmean = class_embs_flat[0..hidden_size]
-                    .iter()
-                    .map(|v| v.abs())
-                    .sum::<f32>()
-                    / (hidden_size as f32);
-                absmean.max(1e-8)
-            } else {
-                let absmean = class_embs_flat[0..hidden_size]
-                    .iter()
-                    .map(|v| v.abs())
-                    .sum::<f32>()
-                    / (hidden_size as f32);
-                let scale = (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8);
-                // AVX2 vectorized round-and-scale: clamp to [-1,1]*scale, then multiply by scale
-                if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
-                    unsafe {
-                        crate::mud::ezop::clamp_finite_avx2(
-                            class_embs_flat.as_mut_ptr(),
-                            -scale,
-                            1.0 * scale,
-                            0.0,
-                            hidden_size,
-                        );
-                        crate::mud::ezop::scale_vec_avx2(
-                            class_embs_flat.as_mut_ptr(),
-                            scale,
-                            hidden_size,
-                        );
-                    }
-                } else {
-                    for v in &mut class_embs_flat[0..hidden_size] {
-                        *v = (*v / scale).round().clamp(-1.0, 1.0) * scale;
-                    }
-                }
-                scale
-            };
 
             // 2) Neg embs (lazy mmap or shadow)
             for (idx, &neg) in neg_ids.iter().take(num_neg).enumerate() {
@@ -650,9 +615,35 @@ impl MudCorpusTrainer {
                 );
             }
 
-            // Logit scale_up: reuse target STE scale path; avoid full-vocab emb RMS each step
-            let scale_up = (1.0 / scale.max(1e-8)).clamp(1.0, 128.0);
+            // R-19: MISMO preprocesado STE para target (fila 0) y TODOS los
+            // negativos, cada fila con su propia escala `s`. Nota: la rama AVX2
+            // anterior solo cuantizaba la fila target y además era incorrecta
+            // (clamp(v,±s)·s = [-s²,s²], NO ternario {-s,0,+s} como la rama
+            // escalar `(v/s).round().clamp(-1,1)·s`). Ahora una sola fórmula
+            // exacta para todas las filas; cada logit usa su propio `scale_up`.
+            for (slot, row) in class_scales
+                .iter_mut()
+                .zip(class_embs_flat.chunks_mut(hidden_size))
+                .take(num_classes)
+            {
+                let s = if emb_lazy {
+                    row.iter().map(|v| v.abs()).sum::<f32>() / (hidden_size as f32).max(1.0)
+                } else {
+                    let absmean =
+                        row.iter().map(|v| v.abs()).sum::<f32>() / (hidden_size as f32).max(1.0);
+                    let s = (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8);
+                    for v in row.iter_mut() {
+                        *v = (*v / s).round().clamp(-1.0, 1.0) * s;
+                    }
+                    s
+                }
+                .max(1e-8);
+                *slot = s;
+            }
 
+            // Renormalización coherente por clase: logit_i = dot_i · scale_up_i · temp.
+            // Negativos uniformes (LCG arriba) ⇒ la corrección logQ es constante y
+            // se cancela en el softmax; no se necesita término logQ por clase.
             let temp_scale = 1.0 / (hidden_size as f32).sqrt();
             for (i, class_logit) in class_logits.iter_mut().enumerate().take(num_classes) {
                 let c_start = i * hidden_size;
@@ -662,7 +653,8 @@ impl MudCorpusTrainer {
                         &class_embs_flat[c_start..c_start + hidden_size],
                     )
                 };
-                *class_logit = dot * scale_up * temp_scale;
+                let scale_up_i = (1.0 / class_scales[i].max(1e-8)).clamp(1.0, 128.0);
+                *class_logit = dot * scale_up_i * temp_scale;
             }
 
             // Softmax (AVX2 vectorized when num_classes >= 8)
@@ -713,8 +705,11 @@ impl MudCorpusTrainer {
             entropy_sum += entropy;
 
             // Calculate gradients
+            // R-16 + R-19: chain rule through `logit_i = dot_i * scale_up_i * temp`
+            // with per-class `scale_up_i` (coherent with the per-class forward).
             for (i, d_l) in d_logits.iter_mut().enumerate().take(num_classes) {
-                *d_l = (prob_q[i] - if i == 0 { 1.0 } else { 0.0 }) * temp_scale;
+                let scale_up_i = (1.0 / class_scales[i].max(1e-8)).clamp(1.0, 128.0);
+                *d_l = (prob_q[i] - if i == 0 { 1.0 } else { 0.0 }) * scale_up_i * temp_scale;
             }
 
             grad_in.fill(0.0); // gradient of x
@@ -1046,6 +1041,59 @@ impl MudCorpusTrainer {
             *self.warmup_steps.borrow(),
         );
         let decay = 0.01;
+        // R-17: clip global sobre TODOS los tensores de gradiente (norma global).
+        // El clip por-activación de arriba solo tocaba `grad_in` por par; aquí se
+        // norma el gradiente acumulado real que verá el optimizer (pesos + mHC +
+        // output_norm) y se registra `clip_coef` en telemetría.
+        let clip_coef: f32 = {
+            use crate::mud::optim::{global_clip_coef, global_grad_norm_sq, scale_all_grads};
+            let thresh = crate::mud::constants::qat_grad_clip();
+            // Suma de cuadrados (f64 para no overflow en modelos grandes).
+            let mut norm_sq = 0.0f64;
+            for g in gradients.iter() {
+                norm_sq += global_grad_norm_sq(&[
+                    &g.q_w_grad,
+                    &g.k_w_grad,
+                    &g.v_w_grad,
+                    &g.o_w_grad,
+                    &g.ffn_up_w_grad,
+                    &g.ffn_gate_w_grad,
+                    &g.ffn_down_w_grad,
+                    &g.attn_norm_w_grad,
+                    &g.ffn_norm_w_grad,
+                    &g.mhc_alpha_grad,
+                    &g.mhc_beta_grad,
+                ]);
+            }
+            if !backward_ws.output_norm_w_grad.is_empty() {
+                norm_sq += global_grad_norm_sq(&[&backward_ws.output_norm_w_grad]);
+            }
+            let coef = global_clip_coef(norm_sq, thresh);
+            if (coef - 1.0).abs() > f32::EPSILON {
+                for g in gradients.iter_mut() {
+                    scale_all_grads(
+                        &mut [
+                            &mut g.q_w_grad,
+                            &mut g.k_w_grad,
+                            &mut g.v_w_grad,
+                            &mut g.o_w_grad,
+                            &mut g.ffn_up_w_grad,
+                            &mut g.ffn_gate_w_grad,
+                            &mut g.ffn_down_w_grad,
+                            &mut g.attn_norm_w_grad,
+                            &mut g.ffn_norm_w_grad,
+                            &mut g.mhc_alpha_grad,
+                            &mut g.mhc_beta_grad,
+                        ],
+                        coef,
+                    );
+                }
+                if !backward_ws.output_norm_w_grad.is_empty() {
+                    scale_all_grads(&mut [&mut backward_ws.output_norm_w_grad], coef);
+                }
+            }
+            coef
+        };
         // SCALES_ONLY freezes ELUT codes — ash GPU pack would re-threshold trits.
         // Keep ash for heartbeat + GEMV; force AVX2×PCorePool scales-only optimizer.
         let scales_only = std::env::var("MUD_TRAIN_SCALES_ONLY")
@@ -1506,6 +1554,7 @@ impl MudCorpusTrainer {
         backward_ws.class_logits = class_logits;
         backward_ws.prob_q = prob_q;
         backward_ws.d_logits = d_logits;
+        backward_ws.class_scales = class_scales;
         backward_ws.grad_in = grad_in;
         backward_ws.grad_out = grad_out;
         backward_ws.neg_ids = neg_ids;
@@ -1523,6 +1572,7 @@ impl MudCorpusTrainer {
             0.0
         };
         act_accum.push_grad(grad_norm_sum / np, entropy_sum / np, stp_avg);
+        act_accum.set_clip_coef(clip_coef);
 
         Ok(act_accum.finish(avg_loss))
     }
@@ -1680,5 +1730,94 @@ mod tests {
         assert!(lr_restart != lr_single,
             "Restart LR ({}) should differ from single-cosine LR ({}) at step 1059",
             lr_restart, lr_single);
+    }
+
+    /// R-16: el gradiente del head debe incluir `scale_up` (chain rule).
+    /// Forward: `logit = dot * scale_up * temp_scale`. Comprueba el gradiente
+    /// analítico `(p-y)*scale_up*temp_scale` contra diferencias finitas con
+    /// `scale_up != 1` (el caso que el backward omitía: subestimaba 1..128×).
+    #[test]
+    fn test_head_grad_includes_scale_up_r16() {
+        let hidden = 16usize;
+        let temp_scale = 1.0 / (hidden as f32).sqrt();
+        let scale_up = 4.0f32; // != 1: ejerce la cadena completa
+        // dots fijos (2 clases: target idx 0 + 1 negativo)
+        let dots = [0.3f32, -0.2f32];
+        let loss_of = |d0: f32, d1: f32| -> f32 {
+            let l0 = d0 * scale_up * temp_scale;
+            let l1 = d1 * scale_up * temp_scale;
+            let m = l0.max(l1);
+            let e0 = (l0 - m).exp();
+            let e1 = (l1 - m).exp();
+            let p0 = e0 / (e0 + e1);
+            -p0.ln()
+        };
+        let l0 = dots[0] * scale_up * temp_scale;
+        let l1 = dots[1] * scale_up * temp_scale;
+        let m = l0.max(l1);
+        let e0 = (l0 - m).exp();
+        let e1 = (l1 - m).exp();
+        let p0 = e0 / (e0 + e1);
+        let p1 = e1 / (e0 + e1);
+        // Analítico (fórmula corregida R-16)
+        let a0 = (p0 - 1.0) * scale_up * temp_scale;
+        let a1 = (p1 - 0.0) * scale_up * temp_scale;
+        // Diferencias finitas dL/d_dot
+        let eps = 1e-3f32;
+        let n0 = (loss_of(dots[0] + eps, dots[1]) - loss_of(dots[0] - eps, dots[1])) / (2.0 * eps);
+        let n1 = (loss_of(dots[0], dots[1] + eps) - loss_of(dots[0], dots[1] - eps)) / (2.0 * eps);
+        assert!(
+            (a0 - n0).abs() < 2e-3,
+            "R-16: dL/d_dot0 analítico={a0} vs numérico={n0} (scale_up={scale_up})"
+        );
+        assert!(
+            (a1 - n1).abs() < 2e-3,
+            "R-16: dL/d_dot1 analítico={a1} vs numérico={n1} (scale_up={scale_up})"
+        );
+        // Regresión: la fórmula vieja (sin scale_up) debe fallar con scale_up != 1
+        let old0 = (p0 - 1.0) * temp_scale;
+        assert!(
+            (old0 - n0).abs() > 1e-2,
+            "R-16: la fórmula vieja sin scale_up no debe coincidir (old={old0} num={n0})"
+        );
+    }
+
+    /// R-19: batch sintético separable ⇒ loss < 0.1.
+    /// Replica el scoring del forward (renormalización coherente por clase +
+    /// mismo preprocesado): target alineado con `final_x`, negativos
+    /// anti-alineados. Con datos separables el softmax debe colapsar al target.
+    #[test]
+    fn test_sampled_softmax_separable_batch_r19() {
+        let hidden = 32usize;
+        let temp_scale = 1.0 / (hidden as f32).sqrt();
+        // final_x con todas las dims activas (norma ≈ sqrt(H), como tras RMSNorm)
+        let final_x: Vec<f32> = vec![1.0; hidden];
+        // target: fila ternaria toda +s; negs: filas todas -s (separación máxima
+        // en el espacio de embeddings: dot gap = 2·s·H).
+        let s = 0.5f32;
+        let nc = 64usize; // 1 target + 63 negs (el régimen del log: ln(64))
+        let mut dots = vec![0.0f32; nc];
+        for (i, d) in dots.iter_mut().enumerate() {
+            let t = if i == 0 { 1.0 } else { -1.0 };
+            let emb: Vec<f32> = vec![t * s; hidden];
+            // STE idempotente sobre fila ya ternaria: (v/s).round().clamp·s = v
+            let sq: Vec<f32> = emb
+                .iter()
+                .map(|v| (*v / s).round().clamp(-1.0, 1.0) * s)
+                .collect();
+            assert_eq!(emb, sq, "R-19: STE debe ser idempotente en fila ternaria");
+            let dot: f32 = final_x.iter().zip(sq.iter()).map(|(a, b)| a * b).sum();
+            let scale_up_i = (1.0 / s).clamp(1.0, 128.0);
+            *d = dot * scale_up_i * temp_scale;
+        }
+        // Softmax CE sobre el target (idx 0)
+        let m = dots.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = dots.iter().map(|l| (l - m).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        let loss = -(exps[0] / sum).ln();
+        assert!(
+            loss < 0.1,
+            "R-19: batch separable debe dar loss < 0.1, got {loss}"
+        );
     }
 }

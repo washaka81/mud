@@ -844,7 +844,11 @@ fn update_layer_tensor(
                     );
                     row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32
                 };
-                new_scales.push(absmean.max(1e-8));
+                // R-20: la escala PRQ canónica es absmean/√2 (conversor,
+                // stable_pack, pack_elut). Sin el factor se escribía ×√2.
+                new_scales.push(
+                    (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8),
+                );
             }
         });
         // P-01: mem::take avoids clone — move scales out of thread-local
@@ -1000,6 +1004,13 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    // Serialize tests that mutate global sync env vars (MUD_TRAIN_FREEZE_EMB,
+    // MUD_TRAIN_SCALES_ONLY, MUD_TRAIN_DEBUG_DW). Sin esto, dos tests en hilos
+    // distintos se pisan el env (uno remueve lo que el otro acaba de setear)
+    // y `sync_shadow_to_mud` corre con FREEZE_EMB=1 → fallo espurio en
+    // `test_sync_mirrors_emb_to_output_weight` con `--test-threads>2`.
+    static SYNC_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_pack_ternary_basic() {
         // 1 row of 8 elements: 1, -1, 0, 1, -1, 0, 1, -1
@@ -1146,6 +1157,7 @@ mod tests {
     /// and the head stayed stale (identical base↔checkpoint).
     #[test]
     fn test_sync_mirrors_emb_to_output_weight() {
+        let _g = SYNC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
             std::env::remove_var("MUD_TRAIN_SCALES_ONLY");
@@ -1285,6 +1297,7 @@ mod tests {
     /// output.weight — it should be a silent no-op for the head.
     #[test]
     fn test_sync_no_output_weight_when_tied() {
+        let _g = SYNC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
             std::env::remove_var("MUD_TRAIN_SCALES_ONLY");
@@ -1351,6 +1364,7 @@ mod tests {
     /// because the codes are unchanged (no ΔW).
     #[test]
     fn test_prq_scale_stable_roundtrip() {
+        let _g = SYNC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
             std::env::remove_var("MUD_TRAIN_SCALES_ONLY");

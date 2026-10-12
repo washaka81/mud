@@ -16,6 +16,8 @@ pub struct TrainChunkMetrics {
     pub grad_norm: f32,
     pub entropy: f32,
     pub stp_loss: f32,
+    /// R-17: coeficiente real del clip global (`min(1, thresh/norm)`). 1.0 = sin clip.
+    pub clip_coef: f32,
 }
 
 /// Running mean of per-step activation stats (Welford-lite / online mean).
@@ -30,6 +32,7 @@ pub struct ActStatsAccum {
     grad_norm: f64,
     entropy: f64,
     stp_loss: f64,
+    clip_coef: f64,
 }
 
 impl ActStatsAccum {
@@ -59,6 +62,13 @@ impl ActStatsAccum {
         }
     }
 
+    /// R-17: registra el coeficiente real del clip global del chunk.
+    pub fn set_clip_coef(&mut self, coef: f32) {
+        if coef.is_finite() {
+            self.clip_coef = coef as f64;
+        }
+    }
+
     pub fn finish(self, loss: f32) -> TrainChunkMetrics {
         TrainChunkMetrics {
             loss,
@@ -71,6 +81,11 @@ impl ActStatsAccum {
             grad_norm: self.grad_norm as f32,
             entropy: self.entropy as f32,
             stp_loss: self.stp_loss as f32,
+            clip_coef: if self.clip_coef == 0.0 {
+                1.0
+            } else {
+                self.clip_coef as f32
+            },
         }
     }
 }

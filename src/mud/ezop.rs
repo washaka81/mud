@@ -1482,12 +1482,20 @@ pub unsafe fn mhc_activation_backward(
 }
 /// `threshold = scale * 0.7` STE band (matches trainer pack).
 ///
+/// R-15 canonical ternary row-major pack (ELUT 4-bit, 8 weights per u32).
+/// Single wire convention shared with the converter (`quantizer.rs`) and
+/// `stable_pack_ternary_rows` / `unpack_ternary2bit_to_f32`:
+/// per-row padded `rows * cols.div_ceil(8) * 4` bytes, little-endian u32
+/// words, nibble `j*4` (`0x1` = +1, `0xF` = -1, else 0), zeroed padding.
+/// Deterministic: pure function of `(shadow, scales)`, no RMW on old bytes,
+/// no cross-row nibble sharing.
+///
 /// # Safety
 /// - `shadow` readable for `rows * cols`
 /// - `scales` writable for `rows`
-/// - `packed` writable for `(rows * cols).div_ceil(2)` bytes
+/// - `packed` writable for `rows * cols.div_ceil(8) * 4` bytes
 #[inline]
-pub unsafe fn pack_elut_prq(
+pub unsafe fn pack_ternary_rows_canonical(
     shadow: *const f32,
     rows: usize,
     cols: usize,
@@ -1495,6 +1503,8 @@ pub unsafe fn pack_elut_prq(
     packed: *mut u8,
 ) {
     let cols = cols.max(1);
+    let row_words = cols.div_ceil(8);
+    let row_bytes = row_words * 4;
     for r in 0..rows {
         let start = r * cols;
         let mut abs_sum = 0.0f32;
@@ -1504,45 +1514,33 @@ pub unsafe fn pack_elut_prq(
         let s = ((abs_sum / cols as f32) * std::f32::consts::FRAC_1_SQRT_2)
             .max(crate::mud::constants::EPSILON_FLOOR);
         *scales.add(r) = s;
-        let threshold = s * crate::mud::constants::SPARSITY_THRESHOLD_RATIO;
-        // STE deadzone (see session report §4): values inside ±threshold round to 0
-        // and never flip a ternary code. On a converged base at default LR
-        // (QAT_LEARNING_RATE=0.0005) the per-element gradient (~1/256) stays under
-        // threshold → ΔW≈0 (expected). Raise LR via MUD_QAT_LR (e.g. 0.03) to move
-        // weights; see corpus_trainer.rs T1.1 retrain-of-verification.
-        //
-        // SPRINT-5 (5.4) branchless pack: replaces the 3-way if/else per
-        // element with `(over & pos) * 0x1 | (over & !pos) * 0xF` where
-        //   over = (|v| > threshold) as u8
-        //   pos  = (v  > 0.0)     as u8
-        // Both are 0/1; the compiler folds to vselect-style code. NaN
-        // collapses to (over=0, pos=0) → 0x0 (good — NaN gets zeroed).
-        // Pack 2 values per byte (one store per byte); no read-modify-write.
-        let pairs = cols / 2;
-        let rem = cols % 2;
-        for c in 0..pairs {
-            let i0 = start + c * 2;
-            let v0 = *shadow.add(i0);
-            let over0 = (v0.abs() > threshold) as u8;
-            let pos0 = (v0 > 0.0) as u8;
-            let b0: u8 = (over0 & pos0) | ((over0 & !pos0) * 0xFu8);
-
-            let v1 = *shadow.add(i0 + 1);
-            let over1 = (v1.abs() > threshold) as u8;
-            let pos1 = (v1 > 0.0) as u8;
-            let b1: u8 = (over1 & pos1) | ((over1 & !pos1) * 0xFu8);
-
-            *packed.add(start / 2 + c) = b0 | (b1 << 4);
-        }
-        if rem != 0 {
-            let i0 = start + pairs * 2;
-            let v0 = *shadow.add(i0);
-            let over0 = (v0.abs() > threshold) as u8;
-            let pos0 = (v0 > 0.0) as u8;
-            let b0: u8 = (over0 & pos0) | ((over0 & !pos0) * 0xFu8);
-            *packed.add(start / 2 + pairs) = b0;
-        }
+        let delta = s * crate::mud::constants::TERNARY_DEADZONE;
+        let word_ptr = packed.add(r * row_bytes) as *mut u32;
+        pack_ternary_into(shadow.add(start), cols, delta, word_ptr);
     }
+}
+
+/// Pack shadow f32 matrix into ELUT 4-bit + per-row PRQ scales.
+///
+/// R-15: delegates to [`pack_ternary_rows_canonical`] (per-row padded wire
+/// format). Kept as a thin wrapper because the optimizer hot path
+/// (`optim.rs`) and legacy tests call it by name. Buffer must be
+/// `rows * cols.div_ceil(8) * 4` bytes (equals `(rows*cols).div_ceil(2)` iff
+/// `cols % 8 == 0`, which holds for all production dims).
+///
+/// # Safety
+/// - `shadow` readable for `rows * cols`
+/// - `scales` writable for `rows`
+/// - `packed` writable for `rows * cols.div_ceil(8) * 4` bytes
+#[inline]
+pub unsafe fn pack_elut_prq(
+    shadow: *const f32,
+    rows: usize,
+    cols: usize,
+    scales: *mut f32,
+    packed: *mut u8,
+) {
+    pack_ternary_rows_canonical(shadow, rows, cols, scales, packed);
 }
 
 /// Pack ternary f32 row (−1/0/+1 after threshold) into ELUT u32 words → little-endian bytes.
@@ -1964,9 +1962,8 @@ mod tests {
     }
 
     /// SPRINT-5 (5.4): odd `cols` (rem=1) must still pack the trailing
-    /// element correctly. The branchless form must match the original
-    /// `(over & pos) * 0x1 | (over & !pos) * 0xF` identity for all
-    /// signed-zero / NaN / deadzone edge cases.
+    /// element correctly. R-15: canonical per-row padded wire format
+    /// (`rows * cols.div_ceil(8) * 4` bytes); padding nibbles are zero.
     #[test]
     fn test_pack_elut_prq_odd_cols_remainder() {
         // 5 elements: 2 pairs + 1 remainder.
@@ -1974,7 +1971,7 @@ mod tests {
         let cols: usize = 5;
         let rows = 1;
         let mut scales = vec![0.0f32; rows];
-        let mut packed = vec![0u8; cols.div_ceil(2)]; // 3 bytes
+        let mut packed = vec![0u8; rows * cols.div_ceil(8) * 4]; // 4 bytes (1 u32 word)
         unsafe {
             pack_elut_prq(
                 shadow.as_ptr(),
@@ -1984,11 +1981,87 @@ mod tests {
                 packed.as_mut_ptr(),
             );
         }
-        // Layout (low-nibble first per byte):
-        //   pair 0: v=+2.0 → 0x1 ; v=-2.0 → 0xF        → byte 0 = 0xF1
-        //   pair 1: v= 0.0 → 0x0 ; v=+0.5 → 0x0 (deadzone) → byte 1 = 0x00
-        //   rem:    v=-3.0 → 0xF                       → byte 2 = 0x0F
-        assert_eq!(packed, vec![0xF1, 0x00, 0x0F]);
+        // Layout (low-nibble first per u32 word, LE bytes):
+        //   v=+2.0 → 0x1 ; v=-2.0 → 0xF ; v=0 → 0 ; v=+0.5 → 0 (deadzone) ;
+        //   v=-3.0 → 0xF ; padding nibbles → 0
+        //   → word = 0x000F_001F? nibbles [1,F,0,0,F,0,0,0] → bytes [F1,00,0F,00]
+        assert_eq!(packed, vec![0xF1, 0x00, 0x0F, 0x00]);
+    }
+
+    /// R-15: empaquetado determinista + round-trip bit-exacto.
+    /// pack → unpack (mismo s) → repack (mismo delta) ⇒ bytes idénticos;
+    /// pack dos veces ⇒ bytes idénticos (sin RMW sobre bytes viejos).
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn test_pack_unpack_pack_bit_exact_r15() {
+        let rows = 3usize;
+        let cols = 12usize; // cols % 8 != 0: ejerce el padding por fila
+        let shadow: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i * 7919) % 17) as f32 * 0.23 - 1.7)
+            .collect();
+        let row_bytes = cols.div_ceil(8) * 4;
+        let mut scales_a = vec![0.0f32; rows];
+        let mut packed_a = vec![0u8; rows * row_bytes];
+        let mut scales_b = vec![0.0f32; rows];
+        let mut packed_b = vec![0xAAu8; rows * row_bytes]; // basura inicial: no debe filtrarse
+        unsafe {
+            pack_ternary_rows_canonical(
+                shadow.as_ptr(),
+                rows,
+                cols,
+                scales_a.as_mut_ptr(),
+                packed_a.as_mut_ptr(),
+            );
+            pack_elut_prq(
+                shadow.as_ptr(),
+                rows,
+                cols,
+                scales_b.as_mut_ptr(),
+                packed_b.as_mut_ptr(),
+            );
+        }
+        assert_eq!(scales_a, scales_b, "R-15: escalas divergen");
+        assert_eq!(packed_a, packed_b, "R-15: pack_elut_prq != canonical");
+        // Determinismo: re-pack sobre buffer con basura da lo mismo.
+        let mut packed_c = vec![0x55u8; rows * row_bytes];
+        let mut scales_c = vec![0.0f32; rows];
+        unsafe {
+            pack_ternary_rows_canonical(
+                shadow.as_ptr(),
+                rows,
+                cols,
+                scales_c.as_mut_ptr(),
+                packed_c.as_mut_ptr(),
+            );
+        }
+        assert_eq!(packed_a, packed_c, "R-15: pack no determinista");
+        // Round-trip: unpack con las mismas escalas → repack con el mismo
+        // delta por fila ⇒ bytes idénticos (los valores ±s están fuera del
+        // deadzone 0.7·s y el 0 sigue en 0).
+        let mut unpacked = vec![0.0f32; rows * cols];
+        crate::mud::slime_backward::unpack_ternary2bit_to_f32(
+            &packed_a,
+            &scales_a,
+            cols,
+            &mut unpacked,
+        );
+        let mut repacked = vec![0u8; rows * row_bytes];
+        for r in 0..rows {
+            let delta = scales_a[r] * crate::mud::constants::TERNARY_DEADZONE;
+            unsafe {
+                let word_ptr = repacked.as_mut_ptr().add(r * row_bytes) as *mut u32;
+                pack_ternary_into(
+                    unpacked.as_ptr().add(r * cols),
+                    cols,
+                    delta,
+                    word_ptr,
+                );
+            }
+        }
+        assert_eq!(
+            packed_a, repacked,
+            "R-15: pack→unpack→pack no es bit-exacto"
+        );
     }
 
     #[test]

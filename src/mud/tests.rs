@@ -998,8 +998,7 @@ fn test_sec_h2_no_panic_on_garbage_inputs() {
     }
 }
 
-/// Regression test for the panic uncovered by proptest fuzzing (SEC-H2).
-/// The minimal failing input from proptest was:
+/// Regression test for the panic uncovered by proptest fuzzing (SEC-H2)./// The minimal failing input from proptest was:
 ///   meta_count = 100, tensor_count = 0, tail = []
 /// i.e. magic + meta_count=100 + tensor_count=0 + 8 zero bytes = 20 bytes.
 /// Without the SEC-H2 panic-fix, the meta loop iterates 100 times, reads
@@ -1025,6 +1024,137 @@ fn test_sec_h2_regression_truncated_meta_loop_no_panic() {
     assert!(
         msg.contains("SEC-H2") || msg.contains("bogus") || msg.contains("truncated"),
         "error should mention SEC-H2/truncation, got: {msg}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+// ============================================================
+// R-30: validación metadata↔shape (post-load, sin OOB/OOM)
+// ============================================================
+
+fn r30_test_file(vocab: usize, hidden: usize, emb_shape: Vec<usize>) -> MudFile {
+    use std::collections::HashMap;
+    let mk = |name: &str, shape: Vec<usize>| crate::mud::MudTensor {
+        name: name.into(),
+        t_type: MudTensorType::Ternary2Bit,
+        shape,
+        data_ptr: std::ptr::null(),
+        offset: 0,
+        data_base: 0,
+        mmap: None,
+        owned_data: None,
+    };
+    let mut tensors = HashMap::new();
+    tensors.insert(
+        "token_embd.weight".into(),
+        mk("token_embd.weight", emb_shape),
+    );
+    let skill = crate::mud::MudSkill {
+        name: "core".into(),
+        tensors,
+        metadata: HashMap::new(),
+    };
+    let mut skills = HashMap::new();
+    skills.insert("core".into(), skill);
+    let mut md = HashMap::new();
+    md.insert("hidden_size".into(), hidden.to_string());
+    md.insert("num_layers".into(), "1".into());
+    md.insert("num_attention_heads".into(), "2".into());
+    md.insert("num_key_value_heads".into(), "1".into());
+    md.insert("intermediate_size".into(), "32".into());
+    md.insert("vocab_size".into(), vocab.to_string());
+    MudFile {
+        mmap: None,
+        skills,
+        global_metadata: md,
+        path: None,
+    }
+}
+
+#[test]
+fn test_r30_matching_shapes_validate_ok() {
+    // hidden=16, heads=2 → head_dim=8; emb [vocab=32, hidden=16].
+    let f = r30_test_file(32, 16, vec![32, 16]);
+    assert!(
+        f.validate_model_shapes().is_ok(),
+        "shapes coherentes deben validar"
+    );
+}
+
+#[test]
+fn test_r30_mismatched_emb_shape_rejected() {
+    // Misma metadata pero embedding de 10 elementos: antes era OOB en inference.
+    let f = r30_test_file(32, 16, vec![10, 16]);
+    let err = f
+        .validate_model_shapes()
+        .expect_err("shape incoherente debe ser Err, no OOB");
+    assert!(
+        err.to_string().contains("R-30"),
+        "el error debe mencionar R-30, got: {err}"
+    );
+}
+
+#[test]
+fn test_r30_hidden_not_divisible_by_heads_rejected() {
+    // hidden=15 no divisible por 2 heads → división entera truncada (Bug).
+    let f = r30_test_file(32, 15, vec![32, 15]);
+    let err = f
+        .validate_model_shapes()
+        .expect_err("hidden % heads != 0 debe ser Err");
+    assert!(
+        err.to_string().contains("R-30"),
+        "el error debe mencionar R-30, got: {err}"
+    );
+}
+
+// ============================================================
+// R-31: aritmética checked en el loader (sin wrap en release)
+// ============================================================
+
+#[test]
+fn test_r31_checked_data_size_overflow_is_none() {
+    // product(usize::MAX, 2) hace wrap en release → checked debe dar None.
+    let t = crate::mud::MudTensor {
+        name: "evil.weight".into(),
+        t_type: MudTensorType::Float32,
+        shape: vec![usize::MAX, 2],
+        data_ptr: std::ptr::null(),
+        offset: 0,
+        data_base: 0,
+        mmap: None,
+        owned_data: None,
+    };
+    assert!(
+        t.checked_data_size().is_none(),
+        "R-31: shape con overflow debe dar None, no wrap"
+    );
+}
+
+#[test]
+fn test_r31_huge_dim_file_rejected_without_panic() {
+    // Header con dim > MAX_TENSOR_DIM: debe ser Err (R-31), jamás panic/OOM.
+    // Layout: magic + meta_count=0 + tensor_count=1 + entry(name,t_type,shape,offset).
+    let mut buf = b"MUD\x01".to_vec();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // meta_count = 0
+    buf.extend_from_slice(&1u32.to_le_bytes()); // tensor_count = 1
+    let name = b"evil.weight";
+    buf.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    buf.extend_from_slice(name);
+    buf.extend_from_slice(&1u32.to_le_bytes()); // t_type = Float32
+    buf.extend_from_slice(&2u32.to_le_bytes()); // rank = 2
+    let huge = (crate::mud::MAX_TENSOR_DIM as u64) + 1;
+    buf.extend_from_slice(&huge.to_le_bytes());
+    buf.extend_from_slice(&2u64.to_le_bytes());
+    buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+    let path = "/tmp/mud_r31_huge_dim.mud";
+    std::fs::write(path, &buf).unwrap();
+    let err = match MudFile::load(path) {
+        Err(e) => e,
+        Ok(_) => panic!("dim gigante debe ser Err, no panic/OOM"),
+    };
+    assert!(
+        err.to_string().contains("R-31"),
+        "el error debe mencionar R-31, got: {err}"
     );
     let _ = std::fs::remove_file(path);
 }
