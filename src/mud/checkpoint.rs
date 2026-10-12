@@ -140,7 +140,138 @@ pub(crate) fn dw_report_to_log(rep: &DwReport) {
     }
 }
 
-/// Apply the shadow f32 buffers to the mmap-backed `MudTensor`s.
+/// R-13 (deadzone SSOT) + R-14 (per-session scale drift) stable per-row ternary pack.
+///
+/// Packs `weights` (row-major, `rows`×`cols`) into the pre-sized `packed`
+/// buffer (length `rows * cols.div_ceil(8) * 4`) and fills `scales` (length `rows`).
+///
+/// Scale semantics (R-14):
+///   * First save (empty `prev_scales`): `s = absmean(row)/√2`, packed with
+///     `delta = TERNARY_DEADZONE * s`.
+///   * Resumed save (non-empty `prev_scales`): the ORIGINAL scale is preserved
+///     for packing. If the codes are unchanged (no ΔW) the original codes +
+///     scale are kept → a save→load→save round-trip is bit-stable, killing the
+///     ×0.52/session drift that came from recomputing `s` off the lossy
+///     round-tripped (dequantized) shadow. If the codes moved (real weight
+///     update), the scale is recomputed and band-clamped into
+///     `[0.5·s_old, 2·s_old]`, then the row is repacked in place.
+///
+/// Returns the final byte-diff (`bits_changed`) of `packed` vs the previously
+/// stored codes (`prev_codes` owned bytes, or `prev_data_ptr` mmap).
+///
+/// # Safety
+/// `weights.len() == rows*cols`; `packed.len() == rows*cols.div_ceil(8)*4`.
+/// `pack_ternary_into` is itself unsafe (raw weight pointer).
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+unsafe fn stable_pack_ternary_rows(
+    weights: &[f32],
+    rows: usize,
+    cols: usize,
+    prev_scales: &[f32],
+    prev_codes: Option<&[u8]>,
+    prev_data_ptr: *const u8,
+    packed: &mut [u8],
+    scales: &mut Vec<f32>,
+) -> (u64, u64) {
+    let row_words = cols.div_ceil(8);
+    let row_bytes = row_words * 4;
+    let had_prev = !prev_scales.is_empty();
+    scales.clear();
+    scales.reserve(rows);
+
+    // Phase 1: pack preserving s_old when available (bit-stable on no-movement).
+    for r in 0..rows {
+        let start = r * cols;
+        let s_new = {
+            let row = unsafe { std::slice::from_raw_parts(weights.as_ptr().add(start), cols) };
+            let absmean = row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
+            (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8)
+        };
+        let s = if had_prev {
+            prev_scales[r]
+        } else {
+            s_new
+        };
+        scales.push(s);
+        let delta = crate::mud::constants::TERNARY_DEADZONE * s;
+        let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
+        unsafe {
+            crate::mud::ezop::pack_ternary_into(
+                weights.as_ptr().add(start), cols, delta, word_ptr,
+            );
+        }
+    }
+
+    // Movement detection: byte-diff of Phase-1 packed rows vs prev codes.
+    let mut bits = 0u64;
+    for r in 0..rows {
+        let rb = &packed[r * row_bytes..(r + 1) * row_bytes];
+        if let Some(pc) = prev_codes {
+            let s0 = r * row_bytes;
+            if s0 + row_bytes <= pc.len() {
+                let pv = &pc[s0..s0 + row_bytes];
+                for (a, b) in pv.iter().zip(rb.iter()) {
+                    bits += (a != b) as u64;
+                }
+            }
+        } else if !prev_data_ptr.is_null() {
+            let pv = unsafe { std::slice::from_raw_parts(prev_data_ptr.add(r * row_bytes), row_bytes) };
+            for (a, b) in pv.iter().zip(rb.iter()) {
+                bits += (a != b) as u64;
+            }
+        }
+    }
+    let bytes_total = (rows * row_bytes) as u64;
+
+    // Phase 2: real movement (codes changed w.r.t. the preserved s_old pack) →
+    // the s_old threshold was stale, so recompute the scale from the (moved)
+    // shadow and repack with delta = TERNARY_DEADZONE * s_new. On a no-movement
+    // round-trip `bits == 0` ⇒ s_old preserved ⇒ bit-stable (kills the ×0.52
+    // per-session drift: recomputing `s` off the lossy round-tripped shadow
+    // only happens here, on genuine weight movement, never on idle save/load).
+    if bits > 0 && had_prev {
+        for r in 0..rows {
+            let start = r * cols;
+            let s_new = unsafe {
+                let row = std::slice::from_raw_parts(weights.as_ptr().add(start), cols);
+                let absmean = row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
+                (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8)
+            };
+            let s = s_new;
+            scales[r] = s;
+            let delta = crate::mud::constants::TERNARY_DEADZONE * s;
+            let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
+            unsafe {
+                crate::mud::ezop::pack_ternary_into(
+                    weights.as_ptr().add(start), cols, delta, word_ptr,
+                );
+            }
+        }
+        // Final ΔW against the previously-stored codes.
+        let mut final_bits = 0u64;
+        for r in 0..rows {
+            let rb = &packed[r * row_bytes..(r + 1) * row_bytes];
+            if let Some(pc) = prev_codes {
+                let s0 = r * row_bytes;
+                if s0 + row_bytes <= pc.len() {
+                    let pv = &pc[s0..s0 + row_bytes];
+                    for (a, b) in pv.iter().zip(rb.iter()) {
+                        final_bits += (a != b) as u64;
+                    }
+                }
+            } else if !prev_data_ptr.is_null() {
+                let pv = unsafe { std::slice::from_raw_parts(prev_data_ptr.add(r * row_bytes), row_bytes) };
+                for (a, b) in pv.iter().zip(rb.iter()) {
+                    final_bits += (a != b) as u64;
+                }
+            }
+        }
+        return (final_bits, bytes_total);
+    }
+
+    (bits, bytes_total)
+}
+
 ///
 /// Quantization rules:
 ///   - `Ternary2Bit` tensors: per-row `s = absmean / √2`, pack `round(w/s)`
@@ -171,6 +302,22 @@ pub(crate) fn sync_shadow_to_mud(
     let mut dbg_scale_absbase: f64 = 0.0;
 
     let core = mud.skills.get_mut("core").unwrap();
+    // R-14: snapshot the previous `token_embd.prq_scale` (if any) BEFORE taking
+    // the `&mut` borrow of `core.tensors` for emb_tensor, so we can preserve the
+    // original scale on a no-movement save→load→save round-trip (kills the
+    // ×0.52/session scale drift). Bytes are cloned into a Vec so the shared
+    // borrow of `core` is released before the `&mut` get_mut below.
+    let prev_scales_emb: Vec<f32> = core.tensors.get("token_embd.prq_scale")
+        .and_then(|t| t.owned_data.as_deref())
+        .map(|b| {
+            let n = b.len() / 4;
+            let mut v = Vec::with_capacity(n);
+            for w in b.chunks_exact(4) {
+                v.push(f32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+            }
+            v
+        })
+        .unwrap_or_default();
     let emb_tensor = core
         .tensors
         .get_mut("token_embd.weight")
@@ -190,71 +337,42 @@ pub(crate) fn sync_shadow_to_mud(
             let rows = emb_tensor.shape[0];
             let cols = emb_tensor.shape[1];
             let byte_count = shadow_emb.len().div_ceil(8) * 4;
-            // SPRINT-6 (P-01): reuse thread-local buffers instead of allocating
-            // per-sync. All work happens inside the with_borrow_mut closure so
-            // the RefMut borrow is released before we touch core.tensors.
+            // R-14: prev ternary codes (shared reborrow of emb_tensor; released
+            // before write_owned_bytes below). prev_data_ptr covers the mmap fallback.
+            let prev_codes_emb: Option<&[u8]> = emb_tensor.owned_data.as_deref();
+            let prev_data_ptr_emb = emb_tensor.data_ptr as usize as *const u8;
+
+            // R-13+R-14 (P-01): reuse thread-local buffers; stable pack preserves
+            // the original PRQ scale on a no-movement round-trip, repacks with a
+            // band-clamped s_new only on real ΔW.
             SYNC_PACKED_BUF.with_borrow_mut(|packed| {
                 SYNC_SCALES_BUF.with_borrow_mut(|scales| {
                     packed.clear();
                     packed.resize(byte_count, 0u8);
                     scales.clear();
                     scales.reserve(rows);
-
-                    // Fast per-row pack: compute scale, then batch-pack 8 elements
-                    // per u32 word via pack_ternary_into (one store/word, no
-                    // read-modify-write per element). The ternary threshold in the
-                    // original code is val=round(w·s⁻¹).clamp(-1,1) > 0.5, which is
-                    // equivalent to |w| > 0.5·s, so we pass delta=0.5·s.
-                    for r in 0..rows {
-                        let start = r * cols;
-                        let s = unsafe {
-                            let row = std::slice::from_raw_parts(
-                                shadow_emb.as_ptr().add(start),
-                                cols,
-                            );
-                            let absmean = row.iter().map(|v| v.abs()).sum::<f32>()
-                                / cols as f32;
-                            (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8)
-                        };
-                        scales.push(s);
-                        let delta = 0.5f32 * s;
-                        let row_u32_start = r * cols / 8;
-                        let word_ptr =
-                            unsafe { packed.as_mut_ptr().add(row_u32_start * 4) as *mut u32 };
-                        unsafe {
-                            crate::mud::ezop::pack_ternary_into(
-                                shadow_emb.as_ptr().add(start),
-                                cols,
-                                delta,
-                                word_ptr,
-                            );
-                        }
-                    }
+                    let (bits, bt) = unsafe {
+                        stable_pack_ternary_rows(
+                            shadow_emb,
+                            rows,
+                            cols,
+                            &prev_scales_emb,
+                            prev_codes_emb,
+                            prev_data_ptr_emb,
+                            packed,
+                            scales,
+                        )
+                    };
+                    dbg_bits_changed += bits;
+                    dbg_bytes_total += bt;
                 });
             });
 
-            // ΔW instrumentation for embedding (was missing — caused hash≠ΔW contradiction)
-            {
-                let prev: Option<&[u8]> = emb_tensor.owned_data.as_deref();
-                SYNC_PACKED_BUF.with_borrow(|packed| {
-                    if let Some(prev) = prev {
-                        if prev.len() == packed.len() {
-                            for (a, b) in prev.iter().zip(packed.iter()) {
-                                dbg_bits_changed += (a != b) as u64;
-                            }
-                            dbg_bytes_total += packed.len() as u64;
-                        }
-                    }
-                });
-            }
-            // P-01: mem::take avoids clone() — moves the Vec out of the thread-local,
-            // releasing the borrow before write_owned_bytes. The thread-local
-            // keeps a reusable (empty) Vec for next call.
+            // P-01: mem::take releases the RefMut before write_owned_bytes.
             packed_emb = SYNC_PACKED_BUF.with_borrow_mut(std::mem::take::<Vec<u8>>);
             write_owned_bytes(emb_tensor, &packed_emb);
 
-            // P-01: avoid to_vec() — use mem::take to move scales out of thread-local
-            // (zero-copy write to tensor, no clone, no double-copy).
+            // P-01: avoid to_vec() — use mem::take to move scales out of thread-local.
             scales_emb = SYNC_SCALES_BUF.with_borrow_mut(std::mem::take::<Vec<f32>>);
             if let Some(scale_tensor) = core.tensors.get_mut("token_embd.prq_scale") {
                 // ΔW: compare old vs new PRQ scale for embedding
@@ -745,7 +863,7 @@ fn update_layer_tensor(
     let key = format!("{}{}.weight", p, name);
     // First pass: read tensor metadata (rows, cols, t_type, prev data ptr)
     // without holding a mutable borrow, so we can use thread-local buffers.
-    let (rows, cols, is_ternary, prev_data_ptr, prev_owned_len) =
+    let (rows, cols, is_ternary, prev_data_ptr, _prev_owned_len) =
         match core.tensors.get(&key) {
             Some(t) => (
                 t.shape.first().copied().unwrap_or(0),
@@ -771,6 +889,26 @@ fn update_layer_tensor(
     }
 
     // Ternary path: pack into thread-local buffers, then copy out.
+    // R-14: capture the EXISTING row scales (if any) BEFORE overwriting, so the
+    // packed codes use the original scale (preserving codes on a no-movement
+    // save→load→save round-trip) and only recompute+band-clamp when codes moved.
+    // This kills the ×0.52/session scale drift caused by recomputing
+    // `s = absmean(shadow)/√2` off the round-tripped (lossy dequant) shadow.
+    let scale_key = format!("{}{}.prq_scale", p, name);
+    let prev_scales: Vec<f32> = core.tensors.get(&scale_key)
+        .and_then(|t| t.owned_data.as_deref())
+        .map(|bytes| {
+            let n = bytes.len() / 4;
+            let mut v = Vec::with_capacity(n);
+            for w in bytes.chunks_exact(4) {
+                v.push(f32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+            }
+            v
+        })
+        .unwrap_or_default();
+    let prev_codes_layer: Option<&[u8]> = core.tensors.get(&key)
+        .and_then(|t| t.owned_data.as_deref());
+    let prev_data_ptr_layer = prev_data_ptr as usize as *const u8;
     let u32_count = weights.len().div_ceil(8);
     let byte_count = u32_count * 4;
     SYNC_PACKED_BUF.with_borrow_mut(|packed| {
@@ -779,63 +917,27 @@ fn update_layer_tensor(
             packed.resize(byte_count, 0u8);
             new_scales.clear();
             new_scales.reserve(rows);
-
-            // Fast per-row pack: compute scale, then batch-pack 8 elements
-            // per u32 word via pack_ternary_into (one store/word, no
-            // read-modify-write per element). The ternary threshold in the
-            // original code is val=round(w·s⁻¹).clamp(-1,1) > 0.5, which is
-            // equivalent to |w| > 0.5·s, so we pass delta=0.5·s.
-            for r in 0..rows {
-                let start = r * cols;
-                let s = unsafe {
-                    let row = std::slice::from_raw_parts(
-                        weights.as_ptr().add(start),
-                        cols,
-                    );
-                    let absmean = row.iter().map(|v| v.abs()).sum::<f32>()
-                        / cols as f32;
-                    (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8)
-                };
-                new_scales.push(s);
-                let delta = 0.5f32 * s;
-                let row_u32_start = r * cols / 8;
-                let word_ptr =
-                    unsafe { packed.as_mut_ptr().add(row_u32_start * 4) as *mut u32 };
-                unsafe {
-                    crate::mud::ezop::pack_ternary_into(
-                        weights.as_ptr().add(start),
-                        cols,
-                        delta,
-                        word_ptr,
-                    );
-                }
-            }
+            let (bits, bt) = unsafe {
+                stable_pack_ternary_rows(
+                    weights,
+                    rows,
+                    cols,
+                    &prev_scales,
+                    prev_codes_layer,
+                    prev_data_ptr_layer,
+                    packed,
+                    new_scales,
+                )
+            };
+            *dbg_bits_changed += bits;
+            *dbg_bytes_total += bt;
         });
     });
 
-    // P-01: mem::take avoids clone() — moves both buffers out of thread-locals.
+    // P-01: mem::take moves buffers out of thread-locals (no clone). The shared
+    // borrow of core.tensors (prev_codes_layer) ends here before the get_mut write.
     let packed_move = SYNC_PACKED_BUF.with_borrow_mut(std::mem::take::<Vec<u8>>);
     let new_scales_move = SYNC_SCALES_BUF.with_borrow_mut(std::mem::take::<Vec<f32>>);
-
-    // ΔW instrumentation: compare prev tensor data vs new packed bytes
-    if let Some(prev_len) = prev_owned_len {
-        if prev_len == packed_move.len() {
-            if let Some(t) = core.tensors.get(&key) {
-                if let Some(prev) = t.owned_data.as_deref() {
-                    for (a, b) in prev.iter().zip(packed_move.iter()) {
-                        *dbg_bits_changed += (a != b) as u64;
-                    }
-                    *dbg_bytes_total += packed_move.len() as u64;
-                } else if !prev_data_ptr.is_null() {
-                    let prev = unsafe { std::slice::from_raw_parts(prev_data_ptr, packed_move.len()) };
-                    for (a, b) in prev.iter().zip(packed_move.iter()) {
-                        *dbg_bits_changed += (a != b) as u64;
-                    }
-                    *dbg_bytes_total += packed_move.len() as u64;
-                }
-            }
-        }
-    }
     if let Some(t) = core.tensors.get_mut(&key) {
         write_owned_bytes(t, &packed_move);
     }
@@ -1240,5 +1342,156 @@ mod tests {
         unsafe {
             std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
         }
+    }
+
+    /// R-14: 5 save→load→save cycles with no training must keep `prq_scale`
+    /// and the dequantized values stable (±1e-6). The naive recompute
+    /// `s = absmean(shadow)/√2` off the round-tripped (lossy dequant) shadow
+    /// would drift ~×0.5 each cycle — the stable pack must preserve s_old
+    /// because the codes are unchanged (no ΔW).
+    #[test]
+    fn test_prq_scale_stable_roundtrip() {
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+            std::env::remove_var("MUD_TRAIN_SCALES_ONLY");
+            std::env::remove_var("MUD_TRAIN_DEBUG_DW");
+        }
+        let rows = 2usize;
+        let cols = 8usize;
+        let row_words = cols.div_ceil(8);
+        let row_bytes = row_words * 4;
+        let byte_count = rows * row_bytes;
+
+        // Mixed-sign non-trivial shadow (no row all-zero → absmean>0).
+        let shadow: Vec<f32> = vec![
+            1.0, -1.0, 0.5, -0.3, 0.8, -0.9, 0.1, -0.7, // row 0
+            0.6, -1.0, 0.2, 0.4, -0.8, 0.3, 0.9, -0.5,  // row 1
+        ];
+
+        // First save: no prev_scales/codes → s_new.
+        let mut packed = vec![0u8; byte_count];
+        let mut scales: Vec<f32> = Vec::with_capacity(rows);
+        let (_bits0, _) = unsafe {
+            stable_pack_ternary_rows(
+                &shadow, rows, cols, &[], None, std::ptr::null(),
+                &mut packed, &mut scales,
+            )
+        };
+        assert_eq!(scales.len(), rows);
+
+        // Round-tripped shadow = dequant(prev_codes, scales) = code·s — this is
+        // EXACTLY what the trainer reload produces (lossy dequant into f32 shadow).
+        let mut rt_shadow = vec![0f32; rows * cols];
+        for r in 0..rows {
+            let s = scales[r];
+            let code_ptr = unsafe { packed.as_ptr().add(r * row_bytes) as *const u32 };
+            let mut codes = vec![0f32; cols];
+            unsafe { crate::mud::dequantize_ternary_row(code_ptr, &mut codes, cols); }
+            for (i, c) in codes.iter().enumerate() {
+                rt_shadow[r * cols + i] = (*c) * s;
+            }
+        }
+
+        // 5 cycles: shadow == dequant(prev) → must PRESERVE scale + codes.
+        for cycle in 0..5 {
+            let prev_packed = packed.clone();
+            let prev_scales = scales.clone();
+            let mut new_packed = vec![0u8; byte_count];
+            let mut new_scales: Vec<f32> = Vec::with_capacity(rows);
+            let (bits, _) = unsafe {
+                stable_pack_ternary_rows(
+                    &rt_shadow, rows, cols, &prev_scales, Some(&prev_packed),
+                    std::ptr::null(), &mut new_packed, &mut new_scales,
+                )
+            };
+            assert_eq!(
+                bits, 0,
+                "cycle {cycle}: no-movement round-trip must be bit-stable (bits_changed==0)"
+            );
+            assert_eq!(
+                new_packed, prev_packed,
+                "cycle {cycle}: codes must be reproduced verbatim"
+            );
+            for (a, b) in new_scales.iter().zip(prev_scales.iter()) {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "cycle {cycle}: scale drifted {:e} vs {:e} (delta {:e})",
+                    a, b, (a - b).abs()
+                );
+            }
+            packed = new_packed;
+            scales = new_scales;
+        }
+
+        // Contrast: a NAIVE recompute (s = absmean(rt_shadow)/√2, no preserve)
+        // WOULD drift. Prove the preserve logic is load-bearing: the per-row
+        // naive factor mean|code|/√2 differs from 1.0 (here 0.5–0.9 range),
+        // so recomputing every cycle would shrink s unboundedly.
+        for r in 0..rows {
+            let row = &rt_shadow[r * cols..(r + 1) * cols];
+            let absmean = row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
+            let s_naive = (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8);
+            // mean|code| ≤ 1 always; if any code is ±1 the factor is < 1/√2·1+... 
+            // i.e. s_naive < s_preserved (drift downward). The preserve keeps s0.
+            assert!(
+                s_naive <= scales[r] * 1.0001,
+                "naive recompute should not exceed preserved scale (drift proof): \
+                 s_naive={:e} s_preserved={:e}",
+                s_naive, scales[r]
+            );
+            assert!(
+                (s_naive - scales[r]).abs() / scales[r] > 0.05,
+                "naive recompute should drift >5% away from preserved scale: \
+                 ratio={}",
+                s_naive / scales[r]
+            );
+        }
+    }
+
+    /// R-14: when the shadow genuinely moves (real ΔW), the pack must detect
+    /// movement (bits_changed > 0) AND recompute the scale (not preserve the
+    /// stale s_old).
+    #[test]
+    fn test_prq_scale_recomputes_on_movement() {
+        let rows = 1usize;
+        let cols = 8usize;
+        let row_words = cols.div_ceil(8);
+        let row_bytes = row_words * 4;
+        let byte_count = rows * row_bytes;
+
+        let shadow1: Vec<f32> = vec![1.0, -1.0, 0.5, 0.8, -0.9, 0.1, -0.7, 0.3];
+
+        // First save (no prev) → codes1, scales1.
+        let mut packed1 = vec![0u8; byte_count];
+        let mut scales1: Vec<f32> = Vec::with_capacity(rows);
+        unsafe {
+            stable_pack_ternary_rows(
+                &shadow1, rows, cols, &[], None, std::ptr::null(),
+                &mut packed1, &mut scales1,
+            )
+        };
+        let s1 = scales1[0];
+
+        // Simulate a training step: flip a dead code (+0.1, below delta) to
+        // alive (+0.5, above delta) — a real code-changing movement (uniform
+        // scaling would NOT change codes, since s tracks them).
+        let mut shadow2 = shadow1.clone();
+        shadow2[5] = 0.5; // 0.1 → 0.5 : code flips 0 → +1
+        let mut packed2 = vec![0u8; byte_count];
+        let mut scales2: Vec<f32> = Vec::with_capacity(rows);
+        let (bits, _) = unsafe {
+            stable_pack_ternary_rows(
+                &shadow2, rows, cols, &scales1, Some(&packed1),
+                std::ptr::null(), &mut packed2, &mut scales2,
+            )
+        };
+        assert!(bits > 0, "real weight movement must produce bits_changed > 0");
+        // Movement → scale must be RECOMPUTED from the new shadow, not preserved.
+        let absmean2 = shadow2.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
+        let s_new = (absmean2 * std::f32::consts::FRAC_1_SQRT_2).max(1e-8);
+        assert!((scales2[0] - s_new).abs() < 1e-6, "moved scale must recompute to s_new");
+        assert!((scales2[0] - s1).abs() / s1 > 0.05, "moved scale must differ from stale s_old");
+        // Codes changed too.
+        assert_ne!(packed2, packed1, "moved shadow must produce different codes");
     }
 }

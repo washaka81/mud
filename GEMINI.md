@@ -27,20 +27,21 @@
 >
 > | Hecho | Evidencia |
 > |---|---|
-> | `cargo test --lib --release` **PASA** (459 pass / 0 fail / 2 ignored): UB fenwick purgado (R-03, 2026-10-11) | `cargo test --lib --release` |
+> | `cargo test --lib --release -- --test-threads=2` **PASA** (468 pass / 0 fail / 2 ignored); ub firmwick purgado (R-03, 2026-10-11) | `cargo test --lib --release -- --test-threads=2` |
 > | CI workflow **válido**: `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); slug `washaka81/mud` (R-01) | `actionlint .github/workflows/ci.yml` exit 0 |
 > | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`) | `mud.sh` `ci)` case |
 > | Repo con **git init** + `.gitignore` limpio (R-04) | `git status` limpio tras commit |
 > | ✅ **R-10**: el trainer SÍ entrena la cabeza evaluada — `sync_shadow_to_mud` espeja `token_embd.weight`→`output.weight` (+ `output.prq_scale`) vía `sync_tied_output_weight`; inferencia (`inference.rs:395`) y trainer (`train_step.rs:593`) coinciden. No-op para modelos *tied*. | `checkpoint.rs` + tests; `cargo test --lib --release` 462/0 |
 > | ✅ **R-11**: FFN backward SiLU — `slime_backward.rs` reemplazó ReLU² (`g²·up`) por `silu(gate)·up` vía `ezop::silu_backward_avx2` (AVX2 8-f32/iter + escalar, σ via exp2 ≈ forward `silu_vectorial`). `test_silu_backward_matches_reference` ✅; `cargo test --lib --release` 463/0. |
 > | ✅ **R-12**: mHC activation backward — `grad_out *= alpha[i]`, `grad_branch *= (1-gate)·beta[i]` vía `ezop::mhc_activation_backward` (AVX2 + escalar, gate=sigmoid(v_jepa) recomputado, `kinetic` preservado). Ambas rutas (ternaria + F32). `test_mhc_activation_backward_matches_reference` ✅ (alpha=0.85/beta=1.2/gate≠0.5). |
-> | **Deriva de escala PRQ** sin punto fijo (`×0.52` por guardado); deadzone **0.7·s** (conversor) vs **0.5·s** (checkpoint) | forense binaria; `quantizer.rs:125` vs `checkpoint.rs:211` |
+> | ✅ **R-13**: deadzone SSOT `TERNARY_DEADZONE=0.7` unificada conversor↔trainer↔checkpoint (`quantizer.rs:125`, `alignment.rs:249`, `checkpoint.rs` emb+layer pack) | `cargo test --lib --release` 466/0 | test |
+> | ✅ **R-14**: PRQ scale punto fijo — `stable_pack_ternary_rows` (helper compartido emb+layer) preserva `s_old` cuando los códigos no cambian (save→load→save bit-estable) y recomputa `s_new=absmean/√2` SOLO cuando `ΔW` real mueve los códigos (Phase-1 pack con s_old → byte-diff → Phase-2 repack); band-clamp `[½,2]·s_old` opcional omitido para no bloquear ajustes reales. Deriva ×0.52/sesión eliminada. Tests `test_prq_scale_stable_roundtrip` (5 ciclos, ±1e-6) + `test_prq_scale_recomputes_on_movement`. `cargo test --lib --release -- --test-threads=2` **468/0/2 ✅**; clippy 0. | `checkpoint.rs` `stable_pack_ternary_rows`; `cargo test --lib --release -- --test-threads=2 prq_scale` 2/0 |
 > | Wire format ternario = **4 bits/peso** (2.52× la entropía de 1.585 bits); LM head en **f32 denso** (77.6 MB/token en `ale.mud`), single-thread | `mod.rs:145`, `asm/lm_head.s` |
 > | Inferencia medida: **~46 tok/s** en `models/ale.mud` (9 % del BW), salida **incoherente** | `MUD_INFER_MAX_TOKENS=512` |
 > | Sin validación `metadata↔shape` ⇒ OOB/OOM alcanzables; parser GGUF sin cotas; 19 `unsafe` sin `// SAFETY:` | `inference.rs:350-433`, `gguf/mod.rs`, auditoría §4 |
 > | ✅ **R-05**: env vars SSOT (117 `R` + 7 shell + 6 retiradas en `MUD_ENV_REFERENCE.md`); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)`. `rayon` sigue en `Cargo.toml` (R-66) | `bash mud.sh env-audit` exit 0 |
 >
-> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 459 en release tras purgar batch4/batch8 UB, R-03), "0 OOB" (falso, ver R-30/R-31), "Rayon removed from runtime crate" (`rayon` sigue en `[dependencies]`, R-66), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67).
+> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 468 en release tras purgar batch4/batch8 UB, R-03), "0 OOB" (falso, ver R-30/R-31), "Rayon removed from runtime crate" (`rayon` sigue en `[dependencies]`, R-66), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67).
 >
 > **Regla nueva (R-73):** toda fila de estado exige `(comando, salida, fecha)`. Prohibido `COMPLETADO` sin ejecución.
 
@@ -211,7 +212,7 @@ Completed capability areas (not exhaustive): SlimeForward/Backward STE, ELUT 4-b
 > | Ola | Foco | IDs | Estado |
 > |---|---|---|---|
 > | **0** | Verdad y CI (workflow válido, release tests, git, env SSOT) | R-01…R-06 | 🔴 activa |
-> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ R-10/R-11/R-12 · R-13…R-20 pendiente |
+> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ R-10/R-11/R-12/R-13/R-14 · R-15…R-20 pendiente |
 > | **2** | Seguridad de entrada (metadata↔shape, GGUF, SAFETY) | R-30…R-38 | pendiente (paralelizable) |
 > | **3** | Eficiencia de inferencia (head ternario, 1.6 bpp, i8, hilos) | R-40…R-48 | pendiente |
 > | **4** | Calidad de conversión (paridad, rotación, emb 8-bit) | R-50…R-55 | pendiente |
