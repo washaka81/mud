@@ -211,9 +211,9 @@ Completed capability areas (not exhaustive): SlimeForward/Backward STE, ELUT 4-b
 >
 > | Ola | Foco | IDs | Estado |
 > |---|---|---|---|
-> | **0** | Verdad y CI (workflow válido, release tests, git, env SSOT) | R-01…R-06 | 🔴 activa |
-> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ R-10/R-11/R-12/R-13/R-14 · R-15…R-20 pendiente |
-> | **2** | Seguridad de entrada (metadata↔shape, GGUF, SAFETY) | R-30…R-38 | pendiente (paralelizable) |
+> | **0** | Verdad y CI (workflow válido, release tests, git, env SSOT) | R-01…R-06 | ✅ cerrada |
+> | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ cerrada |
+> | **2** | Seguridad de entrada (metadata↔shape, GGUF, SAFETY) | R-30…R-38 | 🟠 parcial (R-30/R-31/R-32 ✅) |
 > | **3** | Eficiencia de inferencia (head ternario, 1.6 bpp, i8, hilos) | R-40…R-48 | pendiente |
 > | **4** | Calidad de conversión (paridad, rotación, emb 8-bit) | R-50…R-55 | pendiente |
 > | **5** | Limpieza (skills/, bins, tests, P-18, rayon) | R-60…R-68 | pendiente |

@@ -244,7 +244,7 @@ flowchart LR
 | R-20 | chunked Muon + scales_only | 🟡 | ✅ 2026-10-12 | Muon: stride compacto en copy-in/out del último chunk parcial (la norma/vista `[..rows*current]` mezclaba datos con padding) — el test nuevo FALLABA antes (Δ=0.136) y pasa después. `checkpoint.rs` scales_only: `absmean` → `absmean/√2` (escribía ×√2). Test `test_chunked_muon_matches_per_chunk_reference_r20` (cols=10/chunk=8). 480/0/2. |
 | R-30 | Validación metadata↔shape | 🔴 | ✅ 2026-10-12 | `mod.rs::validate_model_shapes` (emb/head/normas/attn QKVO+scales/FFN denso/mhc vs dims, `hidden%n_heads==0`, checked) llamada en `load` + al inicio del forward (defensa en profundidad); `inference.rs` deriva longitudes del shape (no metadata) con checked + cap OOM. Tests R-30 ×3 (ok/mismatch/no-divisible). `diagnose_model models/ale.mud` 🟢 119 tensores. 480/0/2. |
 | R-31 | Aritmética checked en loader | 🔴 | ✅ 2026-10-12 | `mod.rs`: `MAX_TENSOR_DIM=1<<28`, shape-body/offset/producto/`expected_bytes`/`end` todo checked+bail (el `.expect` panickeaba = SEC-H2); `data_size` saturating + `checked_data_size`. Tests R-31 ×2 (overflow→None, dim gigante→Err R-31 sin panic). 480/0/2. |
-| R-32 | Cotas parser GGUF | 🟠 | TODO | |
+| R-32 | Cotas parser GGUF | 🟠 | ✅ 2026-10-13 | `src/gguf/mod.rs`: cursor con bounds-checks (truncado→Err, nunca panic), caps SEC-H1 (kv/tensor counts, key/name/string len, rank, dim 1<<28 + producto checked), arrays con cap 4M + reserva incremental + nesting ≤8, `general.alignment` validado (≠0, pot2, ≤1M), offsets con `checked_add` + tamaño exacto por tipo (F32/F16/Q4_x/Q5_x/Q8_x). Tests R-32 ×12 (truncado/counts/len/arrays/nesting/alignment/rank/dim/offset/end/happy-path) + proptest fuzz ×2 (arbitrary + magic). `cargo test --lib --release --features proptest` 500/0/2; clippy 0. |
 | R-33 | ECC parity bounds | 🟡 | TODO | |
 | R-34 | worm embedding row | 🟡 | TODO | |
 | R-35 | GEMV resto 1..7 + stride | 🟡 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 19/55 (R-01…R-06 + R-10…R-20 + R-30 + R-31) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30/R-31 ✅, resto TODO).
+**Estado global:** 20/55 (R-01…R-06 + R-10…R-20 + R-30…R-32) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30/R-31/R-32 ✅, resto TODO).
 
 ---
 
