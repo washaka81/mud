@@ -45,7 +45,7 @@ export MUD_USE_VULKAN=1
 export MKL_DEBUG_CPU_TYPE=5  # Enforce AVX2 on Intel CPUs
 # Host-safe train defaults (run_trainer also sets these if absent; export for all bins)
 : "${MUD_PCORE_THREADS:=8}"
-: "${MUD_GPU_GEMV:=0}"   # Disabled by default on Intel Iris Xe due to SIGSEGV
+: "${MUD_GPU_GEMV:=0}"   # R-48: producción = CPU (0). Iris Xe hace SIGSEGV en submit_and_wait (QKV GEMV); `auto` es opt-in explícito del operador (host sin el bug). Doc: MUD_ENV_REFERENCE §1.2.
 : "${MUD_TRAIN_EZOP:=1}"
 : "${MUD_TRAIN_FREEZE_EMB:=1}"
 : "${MUD_TRAIN_TEXT_ONLY:=1}"

@@ -251,7 +251,7 @@ flowchart LR
 | R-36 | SAFETY comments + check | 🟠 | ✅ 2026-10-13 | `./mud.sh unsafe-audit` (awk embebido en `mud.sh`, sin Python — P-07) → `OK - 0 sin comentario (R-36)` sobre **532 `unsafe` productivos** (excluye tests/`#[cfg(test)]`/`src/bin`); ops de alto riesgo (from_raw_parts/Mmap::map/transmute/alloc/…) con comentario **adyacente** (38 sitios); contratos `//! SAFETY:` de módulo en kernels (ezop, adam_state, slime_forward/backward, ash_backend, ash_qat_dispatcher, sandbox, rlvr) + per-site en checkpoint/inference/main/train_step/session/…. Gate añadido a `mud.sh ci` y `.github/workflows/ci.yml`. Solo comentarios (0 líneas de código; 910+/2−). Clippy 0; `cargo test --lib --release --features proptest` 507/0/2. **Hallazgos R-36 (reportados, sin fix — fuera de alcance):** (1) `fenwick.rs::build_from_linear(&[])` lee 1 elem OOB vía API segura (`n = max(1)`); (2) `sparse_adam_step` no valida `state.v` (mismo lockstep que m); (3) `slime_jepa.rs` llama el kernel con `out_z == z_ptr` (viola su doc); (4) `session/debate/train_step` reinterpretan `prq_scale`/`output_norm` como f32 sin check `t_type`; (5) `debate_trainer.rs` check AVX2 sin `bmi1` para `find_kth_avx2`. |
 | R-37 | RCE feature-gated documentado | 🟠 | ✅ 2026-10-13 | `SECURITY.md` reescrito: el RCE es **feature-gated (estructural), no "0 RCE"**; `Cargo.toml default=[]`; tests de gate por build (`test_terminal_sandbox_disabled_by_default` ⇒ `PermissionDenied`; `test_rlvr_critic_disabled_by_default` ⇒ `-1.0`+mensaje); `skills/data_analysis.rs` ya no usa `fs::read_to_string`: lee vía `AgentWorkspace::read_file` (confinado al root; inerte sin workspace). Criterio "path fuera del root ⇒ `Err`" cubierto por tests de `AgentWorkspace` (R-38). Nota: `skills/` sin compilar hoy (dead code, R-60). `cargo test --lib --release --features proptest` 513/0/2; clippy 0. |
 | R-38 | symlink escape | 🟡 | ✅ 2026-10-13 | `workspace_agent.rs`: resolución por **ancestro existente más profundo** (`symlink_metadata` + `canonicalize` + `starts_with(root_canon)`); symlink colgante ⇒ `Err(PermissionDenied)` (antes `exists()` lo trataba como fichero nuevo y `fs::write` seguía el enlace fuera); apertura de hoja con **`O_NOFOLLOW`** (Linux 0o400000 / macOS 0x0100); fix borde `probe == candidate` (`join("")` producía trailing slash ⇒ ENOTDIR). Tests R-38 ×4 (`dangling`, `symlink→fuera`, `ancestro symlink`, `symlink interno OK`) + 3 preexistentes verdes. 513/0/2; clippy 0. |
-| R-40 | LM head ternario batched | 🔴 | TODO | |
+| R-40 | LM head ternario batched | 🔴 | ✅ 2026-10-13 | `gemv_gpu::ternary_head_logits` (público): GEMV ELUT por filas 4/8 + `PCorePool` + PRQ por fila; `main.rs` usa el head packed y **no materializa f32** (untied ya no construye `out_f32_owned`; tied usa el emb packed). Tests `test_r40_ternary_head_matches_scalar` + `_non_multiple_of_8` (R-35 tail). Medición A/B mismo protocolo (`models/ale.mud`, 256 tok): greedy 3.33→0.93 s (**4.6×** en cómputo de modelo); default nucleus 15.3→6.3 ms/token (**2.4×**; vs baseline congelado 22 ms/token = **3.5×**); RSS pico 201→**127 MB** (−74 MB). **Paridad:** logits del modelo real idénticos (min/max/mean/std + top-10). Cuello restante medido: sampling nucleus ≈3.8 ms/token (60 %) → candidato F3/R-44. |
 | R-41 | Sin materializar emb/output a f32 | 🟠 | TODO | |
 | R-42 | Formato 5 trits/byte (1.6 bpw) | 🟠 | TODO | |
 | R-43 | Eliminar round-trips i8 | 🟠 | TODO | |
@@ -259,7 +259,7 @@ flowchart LR
 | R-45 | Ablación residual f32 vs f16 | 🟡 | TODO | |
 | R-46 | KV sub-8-bit | 🟡 | TODO | |
 | R-47 | Prototipo LUT mpGEMM | 🟡 | TODO | |
-| R-48 | `MUD_GPU_GEMV` doc==código | 🟡 | TODO | |
+| R-48 | `MUD_GPU_GEMV` doc==código | 🟡 | ✅ 2026-10-13 | Decisión escrita: producción en **CPU** (`mud.sh:48` fija `0`; comentario cita R-48); `auto` queda como opt-in explícito del operador (host sin el SIGSEGV de Iris Xe). `MUD_ENV_REFERENCE.md §1.2` actualizado; `./mud.sh env-audit` 0 divergencias. |
 | R-50 | Gate de paridad vs referencia | 🔴 | TODO | |
 | R-51 | Unpack I2_S según spec + vector | 🟠 | TODO | |
 | R-52 | Rotación + PTQ con compensación | 🟠 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 26/55 (R-01…R-06 + R-10…R-20 + R-30…R-38) · F0 cerrada; Ola 1 (F1) cerrada; **Ola 2 (F2) COMPLETA**. Siguiente: Ola 3 (F3, R-40…R-48).
+**Estado global:** 28/55 (R-01…R-06 + R-10…R-20 + R-30…R-38 + R-40 + R-48) · F0/1/2 cerradas; **Ola 3 (F3) en curso** (R-40/R-48 ✅; R-41…R-47 TODO).
 
 ---
 

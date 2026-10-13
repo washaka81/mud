@@ -40,7 +40,7 @@
 
 | Variable | Default | Valores | Propósito | Origen |
 |---|---|---|---|---|
-| `MUD_GPU_GEMV` | `auto` en código; `0` en `mud.sh:48` | `0\|1\|auto` | `0`=CPU siempre; `1`=GPU cuando `n_in·n_out ≥ min`; `auto`/unset = micro‑bench one‑shot | `gemv_policy.rs:70` R / `mud.sh:48` S |
+| `MUD_GPU_GEMV` | `auto` en código; `0` en `mud.sh:48` | `0\|1\|auto` | `0`=CPU siempre; `1`=GPU cuando `n_in·n_out ≥ min`; `auto`/unset = micro‑bench one‑shot. **Decisión R-48 (2026-10-13):** los scripts de producción fijan `0` (Iris Xe SIGSEGV en `submit_and_wait`); `auto` queda como opt-in explícito del operador en hosts sin ese bug | `gemv_policy.rs:70` R / `mud.sh:48` S |
 | `MUD_GPU_GEMV_MIN` | `256·256 = 65536` (`GEMV_GPU_MIN_WORK`) | usize | Work‑units mínimos para activar GPU (sólo con `MUD_GPU_GEMV=1`) | `gemv_policy.rs:94` R |
 | `MUD_GPU_GEMV_LOG` | `0`/`false` | `1\|true` | Imprime la tabla de calibración CPU‑vs‑GPU a stderr | `gemv_policy.rs:101` R |
 | `MUD_USE_VULKAN` | `1` | `0\|false` | Activa el backend Vulkan (ash 0.38). `0` lo desactiva | `ash_backend.rs:248,2182` R |

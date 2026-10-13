@@ -403,6 +403,34 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
     }
 }
 
+/// R-40: ternary LM-head logits — `out[v] = prq_scale[v] * dot(acts, ELUT_row_v)`.
+///
+/// Batched 4-/8-row ELUT kernels over `PCorePool` with per-row PRQ scales; the
+/// dense `vocab × hidden` f32 head is **never materialized** (on `ale.mud` the
+/// dequantized head was ~77.6 MB read per token, ≈99 % of weight traffic).
+/// GPU is tried first via the usual policy (`MUD_GPU_GEMV`), falling back to
+/// the AVX2 pool.
+///
+/// # Safety
+/// `acts` is valid for `n_in` f32; `w_u8` points to `n_out` ELUT-packed rows in
+/// the canonical R-15 layout (`n_out * n_in.div_ceil(8) * 4` bytes); `scales`
+/// is valid for `n_out` f32; `out` is valid for `n_out` f32. Buffers must not
+/// alias (GEMV semantics).
+pub unsafe fn ternary_head_logits(
+    acts: &[f32],
+    w_u8: *const u8,
+    out: &mut [f32],
+    scales: *const f32,
+    n_out: usize,
+    n_in: usize,
+) {
+    if try_gpu_ternary_gemv(acts, w_u8, out, scales, n_out, n_in) {
+        return;
+    }
+    ternary_gemv_rowwise_submit(acts, w_u8, out, scales, n_out, n_in);
+    crate::mud::pcore_pool::get_pool().wait_all();
+}
+
 /// Phase B + Stream F: Q, K, V projections.
 ///
 /// 1. **GPU path (F):** one ash command buffer, three GEMV dispatches, one fence
@@ -795,3 +823,136 @@ pub fn try_gpu_dense_mha(
             .is_ok()
     }
 }
+
+// ============================================================
+// R-40: kernel-vs-escalar del head ternario (sin materializar f32)
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ELUT 4-bit pack of ternary values (nibble = value+1 in {-1,0,1} →
+    /// {0x0,0x1,0x2}), matching `pack_ternary_into`'s code semantics used by
+    /// the dequant LUT (0x1 → +1, 0xF → −1 in canonical rows; here we build
+    /// codes through the same TERNARY_LUT path as the converter).
+    fn pack_row(vals: &[i8]) -> Vec<u32> {
+        let mut words = vec![0u32; vals.len().div_ceil(8)];
+        for (i, &v) in vals.iter().enumerate() {
+            let code = match v {
+                1 => 0x1u32,
+                -1 => 0xFu32,
+                _ => 0x0u32,
+            };
+            words[i / 8] |= code << ((i % 8) * 4);
+        }
+        words
+    }
+
+    #[test]
+    fn test_r40_ternary_head_matches_scalar() {
+        let n_out = 40usize; // crosses 8/4/1-row tails
+        let n_in = 24usize; // multiple of 8 and a non-multiple case below
+        let mut rng = rand::rng();
+        use rand::RngExt;
+        let acts: Vec<f32> = (0..n_in).map(|_| rng.random_range(-2.0..2.0)).collect();
+        let scales: Vec<f32> = (0..n_out).map(|_| rng.random_range(0.05..1.5)).collect();
+
+        let mut raw: Vec<Vec<i8>> = Vec::new();
+        let mut packed: Vec<u32> = Vec::new();
+        let stride = n_in.div_ceil(8);
+        for _ in 0..n_out {
+            let row: Vec<i8> = (0..n_in).map(|_| rng.random_range(-1..=1)).collect();
+            let mut pw = pack_row(&row);
+            pw.resize(stride, 0);
+            packed.extend_from_slice(&pw);
+            raw.push(row);
+        }
+
+        let mut got = vec![0.0f32; n_out];
+        unsafe {
+            ternary_gemv_rowwise_submit(
+                &acts,
+                packed.as_ptr() as *const u8,
+                &mut got,
+                scales.as_ptr(),
+                n_out,
+                n_in,
+            );
+            crate::mud::pcore_pool::get_pool().wait_all();
+        }
+
+        let t = crate::mud::TERNARY_LUT;
+        for v in 0..n_out {
+            let expected: f32 = scales[v]
+                * raw[v]
+                    .iter()
+                    .zip(acts.iter())
+                    .map(|(&w, &x)| {
+                        let code = if w == 1 {
+                            1
+                        } else if w == -1 {
+                            15
+                        } else {
+                            0
+                        };
+                        t[code] * x
+                    })
+                    .sum::<f32>();
+            let diff = (got[v] - expected).abs();
+            let tol = 1e-4 * expected.abs().max(1.0);
+            assert!(
+                diff <= tol,
+                "R-40 row {v}: kernel={} scalar={} diff={diff}",
+                got[v],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_r40_ternary_head_non_multiple_of_8() {
+        // R-35 tail path: n_in = 8k+r with r != 0 must be exact too.
+        let n_out = 9usize;
+        let n_in = 19usize; // r = 3
+        let acts: Vec<f32> = (0..n_in).map(|i| (i as f32).sin()).collect();
+        let scales: Vec<f32> = (0..n_out).map(|i| 0.1 + (i as f32) * 0.05).collect();
+        let stride = n_in.div_ceil(8);
+        let mut raw: Vec<Vec<i8>> = Vec::new();
+        let mut packed: Vec<u32> = Vec::new();
+        for r in 0..n_out {
+            let row: Vec<i8> = (0..n_in).map(|i| ((i + r) % 3) as i8 - 1).collect();
+            let mut pw = pack_row(&row);
+            pw.resize(stride, 0);
+            packed.extend_from_slice(&pw);
+            raw.push(row);
+        }
+        let mut got = vec![0.0f32; n_out];
+        unsafe {
+            ternary_gemv_rowwise_submit(
+                &acts,
+                packed.as_ptr() as *const u8,
+                &mut got,
+                scales.as_ptr(),
+                n_out,
+                n_in,
+            );
+            crate::mud::pcore_pool::get_pool().wait_all();
+        }
+        let t = crate::mud::TERNARY_LUT;
+        for v in 0..n_out {
+            let expected: f32 = scales[v]
+                * raw[v]
+                    .iter()
+                    .zip(acts.iter())
+                    .map(|(&w, &x)| t[if w == 1 { 1 } else if w == -1 { 15 } else { 0 }] * x)
+                    .sum::<f32>();
+            assert!(
+                (got[v] - expected).abs() <= 1e-4 * expected.abs().max(1.0),
+                "R-40 tail row {v}: kernel={} scalar={}",
+                got[v],
+                expected
+            );
+        }
+    }
+}
+

@@ -295,56 +295,62 @@ fn main() -> anyhow::Result<()> {
     // Output projection: reuse the embedding (tied weights) or load separate output.weight
     let out_tensor = core.tensors.get("output.weight").unwrap_or(emb_tensor);
     let tied_output = std::ptr::eq(out_tensor as *const _, emb_tensor as *const _);
-    let mut out_f32_owned: Option<Vec<f32>> = if tied_output {
-        None
-    } else {
-        let mut out_dq = vec![0.0f32; vocab_size * hidden_size];
-        if out_tensor.t_type == forge_llm::mud::MudTensorType::Float32 {
-            let out_data_ptr = out_tensor
-                .owned_data
-                .as_ref()
-                .map(|d| d.as_ptr() as *const f32)
-                .unwrap_or(out_tensor.data_ptr as *const f32);
-            // SAFETY: Float32 `output.weight`; R-30 validated shape
-            // [vocab,hidden]; backing holds `vocab_size * hidden_size` f32.
-            let out_f32_slice =
-                unsafe { std::slice::from_raw_parts(out_data_ptr, vocab_size * hidden_size) };
-            out_dq.copy_from_slice(out_f32_slice);
-        } else {
-            let out_scales_tensor = core
-                .tensors
-                .get("output.prq_scale")
-                .ok_or_else(|| anyhow::anyhow!("Missing output.prq_scale"))?;
-            let out_packed_ptr = out_tensor
+
+    // R-40: ternary head fast path — keep the packed ELUT rows + PRQ scales and
+    // run the batched 4/8-row GEMV on the PCorePool per token. The dense
+    // `vocab × hidden` f32 head (77.6 MB re-read per token on `ale.mud`) is
+    // never materialized.
+    let ternary_head: Option<(*const u8, *const f32)> =
+        if out_tensor.t_type == forge_llm::mud::MudTensorType::Ternary2Bit {
+            let packed = out_tensor
                 .owned_data
                 .as_ref()
                 .map(|d| d.as_ptr())
                 .unwrap_or(out_tensor.data_ptr);
-            let out_byte_len = out_tensor
-                .owned_data
-                .as_ref()
-                .map(|d| d.len())
-                .unwrap_or_else(|| (vocab_size * hidden_size).div_ceil(8) * 4);
-            // SAFETY: `out_byte_len` = owned length or canonical packed size
-            // for the R-30-validated shape; pointer is the tensor's backing.
-            let out_packed: &[u8] =
-                unsafe { std::slice::from_raw_parts(out_packed_ptr, out_byte_len) };
-            let out_scales_ptr = out_scales_tensor
+            let scale_key = if tied_output {
+                "token_embd.prq_scale"
+            } else {
+                "output.prq_scale"
+            };
+            let scale_t = core
+                .tensors
+                .get(scale_key)
+                .ok_or_else(|| anyhow::anyhow!("Missing {scale_key}"))?;
+            let scales = scale_t
                 .owned_data
                 .as_ref()
                 .map(|d| d.as_ptr() as *const f32)
-                .unwrap_or(out_scales_tensor.data_ptr as *const f32);
-            // SAFETY: `output.prq_scale` shape == [vocab] (R-30); backing holds
-            // `vocab_size` f32.
-            let out_scales: &[f32] =
-                unsafe { std::slice::from_raw_parts(out_scales_ptr, vocab_size) };
-            forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
-                out_packed,
-                out_scales,
-                hidden_size,
-                &mut out_dq,
+                .unwrap_or(scale_t.data_ptr as *const f32);
+            if packed.is_null() || scales.is_null() {
+                anyhow::bail!("R-40: {scale_key} / ternary head backing is null");
+            }
+            Some((packed, scales))
+        } else {
+            None
+        };
+
+    let mut out_f32_owned: Option<Vec<f32>> = if tied_output || ternary_head.is_some() {
+        None
+    } else {
+        // F32 head only (Q2_0→F32 converted models). Ternary heads take the
+        // packed path above and no longer build this matrix.
+        if out_tensor.t_type != forge_llm::mud::MudTensorType::Float32 {
+            anyhow::bail!(
+                "R-40: unsupported output.weight type {:?} (Float32 or Ternary2Bit required)",
+                out_tensor.t_type
             );
         }
+        let mut out_dq = vec![0.0f32; vocab_size * hidden_size];
+        let out_data_ptr = out_tensor
+            .owned_data
+            .as_ref()
+            .map(|d| d.as_ptr() as *const f32)
+            .unwrap_or(out_tensor.data_ptr as *const f32);
+        // SAFETY: Float32 `output.weight`; R-30 validated shape
+        // [vocab,hidden]; backing holds `vocab_size * hidden_size` f32.
+        let out_f32_slice =
+            unsafe { std::slice::from_raw_parts(out_data_ptr, vocab_size * hidden_size) };
+        out_dq.copy_from_slice(out_f32_slice);
         Some(out_dq)
     };
 
@@ -406,6 +412,14 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // R-40: the dense matrices above received the pre-scaling; the packed
+    // ternary head applies the identical factor to its raw logits instead
+    // (tied: emb×scale_up; untied: out×scale_up·logit_scale).
+    let head_post_scale = if tied_output {
+        scale_up
+    } else {
+        scale_up * logit_scale
+    };
 
     let emb_slice: &[f32] = &emb_f32;
     // Tied: LM-head rows == emb; untied: separate buffer (optionally logit-scaled)
@@ -629,20 +643,47 @@ fn main() -> anyhow::Result<()> {
             if debug && generated == 0 {
                 println!("{}reg_f32[0..5]={:?}{}", COLOR_DIM, &reg_f32[..5], COLOR_RESET);
             }
-            // SAFETY: `reg_f32`/`logits` were pre-allocated with `hidden_size`
-            // and `vocab_size` elements (above); `out_slice_ternary` is either
-            // `emb_f32` or the untied `out_f32_owned` Vec, both sized
-            // `vocab_size * hidden_size` and alive for the whole generation
-            // loop. `lm_head_logits_avx2` reads `weights[v*hidden_size..]` for
-            // `v < vocab_size` and writes `logits[..vocab_size]`.
-            unsafe {
-                forge_llm::asm::lm_head_logits_avx2(
-                    vocab_size,
-                    hidden_size,
-                    reg_f32.as_ptr(),
-                    out_slice_ternary.as_ptr(),
-                    logits.as_mut_ptr(),
-                );
+            // R-40: ternary head = batched ELUT GEMV (4/8 rows + PCorePool,
+            // PRQ per row) reading only ~1/8 of the head bytes per token;
+            // f32 heads keep the dense AVX2 dot kernel.
+            if let Some((head_packed, head_scales)) = ternary_head {
+                // SAFETY: `head_packed`/`head_scales` are the head tensor's
+                // load-validated backing (R-30) and its `prq_scale`; `reg_f32`
+                // holds `hidden_size` f32 and `logits` `vocab_size` f32
+                // (pre-allocated above). Rows use the canonical R-15 ELUT
+                // layout that `ternary_head_logits` documents.
+                unsafe {
+                    forge_llm::mud::gemv_gpu::ternary_head_logits(
+                        &reg_f32[..hidden_size],
+                        head_packed,
+                        &mut logits[..vocab_size],
+                        head_scales,
+                        vocab_size,
+                        hidden_size,
+                    );
+                }
+                if (head_post_scale - 1.0).abs() > 1e-6 {
+                    for l in logits.iter_mut() {
+                        *l *= head_post_scale;
+                    }
+                }
+            } else {
+                // SAFETY: `reg_f32`/`logits` were pre-allocated with
+                // `hidden_size` and `vocab_size` elements (above);
+                // `out_slice_ternary` is `out_f32_owned` (the F32 path is the
+                // only one left here), sized `vocab_size * hidden_size` and
+                // alive for the whole generation loop. `lm_head_logits_avx2`
+                // reads `weights[v*hidden_size..]` for `v < vocab_size` and
+                // writes `logits[..vocab_size]`.
+                unsafe {
+                    forge_llm::asm::lm_head_logits_avx2(
+                        vocab_size,
+                        hidden_size,
+                        reg_f32.as_ptr(),
+                        out_slice_ternary.as_ptr(),
+                        logits.as_mut_ptr(),
+                    );
+                }
             }
             if debug && generated == 0 {
                 let lmin = logits.iter().cloned().fold(f32::INFINITY, f32::min);
