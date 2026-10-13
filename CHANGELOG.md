@@ -6,6 +6,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased] — 2026-10-13 — Ola 2 (F2) completa + Ola 3 iniciada (R-40, R-48)
+
+### Added
+- **`./mud.sh unsafe-audit`** (R-36): gate embebido (awk, sin Python — P-07) que verifica que todo `unsafe` de producción esté justificado (`SAFETY` adyacente, contrato `//! SAFETY:` de módulo para sitios no críticos, alto riesgo siempre adyacente). Excluye tests/`#[cfg(test)]`/`src/bin`. Añadido a `mud.sh ci` y `.github/workflows/ci.yml`.
+- **`gemv_gpu::ternary_head_logits`** (R-40): GEMV ELUT por filas 4/8 + `PCorePool` + PRQ por fila para el LM head; sin materializar la matriz f32.
+- **Tests de gate por build** (R-37): `test_terminal_sandbox_disabled_by_default`, `test_rlvr_critic_disabled_by_default` (default build ⇒ `PermissionDenied` / `-1.0`).
+- **Tests R-32/R-33/R-34/R-35/R-38/R-40** (28 tests nuevos + 2 proptest GGUF fuzz).
+
+### Changed
+- **`src/gguf/mod.rs`** (R-32): parser con `GgufCursor` bounds-checked, caps SEC-H1, arrays ≤4M/depth ≤8, `general.alignment` validado, offsets `checked_add` + tamaño exacto por tipo.
+- **`src/mud/mod.rs`** (R-33): `ecc_verify_all -> Result`; paridad validada contra el extent del tensor base (owned `len>=need`, mmap `.get()`).
+- **`src/mud/worm.rs`** (R-34): `get_embedding_row` exige `Float32` rank-2 y deriva dims del shape.
+- **`src/asm/mod.rs` + `gemv_gpu.rs` + `slime_backward.rs`** (R-35): `ternary_gemv_tail` hace exactos los wrappers para `n%8∈1..7`; strides `/8`→`div_ceil(8)` (layout canónico R-15).
+- **`src/mud/workspace_agent.rs`** (R-38): resolución por ancestro existente más profundo (`symlink_metadata` + `canonicalize`), enlace colgante ⇒ `Err`, apertura con `O_NOFOLLOW`.
+- **`src/main.rs`** (R-40): head ternario packed (tied/untied) sin `out_f32_owned`; post-escalado de logits equivalente al pre-escalado denso. `models/ale.mud`: greedy **4.6×**, default **2.4×** (3.5× vs baseline congelado), RSS **201→127 MB**, logits idénticos.
+- **`SECURITY.md`** (R-37): el RCE de `unsafe-rce`/`unsafe-cli` documentado como **estructural** (feature-gated, no "0 RCE"); filas loader/GGUF/ASM/skills actualizadas; sección path-traversal con R-38.
+- **`skills/data_analysis.rs`** (R-37): lecturas confinadas vía `AgentWorkspace::read_file` (inerte sin workspace).
+- **`mud.sh` + `MUD_ENV_REFERENCE.md`** (R-48): decisión escrita de `MUD_GPU_GEMV` (producción CPU=`0`; `auto` opt-in).
+- **Docs de estado**: `GEMINI.md §0.3`/§6.2, `AGENTS.md` (last sync), plan maestro §12, `MUD_AUDIT_LATEST.md` → Ola 2 cerrada, 28/55.
+
+### Fixed
+- **GGUF truncado/hostil** ya no puede hacer panic/OOM (R-32); **ECC diminuta** ⇒ `Err` (R-33); **embedding ternario en worm** ya no se lee como f32 (R-34); **GEMV** con `n%8∈1..7` exacto y sin over-read (R-35); **symlink colgante** ya no escapa del workspace (R-38); **LM head** ya no re-lee 77.6 MB densos por token (R-40).
+
+### Evidencia
+- `cargo test --lib --release --features proptest -- --test-threads=2` → **515 passed / 0 failed / 2 ignored** (2026-10-13).
+- `cargo clippy --all-targets --all-features -- -D warnings` → 0 warnings.
+- `./mud.sh unsafe-audit` → `OK - 0 sin comentario (R-36)` (532 `unsafe` productivos).
+- Informe: [`docs/sessions/MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md`](docs/sessions/MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md).
+
+---
+
 ## [Unreleased] — 2026-10-11 — Auditoría + Plan Maestro (**documentación + hook operativo; sin cambios en el motor**)
 
 ### Added

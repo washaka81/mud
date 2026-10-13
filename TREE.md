@@ -67,7 +67,7 @@
     ├── audits/                 # **MUD_AUDIT_2026-10-11_LOW_COMPUTE.md (vigente)** + FULL_2026-08-03 + V01–V38 + BUG_LOGITS_CORRUPTION
     │   └── MUD_AUDIT_LATEST.md   # puntero a la auditoría vigente + plan maestro (2026-10-11)
     ├── sessions/               # MUD_SESSION_REPORT_YYYY-MM-DD
-    │   └── MUD_SESSION_REPORT_2026-07-26_PENDIENTES.md   # Batch A/B/C/D-partial session
+    │   └── MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md   # Ola 2 completa + R-40/R-48
     ├── manuals/                # LAUNCH_COUNTDOWN, MUD_TRAINING_PROTOCOLS, HOUSEKEEPING_PLAN
     └── dumps/                  # tmp dumps
 ```
@@ -91,7 +91,7 @@
 
 **Estado verificado 2026-10-11:** `cargo test --lib` (debug) 461 ✅ · `cargo test --lib --release` **460 + 1 FALLO (UB fenwick)** ❌ · clippy `--all-targets` 0 warnings ✅
 Backlog activo: `docs/planning/MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md` · Auditoría: `docs/audits/MUD_AUDIT_2026-10-11_LOW_COMPUTE.md`
-Documentación de sesión (histórico): `docs/sessions/MUD_SESSION_REPORT_2026-07-26_PENDIENTES.md`
+Documentación de sesión (última): `docs/sessions/MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md` (histórico: `..._2026-07-26_PENDIENTES.md`)
 
 ## Root policy (P-18)
 

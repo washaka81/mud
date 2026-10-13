@@ -29,7 +29,7 @@ Resultado de la auditoría: **el proyecto no está en el estado que declara la d
 | Carpeta | Contenido |
 |---------|-----------|
 | [`architecture/`](architecture/) | Specs y stack — **empieza por** [`MUD_COMPUTE_STACK.md`](architecture/MUD_COMPUTE_STACK.md) |
-| [`sessions/`](sessions/) | Reportes de sesión — **A–E:** [`MUD_SESSION_REPORT_2026-07-16_STREAMS_AE.md`](sessions/MUD_SESSION_REPORT_2026-07-16_STREAMS_AE.md) |
+| [`sessions/`](sessions/) | Reportes de sesión — **reciente:** [`MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md`](sessions/MUD_SESSION_REPORT_2026-10-13_OLA2_OLA3.md) (Ola 2 completa + R-40/R-48) |
 | [`audits/`](audits/) | Auditorías — **vigente:** [`MUD_AUDIT_2026-10-11_LOW_COMPUTE.md`](audits/MUD_AUDIT_2026-10-11_LOW_COMPUTE.md) (`MUD_AUDIT_LATEST.md` es puntero) |
 | [`planning/`](planning/) | Planes de ejecución — **activo:** [`MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md`](planning/MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md) |
 | [`research/`](research/) | Papers, gap analysis, **mejoras F+** |
