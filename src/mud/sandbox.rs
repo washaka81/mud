@@ -99,3 +99,22 @@ pub fn execute_command(&self, command: &str, cwd: &std::path::Path) -> std::io::
         ))
     }
 }
+
+// ============================================================
+// R-37: build-gate test — the default (production/CI) build MUST
+// refuse shell execution. Only compiled when the feature is OFF.
+// ============================================================
+#[cfg(all(test, not(feature = "unsafe-cli")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_terminal_sandbox_disabled_by_default() {
+        let sb = TerminalSandbox::new(5);
+        let err = sb
+            .execute_command("echo pwn", std::path::Path::new("."))
+            .expect_err("default build must refuse bash -c");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("disabled"));
+    }
+}

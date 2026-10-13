@@ -88,3 +88,23 @@ impl RlvrCritic {
         (-1.0, "RLVR critic disabled in production build (compile with --features unsafe-rce to enable)".to_string())
     }
 }
+
+// ============================================================
+// R-37: build-gate test — the default (production/CI) build MUST
+// NOT compile/execute rustc. Only compiled when the feature is OFF.
+// ============================================================
+#[cfg(all(test, not(feature = "unsafe-rce")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rlvr_critic_disabled_by_default() {
+        let critic = RlvrCritic::new();
+        let (reward, msg) = critic.evaluate_rust_code("fn main() {}");
+        assert_eq!(reward, -1.0, "default build must not reward code execution");
+        assert!(
+            msg.contains("disabled"),
+            "stub must explain the feature gate, got: {msg}"
+        );
+    }
+}
