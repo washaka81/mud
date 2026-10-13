@@ -338,6 +338,12 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
             let mut row = start_row;
             if prefer_8 {
                 while row + 8 <= end_row {
+                    // SAFETY: this closure owns the disjoint row range
+                    // [start_row, end_row) ⊆ [0, n_out); `acts` covers n_in,
+                    // `w` covers n_out * row_u32s u32 words, `out`/`sc` cover
+                    // n_out (caller contract of `ternary_gemv_rowwise_submit`).
+                    // Pointers were captured as `usize` to cross the thread
+                    // boundary; each worker touches only its own rows.
                     unsafe {
                         crate::asm::ternary_gemv_8rows(
                             n_in,
@@ -358,6 +364,8 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
                 }
             }
             while row + 4 <= end_row {
+                // SAFETY: same disjoint-row contract as the 8-row block above;
+                // `row + 4 <= end_row` keeps every accessed row < n_out.
                 unsafe {
                     crate::asm::ternary_gemv_4rows(
                         n_in,
@@ -377,6 +385,9 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
             }
 
             for r in row..end_row {
+                // SAFETY: scalar tail of the same partition: `r < end_row ≤
+                // n_out`, so `sc[r]`, `w[r*row_u32s ..]` and `out[r]` are all
+                // in-bounds.
                 unsafe {
                     let s = (*sc.add(r)).clamp(-1e8, 1e8);
                     crate::asm::ternary_gemv(
@@ -717,6 +728,12 @@ fn try_gpu_rms_output_norm(ws: &mut SlimeWorkspace, output_norm_w: *const f32, e
     // P-01: reuse workspace buffers instead of per-call Vec allocation.
     // This function is called per-layer; Vec allocations were hot-loop allocs.
     // ws.q_f32 / ws.k_f32 are not needed during output-norm phase.
+    // SAFETY: `ws` is exclusively borrowed, so `q_f32`/`k_f32` are distinct
+    // `AlignedArray<f32>` allocations of ≥ hidden elements; the `as *mut`
+    // casts are the only writers inside this block (registers are read before
+    // `y` is written). `output_norm_w` is the model's `output_norm.weight`
+    // (shape [hidden], R-30-validated); x/w/y lengths are documented on
+    // `dispatch_rms_norm_sync`, which fences before readback.
     unsafe {
         let x_ptr = ws.q_f32.as_ptr() as *mut f32;
         let y_ptr = ws.k_f32.as_ptr() as *mut f32;
@@ -770,6 +787,9 @@ pub fn try_gpu_dense_mha(
     if !ctx.is_available() {
         return false;
     }
+    // SAFETY: `seq_len ≤ 64` was checked above; callers pass q/out of
+    // `seq*n_head*head_dim` and k/v of `seq*n_kv_head*head_dim` f32, matching
+    // the layout required by `dispatch_mha_sync`'s own `# Safety`.
     unsafe {
         ctx.dispatch_mha_sync(q, k, v, out, seq_len, n_head, n_kv_head, head_dim)
             .is_ok()

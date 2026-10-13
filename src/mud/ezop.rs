@@ -5,6 +5,22 @@
 //!
 //! **Contract:** every `unsafe` fn documents length / non-null preconditions.
 //! Prefer these over `slice[i]` in QAT/backward tight loops.
+//!
+//! SAFETY (module contract): every `unsafe` below follows one of these patterns:
+//! (a) raw-pointer kernel over caller buffers (slices/Vec/mmap): each `*const`
+//!     is valid for reads and each `*mut` for writes over the function's
+//!     documented element count `n`; buffers are non-null; const/mut pairs are
+//!     distinct buffers wherever the function requires it, and documented
+//!     in-place updates touch each index exactly once (load-then-store);
+//! (b) access is element-wise/unaligned (`*p.add(i)`, `loadu_ps`, `storeu_ps`,
+//!     `copy_nonoverlapping`), so no alignment is assumed and every index is
+//!     `< n` by loop bound; pack helpers write exactly `n.div_ceil(8)` words;
+//! (c) AVX2/FMA intrinsics live in `#[target_feature(enable = "avx2[,…]")]`
+//!     functions or private helpers called only from them; dispatch sites
+//!     runtime-check via `is_x86_feature_detected!` (the crate also builds
+//!     native with `-C target-cpu=native`); the
+//!     `#[cfg(not(target_arch = "x86_64"))]` twins are scalar fallbacks.
+//! Sites with a different invariant carry their own `// SAFETY:` comment.
 
 use std::cell::RefCell;
 

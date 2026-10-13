@@ -34,6 +34,9 @@ jobs:
       - name: Clippy (all-targets, all-features, -D warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Unsafe audit (R-36: every production unsafe justified)
+        run: ./mud.sh unsafe-audit
+
       - name: Unit tests (lib, release)
         run: cargo test --lib --release -- --test-threads=2
 

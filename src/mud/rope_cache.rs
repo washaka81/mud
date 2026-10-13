@@ -55,6 +55,12 @@ impl RopeCache {
         // Uses raw pointers to avoid borrow-checker conflicts with the return refs.
         let n = self.entries.len();
         for i in 0..n - 1 {
+            // SAFETY: `i + 1 < n == self.entries.len()` by the loop bound, so
+            // both `add(i)` and `add(i + 1)` are in-bounds; `read` bit-moves the
+            // element (the tuple owns its Vecs), `write` stores it at `i`, and
+            // the slot at `i + 1` is immediately overwritten with an empty entry
+            // so no value is dropped twice. Overwriting the old element at `i`
+            // leaks its Vec allocation (no drop) — intentional eviction, no UB.
             unsafe {
                 let tmp = core::ptr::read(self.entries.as_ptr().add(i + 1));
                 core::ptr::write(self.entries.as_mut_ptr().add(i), tmp);

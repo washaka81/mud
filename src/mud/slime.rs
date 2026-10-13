@@ -171,6 +171,11 @@ impl SlimeRegister {
     /// Convert register slice into a pre-allocated f32 buffer (zero allocation).
     pub fn registers_to_f32_into(regs: &[SlimeRegister], out_real: &mut [f32], scratch_imag: &mut [f32]) {
         let n = regs.len().min(out_real.len()).min(scratch_imag.len());
+        // SAFETY: `n` is clamped to the minimum of all three lengths, and
+        // `SlimeRegister` is `#[repr(C)] { raw: u32 }`, so `regs.as_ptr() as
+        // *const u32` is valid and aligned for n u32 reads/writes; the two
+        // output buffers are distinct `&mut` slices (Rust aliasing) and each
+        // has at least `n` initialized elements.
         unsafe {
             let rem = crate::asm::registers_to_f32_batch_into(
                 regs.as_ptr() as *const u32,

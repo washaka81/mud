@@ -217,6 +217,11 @@ pub fn jepa_stabilizer(
 
             // Mode 5 (normalize): y_norm[i] = (block_out[i] - mean) / rms
             let dummy = [0.0f32; 1];
+            // SAFETY: `step_elementwise_sync` validates every buffer length
+            // (`>= n`) and returns `Err` otherwise, so no OOB read is possible;
+            // `n` is `registers.len()` and `block_out`/`y_norm_tmp` are sized
+            // for it. For `n > 1` the 1-element `dummy` target makes mode 5
+            // fail that length check and bail (see R-36 report).
             let norm_ok = unsafe {
                 gpu.step_elementwise_sync(
                     block_out, y_norm_tmp, &dummy, registers.len(), 5, mean_y_f32, rms,
@@ -225,6 +230,10 @@ pub fn jepa_stabilizer(
 
             if norm_ok {
                 // Mode 4 (ema): z_next[i] = alpha * y_norm[i] + (1-alpha) * z[i]
+                // SAFETY: same callee length validation (`>= n`); at every
+                // in-tree call site `z_buf` is `jepa_z[..hidden]` and
+                // `y_norm_tmp`/`z_next_tmp` are TLS scratch sliced to
+                // `registers.len()`. The three buffers are distinct.
                 let ema_ok = unsafe {
                     gpu.step_elementwise_sync(
                         y_norm_tmp, z_next_tmp, z_buf, registers.len(), 4,
@@ -292,6 +301,12 @@ pub fn jepa_stabilizer(
             }
 
             // 2. ASM batch EMA: z_next = alpha * y_norm + (1-alpha) * z
+            // SAFETY: `n` is `registers.len()`; in-tree callers pass
+            // `z_buf = jepa_z[..hidden]` and TLS `y_norm_tmp`/`z_next_tmp`
+            // sliced to `n`, so the kernel reads/writes exactly `n` f32. The
+            // kernel is AVX2-only and this site has no runtime probe: AVX2 is
+            // enabled crate-wide by the native build (`-C target-cpu=native`,
+            // .cargo/config.toml + mud.sh).
             unsafe {
                 crate::asm::jepa_ou_avx2(
                     n,
@@ -303,6 +318,13 @@ pub fn jepa_stabilizer(
             }
 
             // 3. Vectorized adaptive alpha correction + jitter + clamp
+            // SAFETY: `#[target_feature(enable = "avx2,fma")]` call — AVX2/FMA
+            // are enabled crate-wide by the native build (no per-call probe).
+            // All buffers are valid for `n` (TLS scratch sliced to `n`;
+            // `z_buf_ptr` = `jepa_z[..hidden]`), and `out_z` aliases `z_ptr`
+            // deliberately for an in-place update: each 8-wide block reads `z`
+            // before writing the same indices once, so no read sees a clobbered
+            // value. NOTE: the kernel doc forbids this overlap (see R-36 report).
             unsafe {
                 #[cfg(target_arch = "x86_64")]
                 {

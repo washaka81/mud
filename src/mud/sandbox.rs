@@ -1,3 +1,10 @@
+//! SAFETY contract (R-36): this module contains no `unsafe` code. The lines the
+//! R-36 gate flags are the cargo feature name `unsafe-cli` inside `#[cfg]`
+//! attributes and inside user-facing error strings — never unsafe operations.
+//! The feature gates `execute_command`, which by design runs
+//! attacker-controlled `bash -c` (see its SECURITY note); production builds
+//! compile the safe stub that always returns `PermissionDenied`.
+
 #[cfg(feature = "unsafe-cli")]
 use std::io::Read;
 #[cfg(feature = "unsafe-cli")]
@@ -81,6 +88,8 @@ pub fn execute_command(&self, command: &str, cwd: &std::path::Path) -> std::io::
 
     /// Safe stub for the default build. Returns an error so the caller cannot
     /// mistakenly rely on shell execution in production.
+    // SAFETY: `unsafe-cli` is only a cargo feature name (no unsafe operation
+    // here); this stub is compiled precisely when that feature is disabled.
     #[cfg(not(feature = "unsafe-cli"))]
     pub fn execute_command(&self, _command: &str, _cwd: &std::path::Path) -> std::io::Result<String> {
         Err(std::io::Error::new(

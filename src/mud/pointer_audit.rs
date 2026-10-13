@@ -21,6 +21,11 @@ use crate::mud::{dequantize_ternary_row, MudFile, MudTensorType, TERNARY_LUT};
 /// Decode one ternary element from a packed u32 buffer at global offset `k`
 /// using the **same address math as `tools/training_healthcheck.rs`**.
 /// This is the formula under audit — it must equal `dequantize_ternary_row`.
+///
+/// # Safety
+/// `ptr` must point to at least `k / 8 + 1` initialized `u32` words; every
+/// caller passes a `Vec<u32>` (or load-validated mmap backing) sized
+/// `n.div_ceil(8)` with `k < n`.
 #[inline]
 unsafe fn elut_nibble_at(ptr: *const u32, k: usize) -> f32 {
     let u32_idx = k / 8;
@@ -36,10 +41,16 @@ pub fn check_pack_dequant_roundtrip(values: &[f32]) -> bool {
     let u32s = n.div_ceil(8);
     let mut packed = vec![0u32; u32s];
     let delta = 0.5f32; // any value with |v|>0.5 is ±1; all our inputs are exact ±1/0
+    // SAFETY: `n == values.len()`, `packed` holds `n.div_ceil(8)` u32 (exactly
+    // the output size of `pack_ternary_into`), and both allocations are live,
+    // distinct and non-overlapping.
     unsafe {
         pack_ternary_into(values.as_ptr(), n, delta, packed.as_mut_ptr());
     }
     let mut out = vec![0.0f32; n];
+    // SAFETY: `packed` holds `n.div_ceil(8)` words (read as `n` nibbles) and
+    // `out` holds exactly `n` f32 — the input sizes `dequantize_ternary_row`
+    // expects.
     unsafe {
         dequantize_ternary_row(packed.as_ptr(), &mut out, n);
     }
@@ -64,10 +75,14 @@ pub fn check_nibble_formula_consistency(n: usize) -> bool {
             ^ 0x9ABC_DEF0;
     }
     let mut ref_out = vec![0.0f32; n];
+    // SAFETY: `packed` was allocated with `n.div_ceil(8).max(1)` words (≥ the
+    // `n` nibbles the kernel reads) and `ref_out` has exactly `n` f32.
     unsafe {
         dequantize_ternary_row(packed.as_ptr(), &mut ref_out, n);
     }
     for (k, refv) in ref_out.iter().enumerate() {
+        // SAFETY: `k < n` and `packed` has `n.div_ceil(8)` words, so the
+        // `k / 8` word accessed by `elut_nibble_at` is in-bounds.
         let got = unsafe { elut_nibble_at(packed.as_ptr(), k) };
         if got - *refv < -1e-6 || got - *refv > 1e-6 {
             return false;
@@ -93,6 +108,9 @@ pub fn check_elut_2perbyte_roundtrip(rows: usize, cols: usize) -> bool {
             _ => 0.0,
         };
     }
+    // SAFETY: `shadow` has `rows * cols` f32, `scales` has `rows` f32 and
+    // `packed` has `rows * row_bytes == rows * div_ceil(cols,8) * 4` bytes —
+    // exactly the R-15 canonical padded layout `pack_elut_prq` writes.
     unsafe {
         pack_elut_prq(
             shadow.as_ptr(),
@@ -154,6 +172,10 @@ pub fn check_unpack_matches_dequant(rows: usize, cols: usize) -> bool {
             }
         }
     }
+    // SAFETY: `packed` is a live `Vec<u32>` of exactly `u32s` words (allocated
+    // above); the byte view covers exactly `u32s * 4` initialized bytes, u8
+    // needs no extra alignment beyond the u32 base, and the borrow keeps the
+    // vector alive for the call.
     let packed_bytes = unsafe {
         std::slice::from_raw_parts(packed.as_ptr() as *const u8, u32s * 4)
     };
@@ -165,6 +187,9 @@ pub fn check_unpack_matches_dequant(rows: usize, cols: usize) -> bool {
         &mut unpacked,
     );
     let mut ref_dec = vec![0.0f32; total];
+    // SAFETY: `u32s == rows * div_ceil(cols,8) >= div_ceil(rows*cols,8)`, so
+    // `packed` has at least the `total` nibbles the kernel decodes; `ref_dec`
+    // has exactly `total` f32.
     unsafe {
         dequantize_ternary_row(packed.as_ptr(), &mut ref_dec, total);
     }
@@ -210,10 +235,16 @@ pub fn audit_model_pointers(mud: &MudFile) -> PointerModelReport {
         let u32s = total.div_ceil(8);
         // Reference decode of the whole tensor via the kernel.
         let mut ref_dec = vec![0.0f32; total];
+        // SAFETY: the filter above keeps only non-null Ternary2Bit tensors; the
+        // loader (R-30/R-31) validated that `data_ptr` is the backing of
+        // `shape.iter().product() == total` elements, i.e.
+        // `total.div_ceil(8) * 4` packed bytes; `ref_dec` has `total` f32.
         unsafe {
             dequantize_ternary_row(t.data_ptr as *const u32, &mut ref_dec, total);
         }
         // Cross-check every element with the training_healthcheck address formula.
+        // SAFETY: same validated backing as above; `k < total`, and
+        // `elut_nibble_at` only touches word `k / 8 < total.div_ceil(8)`.
         unsafe {
             let ptr = t.data_ptr as *const u32;
             for (k, refv) in ref_dec.iter().enumerate() {

@@ -11,6 +11,18 @@
 //!    readback is deferred until `flush_pending` / next step start so Forward N+1
 //!    overlaps GPU Optimizer N (CPU packed vs VRAM packed are distinct buffers).
 //! 4. **Persistent VRAM**: shadow weights never leave VRAM between steps.
+//!
+//! ## SAFETY contract (R-36)
+//! The `unsafe` sites here are raw VRAM access plus deferred readback pointers.
+//! `write_f32`/`read_f32` target `AshBuffer`s created by `ensure_buffers` /
+//! `ensure_mhc_buffers` with the tensor's own `elements`/`rows`, and callers
+//! pass the matching shadow/grad slices (`tu.shadow.len() == tu.elements`,
+//! enforced by the `step_*` `# Safety` contracts). Deferred packed/scales
+//! targets are plain addresses into MudFile layer tensors that outlive the
+//! queue until `flush_pending`/`sync_all` (see `PendingReadback`); reading them
+//! is only done after `sync()` fences GPU work. The dispatcher itself is owned
+//! by the single training thread (`PendingReadback: Send` documents the
+//! single-thread hand-off).
 
 use crate::vulkan::ash_backend::{AshContext, AshOptimizerUpdate};
 use std::collections::HashMap;
@@ -123,6 +135,11 @@ impl AshQatDispatcher {
         // Without this, the optimizer starts from uninitialized memory (all zeros) and collapses.
         let skey = Self::shadow_key(name);
         if let Some(buf) = self.ctx.get_buffer(&skey) {
+            // SAFETY: `skey` was just allocated with `elements * 4` bytes
+            // (4 lines above); every caller passes `initial_shadow` as the
+            // shadow tensor whose length defines `elements`
+            // (`shadow_w.len()` in session.rs, `tu.shadow.len() == tu.elements`
+            // for `AshTensorStep`), so the copy fits the mapping.
             unsafe {
                 buf.write_f32(initial_shadow);
             }
@@ -670,6 +687,10 @@ impl AshQatDispatcher {
     /// Drain pending readbacks (if any) and wait until GPU is idle.
     /// Call at epoch end / checkpoint / process exit.
     pub fn sync_all(&mut self) -> anyhow::Result<()> {
+        // SAFETY: `flush_pending` holds the same pointer-validity contract as
+        // the queue that produced the readbacks (layer tensors alive until the
+        // end of training); `ctx.sync()` fences both double-buffer slots before
+        // any subsequent reuse of mapped memory.
         unsafe {
             if self.pending_readbacks.is_some() {
                 self.flush_pending()?;

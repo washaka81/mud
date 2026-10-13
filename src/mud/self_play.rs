@@ -83,6 +83,11 @@ pub fn generate_synthetic_sequence(
         // 1. Embeber el token actual en los registros de SlimeWorkspace
         let row_start = (current_token as usize) * hidden;
         for h in 0..hidden {
+            // SAFETY: caller contract (see `self_play_training_step`):
+            // `token_embd_ptr` is the f32 shadow embedding with exactly
+            // `vocab_size * hidden` elements and `current_token < vocab_size`
+            // (start token from the tokenizer, later tokens from an argmax over
+            // `vocab_size`), so `row_start + h` is in-bounds.
             let emb_val = unsafe { *token_embd_ptr.add(row_start + h) };
             crate::mud::slime::SlimeRegister::init_from_embed(
                 &mut ws.registers[h],
@@ -125,6 +130,11 @@ pub fn generate_synthetic_sequence(
             let mut sum = 0.0;
             let v_row = v * hidden;
             for h in 0..hidden {
+                // SAFETY: `output_weight_ptr` aliases the same shadow embedding
+                // (tied LM head) with `vocab_size * hidden` elements — the
+                // caller sets it from the validated size above; `v < vocab_size`
+                // and `h < hidden`, so `v_row + h` is in-bounds. `regs_f32`
+                // holds exactly `hidden` entries (`take(hidden)`).
                 sum += regs_f32[h] * unsafe { *output_weight_ptr.add(v_row + h) };
             }
             logits[v] = sum;

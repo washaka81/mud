@@ -151,6 +151,10 @@ impl MudCorpusTrainer {
                     if scale_tensor.t_type == MudTensorType::Float32
                         && scale_tensor.shape[0] == rows
                     {
+                        // SAFETY: `scale_tensor` is Float32 with `shape[0] == rows`
+                        // (checked above), so its load-validated backing
+                        // (R-30/R-31) holds at least `rows` f32; `scales` is a
+                        // `rows`-element Vec. Copy stays in-bounds on both sides.
                         unsafe {
                             let ptr = scale_tensor.data_ptr as *const f32;
                             std::ptr::copy_nonoverlapping(ptr, scales.as_mut_ptr(), rows);
@@ -160,6 +164,13 @@ impl MudCorpusTrainer {
 
                 // 1. Dequantize to FP32 shadow weights
                 let mut w_fp32 = vec![0.0f32; elements];
+                // SAFETY: `t` is a 2-D Ternary2Bit tensor filtered above;
+                // `hidden/intermediate` are multiples of 8 (P-13), so the packer
+                // row stride is exactly `cols/8` u32s and `r*cols/8` addresses
+                // row `r` inside the load-validated backing (R-30/R-31, which
+                // holds `rows*cols` elements). `w_fp32` has `rows*cols` elements,
+                // so each `[r*cols..(r+1)*cols]` slice and `scales[r]` are
+                // in-bounds; `dequantize_ternary_row` asserts `out.len() >= n`.
                 unsafe {
                     let t = match skill.tensors.get(&t_name) {
                         Some(t) => t,
@@ -206,9 +217,14 @@ impl MudCorpusTrainer {
                         for c in 0..cols {
                             w_q_row[c] = (row[c] / scale).round().clamp(-1.0, 1.0) * scale;
                         }
+                        // SAFETY: `row` and `x[..cols]` are both `cols`-long live
+                        // slices (row = `w_fp32[r*cols..(r+1)*cols]`), satisfying
+                        // the kernel's equal-length contract.
                         let y_master = unsafe {
                             forge_autograd::avx_math::dot_product_avx2(row, &x[..cols])
                         };
+                        // SAFETY: `w_q_row` is a `cols`-long live Vec and
+                        // `x[..cols]` is `cols` long.
                         let y_student = unsafe {
                             forge_autograd::avx_math::dot_product_avx2(&w_q_row, &x[..cols])
                         };
@@ -262,6 +278,9 @@ impl MudCorpusTrainer {
                 }
 
                 // Update tensor data
+                // SAFETY: `packed` is a live `Vec<u32>`; reinterpreting its
+                // `len()*4` bytes as `u8` is in-bounds and alignment-1 safe,
+                // and the slice is `.to_vec()`-copied before `packed` drops.
                 let packed_bytes = unsafe {
                     std::slice::from_raw_parts(packed.as_ptr() as *const u8, packed.len() * 4)
                 }
@@ -273,6 +292,8 @@ impl MudCorpusTrainer {
                     }
                 }
 
+                // SAFETY: `new_scales` is a live `Vec<f32>`; its `len()*4` bytes
+                // are in-bounds and alignment-1 safe as `u8`, copied immediately.
                 let scale_bytes = unsafe {
                     std::slice::from_raw_parts(
                         new_scales.as_ptr() as *const u8,
@@ -356,6 +377,9 @@ impl MudCorpusTrainer {
 
                 if let Some(alpha_tensor) = skill.tensors.get(&alpha_name) {
                     if let Some(data) = &alpha_tensor.owned_data {
+                        // SAFETY: `data` is this Float32 `mhc_alpha` tensor's live
+                        // `owned_data` buffer; `data.len()/4` f32 reads stay within
+                        // the allocation (u8→f32 reinterpretation, floor division).
                         let alpha_slice: &[f32] = unsafe {
                             std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4)
                         };
@@ -375,10 +399,16 @@ impl MudCorpusTrainer {
                     let new_alpha = vec![0.85f32; hidden];
                     let new_beta = vec![0.15f32; hidden];
 
+                    // SAFETY: `new_alpha` is a live `Vec<f32>` of `hidden`
+                    // elements; `hidden*4` bytes are in-bounds (alignment 1),
+                    // copied immediately.
                     let alpha_bytes = unsafe {
                         std::slice::from_raw_parts(new_alpha.as_ptr() as *const u8, hidden * 4)
                     }
                     .to_vec();
+                    // SAFETY: `new_beta` is a live `Vec<f32>` of `hidden`
+                    // elements; `hidden*4` bytes are in-bounds (alignment 1),
+                    // copied immediately.
                     let beta_bytes = unsafe {
                         std::slice::from_raw_parts(new_beta.as_ptr() as *const u8, hidden * 4)
                     }
@@ -423,6 +453,9 @@ impl MudCorpusTrainer {
                 let mut radius_collapsed = false;
                 if let Some(radius_tensor) = skill.tensors.get(&radius_name) {
                     if let Some(data) = &radius_tensor.owned_data {
+                        // SAFETY: `data` is this Float32 `mhc_radius` tensor's
+                        // live `owned_data`; `data.len()/4` f32 reads stay within
+                        // the allocation.
                         let rad_slice: &[f32] = unsafe {
                             std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4)
                         };
@@ -440,6 +473,10 @@ impl MudCorpusTrainer {
                     let computed_max_emb =
                         if let Some(emb) = skill.tensors.get("token_embd.weight") {
                             if let Some(d) = &emb.owned_data {
+                                // SAFETY: `d` is the embedding tensor's live
+                                // `owned_data`; `d.len()/4` f32 reads stay within
+                                // the allocation (Q2_0→F32 converted emb stores
+                                // dense f32, per the converter Q2ToF32 fix).
                                 let slice: &[f32] = unsafe {
                                     std::slice::from_raw_parts(
                                         d.as_ptr() as *const f32,
@@ -460,6 +497,8 @@ impl MudCorpusTrainer {
 
                     let safe_radius = max_emb * (hidden as f32).sqrt();
                     let new_radius = [safe_radius; 1];
+                    // SAFETY: `new_radius` is a live stack `[f32; 1]`; its 4
+                    // bytes are in-bounds as `u8`, copied immediately.
                     let radius_bytes = unsafe {
                         std::slice::from_raw_parts(new_radius.as_ptr() as *const u8, 4)
                     }

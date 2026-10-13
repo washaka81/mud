@@ -1,3 +1,38 @@
+//! SAFETY (module contract, R-36) — the `unsafe` sites in this module are
+//! one of the following patterns; anything else carries its own adjacent
+//! `// SAFETY:` comment:
+//!
+//! (a) Dereferences of raw `SlimeLayer` pointers (`q_w`/`k_w`/`v_w`/`o_w`,
+//!     `ffn_up_w`/`ffn_gate_w`/`ffn_down_w`, their `*_scales`,
+//!     `attn_norm_w`/`ffn_norm_w`/`attn_sub_norm_w`/`ffn_sub_norm_w`,
+//!     `q_norm_w`/`k_norm_w`, `mhc_alpha_w`/`mhc_beta_w`/`mhc_radius_w`).
+//!     Each points either into the payload of a `MudTensor` validated at load
+//!     (R-30/R-31) or into an owned `Box<[f32]>` shadow of the layer, so the
+//!     pointee outlives the forward call. Null pointers are checked before
+//!     use, every index stays below the model dims passed to the kernel
+//!     (`hidden`/`ffn_mid`/`head_d`/`n_out`/`n_in`), and the kernels receive
+//!     element counts equal to those dims.
+//! (b) Raw views / pointer arithmetic over caller-owned `SlimeWorkspace`
+//!     buffers (`registers`, `gemv_accum`, `norm_i8`, `q_f32`/`k_f32`/`v_f32`,
+//!     `o_act_f32`/`o_act_i8`, `ffn_up_f32`/`ffn_gate_f32`/`ffn_mid_f32`/
+//!     `ffn_out_f32`, `scores`, `hca_kv_cache`, `jepa_z`, `slimex_*_scratch`,
+//!     `csa_*_scratch`). The workspace is owned by the caller for the whole
+//!     forward and each buffer is allocated for the model dims at
+//!     construction; views (`as_ptr()`/`as_mut_ptr()`, `.add(offset)`,
+//!     `[..n]`) stay within `0..buffer.len()`. The two in-place mHC residual
+//!     sites (aliasing views of `registers`) carry their own `// SAFETY:` note.
+//! (c) AVX2/ASM kernel calls (`ezop::*`, `asm::*`,
+//!     `forge_autograd::avx_math::*`, `csa_indexer::*`). The only supported
+//!     target is x86_64 with AVX2/FMA (i7-1260P) and the crate is built with
+//!     `-C target-cpu=native` (`.cargo/config.toml`, `mud.sh`), so those
+//!     instructions are guaranteed for this binary; dispatching sites
+//!     additionally check `is_x86_feature_detected!`. Buffer/length arguments
+//!     are exactly the (a)/(b) extents.
+//!
+//! Sites outside (a)-(c) (`unsafe impl Send/Sync`, `ExpertBus::forward`, the
+//! CSA `Vec::from_raw_parts` views) carry their own adjacent `// SAFETY:`
+//! comments.
+
 use crate::mud::slime::{SlimeRegister, SlimeWorkspace};
 use crate::mud::slime_jepa::jepa_stabilizer;
 use crate::mud::ezop;
@@ -215,6 +250,12 @@ pub struct SlimeLayer {
 // Send+Sync impl allows moving the layer across threads (e.g. PCorePool
 // worker) but does not introduce data races because every pointer is const
 // and the Mutex is sound. Therefore Send+Sync is sound.
+// SAFETY: see the SEC-H3 note above — every pointer field is `*const` and its
+// pointee is kept alive by the parent `MudFile` (or is a layer-owned shadow)
+// for the layer's lifetime; the only interior mutability is the
+// `parking_lot::Mutex` (Send+Sync when its contents are), and no safe API
+// hands out `&mut` to the weight data through `&SlimeLayer`, so moving or
+// sharing the layer across threads cannot cause a data race.
 unsafe impl Send for SlimeLayer {}
 unsafe impl Sync for SlimeLayer {}
 
@@ -1058,6 +1099,9 @@ pub fn evaluate_slime_block_moe(
     //     `evaluate_slime_block_moe` would overlap, but that never
     //     happens — the workspace is owned by the caller).
     //   - We never allow the Vecs to grow beyond their workspace cap.
+    // SAFETY: `ws.csa_blocks_scratch` is caller-owned workspace storage that
+    // outlives this borrow and is not aliased while these Vec views exist
+    // (see contract above); the Vec is rebuilt over the same allocation.
     let mut csa_blocks: Vec<usize> = unsafe {
         Vec::from_raw_parts(
             ws.csa_blocks_scratch.as_mut_ptr(),
@@ -1067,6 +1111,9 @@ pub fn evaluate_slime_block_moe(
     };
     let scratch_cap = ws.csa_index_scratch.len().min(hca_max_pos);
     let mut csa_index_scratch: Vec<f32> = if csa_active {
+        // SAFETY: same workspace-view contract as `csa_blocks` above;
+        // `scratch_cap` is min(capacity, hca_max_pos), so any push stays
+        // within the allocation (never reallocated).
         unsafe { Vec::from_raw_parts(ws.csa_index_scratch.as_mut_ptr(), 0, scratch_cap) }
     } else {
         Vec::new()

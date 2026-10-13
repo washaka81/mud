@@ -138,6 +138,11 @@ impl Clone for MudTensor {
             cloned.data_ptr = owned.as_ptr();
         } else if let Some(mmap) = &cloned.mmap {
             let data_start = (cloned.data_base + cloned.offset + 31) & !31;
+            // SAFETY: `data_base`/`offset` are the values validated at load
+            // (R-30/R-31 check `data_base + offset + expected_bytes <=
+            // mmap.len()`), and every writer pads each tensor start to 32 B
+            // (see `MudFile::save`), so this re-alignment is a no-op and the
+            // pointer stays inside the mapping; `cloned.mmap` keeps it alive.
             cloned.data_ptr = unsafe { mmap.as_ptr().add(data_start) };
         }
         cloned
@@ -459,6 +464,8 @@ impl MudFile {
         }
 
         let verify_file = std::fs::File::open(path)?;
+        // SAFETY: `verify_file` is a live read-only handle; the mapping is
+        // dropped before the function returns (only its length/magic are read).
         let verify_mmap = unsafe { Mmap::map(&verify_file)? };
         if verify_mmap.len() != final_size as usize {
             anyhow::bail!(
@@ -994,6 +1001,9 @@ impl MudFile {
                     let parity = if let Some(owned) = &tensor.owned_data {
                         ecc_compute_buf(as_u32_slice_le(owned))
                     } else if tensor.mmap.is_some() {
+                        // SAFETY: this tensor is mmap-backed, so `data_ptr`
+                        // points into the load-validated mmap extent (R-30/31)
+                        // covering `u32_count * 4` bytes for this shape.
                         let slice =
                             unsafe { std::slice::from_raw_parts(tensor.data_ptr, u32_count * 4) };
                         ecc_compute_buf(bytemuck::try_cast_slice(slice).unwrap_or(&[]))

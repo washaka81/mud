@@ -125,6 +125,11 @@ pub fn aligned_u8_vec(u32_count: usize) -> Vec<u8> {
     let len = u32_vec.len() * 4;
     let cap = u32_vec.capacity() * 4;
     std::mem::forget(u32_vec);
+    // SAFETY: `ptr`/`len`/`cap` describe the exact allocation just leaked
+    // from `u32_vec` (cap scaled from u32 elements to bytes, no overflow —
+    // capacity is a small `u32_count`). Rebuilding a `Vec<u8>` over the same
+    // allocation is sound; alignment is >= 4 because the allocation was a
+    // `Vec<u32>`.
     unsafe { Vec::from_raw_parts(ptr, len, cap) }
 }
 

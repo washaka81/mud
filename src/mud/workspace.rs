@@ -197,6 +197,10 @@ impl<T> std::ops::DerefMut for AlignedArray<T> {
 impl<T> Drop for AlignedArray<T> {
     fn drop(&mut self) {
         if self.len > 0 && !self.ptr.is_null() {
+            // SAFETY: `ptr` came from `alloc_zeroed` in `new` with this exact
+            // `layout` (stored alongside it), `len > 0` rules out the dangling
+            // zero-sized pointer, and `&mut self` guarantees this is the only
+            // live handle, so the deallocation is unique and matches the layout.
             unsafe {
                 std::alloc::dealloc(self.ptr as *mut u8, self.layout);
             }
@@ -227,6 +231,9 @@ impl<T: std::fmt::Debug> std::fmt::Debug for AlignedArray<T> {
 // `ptr` field is only accessed through `as_slice`/`as_mut_slice` which take
 // `&self`/`&mut self` respectively, enforcing the aliasing rules at the type
 // level. Therefore the conditional Send+Sync impls are sound.
+// SAFETY: summary of the rationale above — the allocation is uniquely owned
+// and freed exactly once with its `Layout`; `T: Send`/`T: Sync` make the owned
+// buffer safe to move/share, and all aliasing goes through `&self`/`&mut self`.
 unsafe impl<T: Send> Send for AlignedArray<T> {}
 unsafe impl<T: Sync> Sync for AlignedArray<T> {}
 

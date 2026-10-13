@@ -42,6 +42,12 @@ pub fn load_emb_row_into(
     if token_id >= rows || out.len() < cols {
         return;
     }
+    // SAFETY: `token_id < rows` and `out.len() >= cols` (checked above).
+    // `emb_t.data_ptr` is the tensor's load-validated backing (R-30/R-31:
+    // `rows*cols` elements; the Float32 `prq_scale` backing holds `rows` f32),
+    // so the ternary row (`token_id*u32s`, `u32s = cols.div_ceil(8)`) and the
+    // F32 row (`token_id*cols`) are in-bounds. `dequantize_ternary_row` asserts
+    // `out.len() >= n`; the `sc` read is guarded by `token_id < rows`.
     unsafe {
         if emb_t.t_type == MudTensorType::Ternary2Bit {
             let u32s = cols.div_ceil(8);

@@ -16,6 +16,20 @@
 //! ## Shader Loading
 //! SPIR-V is pre-compiled at build time and embedded via `include_bytes!`.
 //! All shaders are the same `.comp` files — only the loader changes.
+//!
+//! ## SAFETY contract (R-36)
+//! All `unsafe` here is Vulkan FFI through `ash` 0.38. Handles (`Entry`,
+//! `Instance`, `PhysicalDevice`, `Device`, `Queue`, `CommandPool`,
+//! `DescriptorPool`, `Pipeline`/`Layout`/`SetLayout`, `Buffer`, `Fence`,
+//! `ShaderModule`) are created, owned and destroyed by `AshContext`,
+//! `AshBuffer` and `DoubleFrame`; every call passes a handle together with the
+//! instance/device/pool that created it. Command recording uses command buffers
+//! acquired from `DoubleFrame` and is always fenced (`submit_and_wait`,
+//! `wait_all`, `device_wait_idle`) before readback or destruction. Raw-pointer
+//! use is limited to host-visible mapped allocations, embedded SPIR-V bytes and
+//! stack push-constant structs. Sites whose invariant is not evident at the
+//! call site carry an adjacent `// SAFETY:` comment, and every public
+//! `unsafe fn` documents its own `# Safety` preconditions.
 
 use ash::vk;
 use gpu_allocator::vulkan::{
@@ -83,6 +97,9 @@ pub struct AshBuffer {
 // address, and reads/writes through it are caller-gated by `unsafe fn`
 // signatures. Therefore Send+Sync is sound: the buffer can be moved between
 // threads, and `&AshBuffer` does not allow creating aliased mutable references.
+// SAFETY: summary of the block above — the VkBuffer handle + allocation are
+// uniquely owned, there is no interior mutability, and `mapped_ptr` is only
+// dereferenced inside `unsafe fn`s whose callers uphold bounds/synchronization.
 unsafe impl Send for AshBuffer {}
 unsafe impl Sync for AshBuffer {}
 
@@ -174,6 +191,8 @@ impl DoubleFrame {
     }
 
     /// Block until both slots are idle (full GPU drain).
+    /// # SAFETY: `device` must be the one that created `self.fences`; waiting
+    /// does not mutate the fences, so no further ordering guarantees are needed.
     unsafe fn wait_all(&self, device: &ash::Device) -> anyhow::Result<()> {
         device.wait_for_fences(&self.fences, true, u64::MAX)?;
         Ok(())
@@ -183,6 +202,8 @@ impl DoubleFrame {
         self.slot
     }
 
+    /// # SAFETY: `device` owns `self.fences`; no command buffer referencing
+    /// them is still in flight (callers destroy after `wait_all`/idle).
     unsafe fn destroy(&self, device: &ash::Device) {
         for &f in &self.fences {
             device.destroy_fence(f, None);
@@ -281,6 +302,8 @@ impl AshContext {
             .ok_or_else(|| anyhow::anyhow!("No hay ningún dispositivo Vulkan disponible"))?;
 
         // ── Queue family: pick the first COMPUTE queue ─────────────────────
+        // SAFETY: `instance`/`physical` are live handles; the call only reads
+        // properties (never frees them), and the iterator yields valid indices.
         let queue_family = unsafe {
             instance
                 .get_physical_device_queue_family_properties(physical)
@@ -362,6 +385,9 @@ impl AshContext {
         Self::create_pipeline(&device, spv::ELEMENTWISE, 3, &[push_range(16)])?;
 
         // ── L-05: dual command buffers + dual fences ─────────────────────────
+        // SAFETY: `device` is live and `cmd_pool` was created from it;
+        // `DoubleFrame::new` only allocates fences/command buffers from these
+        // handles and stores them together for later fenced use.
         let frame = unsafe { DoubleFrame::new(&device, cmd_pool)? };
 
         Ok(Self {
@@ -406,6 +432,9 @@ impl AshContext {
         // 1. Load SPIR-V module safely by copying to an aligned Vec<u32>
         // include_bytes! gives &[u8] with 1-byte alignment, so we can't just cast it.
         let mut spv_u32 = vec![0u32; spirv.len() / 4];
+        // SAFETY: `spirv.len()` is a multiple of 4 (embedded `.spv` blobs), so
+        // `spv_u32` holds exactly `spirv.len()` bytes; `spv_u32` is u32-aligned
+        // (≥ u8 alignment) and the two allocations are distinct (no overlap).
         unsafe {
             std::ptr::copy_nonoverlapping(
                 spirv.as_ptr(),
@@ -414,6 +443,8 @@ impl AshContext {
             );
         }
         let shader_info = vk::ShaderModuleCreateInfo::default().code(&spv_u32);
+        // SAFETY: `device` is valid; `spv_u32` outlives the call (ash copies the
+        // words into the module); `shader_info` is stack-allocated.
         let shader_module = unsafe { device.create_shader_module(&shader_info, None)? };
 
         // 2. Descriptor set layout: one STORAGE_BUFFER binding per n_bindings
@@ -447,6 +478,9 @@ impl AshContext {
         let pipe_info = vk::ComputePipelineCreateInfo::default()
             .stage(stage)
             .layout(layout);
+        // SAFETY: `device` is live; `stage.module` was just created and
+        // `layout` is a live VkPipelineLayout; the create-info slice is
+        // stack-allocated.
         let handle = unsafe {
             device
                 .create_compute_pipelines(vk::PipelineCache::null(), &[pipe_info], None)
@@ -560,6 +594,12 @@ impl AshContext {
             }
         }
         if let Some(old) = self.buffer_cache.remove(name) {
+            // SAFETY: `old` was removed from the cache under `&mut self`, so no
+            // new submit can acquire it. Only synchronous dispatch paths resize
+            // these transient host buffers (their command buffers are fenced by
+            // `submit_and_wait`); the L-05 async submits reference only
+            // optimizer buffers created via `alloc_host_visible`, never the
+            // resizable ones, so no in-flight work uses the destroyed handle.
             unsafe {
                 self.device.destroy_buffer(old.handle, None);
                 if let Some(alloc) = self.allocator.as_mut() {
@@ -1652,9 +1692,16 @@ impl AshContext {
                 single_scale: 0,
                 scale: 1.0,
             };
+            // SAFETY: `pc` is a live initialized stack struct; reinterpreting it
+            // as `[u8; size_of_val]` requires only u8 alignment (satisfied) and
+            // the slice borrows `pc` for the duration of the push-constants
+            // call, which copies it synchronously.
             let pc_bytes = unsafe {
                 std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of_val(&pc))
             };
+            // SAFETY: `cmd` is recording (acquired from the owning pool);
+            // `pipe.layout` corresponds to the pipeline bound by the caller;
+            // `pc_bytes` points at the live `pc` above.
             unsafe {
                 self.device.cmd_push_constants(
                     cmd,
@@ -2183,18 +2230,25 @@ pub fn probe_gpu() -> (bool, String) {
     if use_vlk == "0" || use_vlk.eq_ignore_ascii_case("false") {
         return (false, "disabled (MUD_USE_VULKAN=0)".to_string());
     }
+    // SAFETY: loading the system Vulkan loader reads no process state; `load`
+    // returns `Err` when `libvulkan.so` is absent (handled below).
     let entry = match unsafe { ash::Entry::load() } {
         Ok(e) => e,
         Err(_) => return (false, "no libvulkan loader".to_string()),
     };
     let app_info = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_2);
     let instance_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+    // SAFETY: `entry` is live; `instance_info` (and the app info it points to)
+    // is stack-allocated and outlives the call, which copies the create info.
     let instance = match unsafe { entry.create_instance(&instance_info, None) } {
         Ok(i) => i,
         Err(_) => return (false, "no Vulkan instance".to_string()),
     };
     let chosen = (|| {
+        // SAFETY: `instance` is live; the returned device list is owned by ash.
         let physicals = unsafe { instance.enumerate_physical_devices() }.ok()?;
+        // SAFETY: `instance` is live and every `pd` came from it; the callback
+        // only reads properties.
         let physical = physicals.into_iter().min_by_key(|&pd| unsafe {
             match instance.get_physical_device_properties(pd).device_type {
                 vk::PhysicalDeviceType::DISCRETE_GPU => 0u32,
@@ -2204,6 +2258,7 @@ pub fn probe_gpu() -> (bool, String) {
                 _ => 4,
             }
         })?;
+        // SAFETY: `instance`/`physical` are live; properties are copied by value.
         let props = unsafe { instance.get_physical_device_properties(physical) };
         // device_name is a null-terminated i8 array.
         let name = {
@@ -2222,6 +2277,8 @@ pub fn probe_gpu() -> (bool, String) {
             vk::PhysicalDeviceType::CPU => "cpu",
             _ => "other",
         };
+        // SAFETY: `instance`/`physical` are live; queue-family properties are
+        // read-only and the iterator is bounds-checked by ash/vk.
         let has_compute = unsafe {
             instance
                 .get_physical_device_queue_family_properties(physical)
@@ -2230,6 +2287,8 @@ pub fn probe_gpu() -> (bool, String) {
         };
         Some((has_compute, format!("{name} [{kind}] (ash 0.38)")))
     })();
+    // SAFETY: `instance` was created above and is unused afterwards; no child
+    // device was created, so destroying it is the only cleanup needed.
     unsafe { instance.destroy_instance(None) };
     // Defense-in-depth: the Intel Iris Xe (ADL GT2) UMA driver SIGSEGVs inside
     // `submit_and_wait` when dispatching the QKV GEMV compute shader (uncatchable as

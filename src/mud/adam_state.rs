@@ -117,6 +117,9 @@ impl AdamState {
                 // Reuse: write in-place, truncate to fit
                 let reuse_len = buf.len().min(n);
                 // Raw pointer loop — compiler auto-vectorizes f32_to_bf16 (bits >> 16).
+                // SAFETY: `reuse_len = min(buf.len(), n)`; `weights` is valid for
+                // `n` reads and `buf` for `reuse_len` writes, and the two Vecs
+                // are distinct allocations, so no OOB access or aliasing.
                 unsafe {
                     let wp = weights.as_ptr();
                     let op = buf.as_mut_ptr();
@@ -133,6 +136,10 @@ impl AdamState {
             None => {
                 // P-01: pre-allocate with capacity, raw pointer fill (no iterator map/collect overhead).
                 let mut buf: Vec<u16> = Vec::with_capacity(n);
+                // SAFETY: capacity is exactly `n`; `set_len(n)` is sound because
+                // the loop initializes every element before any read (u16 has no
+                // Drop), and `weights`/`buf` are distinct allocations valid for
+                // `n` reads/writes.
                 unsafe {
                     let wp = weights.as_ptr();
                     buf.set_len(n);
@@ -207,6 +214,10 @@ pub fn adam_step(
     let (lr_bc1, inv_bc2) = adam_bias_scalars(state.step, lr, ADAM_B1, ADAM_B2);
 
     if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        // SAFETY: AVX2+FMA verified at runtime on the line above; `n` is the
+        // minimum of all four slice lengths, so `w`/`g`/`state.m`/`state.v`
+        // are each valid for `n` elements and the ASM kernel reads/writes
+        // exactly those.
         unsafe {
             crate::asm::adam_step_avx2(
                 n,
@@ -258,6 +269,9 @@ fn adam_step_scalar(
     let mp = m.as_mut_ptr();
     let vp = v.as_mut_ptr();
     for i in 0..n {
+        // SAFETY: `wp`/`gp`/`mp`/`vp` come from slices of length `n` (caller
+        // passes equal-length `[..n]` reborrows), and `i < n`, so every
+        // load/store is in-bounds; `w` and `m`/`v` are separate `&mut`.
         unsafe {
             let mut gi = *gp.add(i);
             if !gi.is_finite() {
@@ -314,6 +328,9 @@ pub unsafe fn peak_abs_avx2(g: *const f32, n: usize) -> f32 {
 }
 
 /// Scalar fallback for peak_abs (non-x86_64).
+///
+/// # Safety
+/// Same contract as the x86_64 kernel above: `g` must point to `n` valid f32.
 #[cfg(not(target_arch = "x86_64"))]
 #[inline]
 pub unsafe fn peak_abs_avx2(g: *const f32, n: usize) -> f32 {
@@ -443,13 +460,19 @@ pub fn sparse_adam_step(
     let use_avx = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
     for r in 0..rows {
         let start = r * cols;
+        // SAFETY: `r < rows`, `n == rows * cols`, and the length guard at the
+        // top returned unless `g.len() >= n`, so `start < g.len()` and the
+        // pointer offset stays in-bounds.
         let row_ptr = unsafe { gp.add(start) };
         // Row max |g| (skip non-finite)
         let max_abs = if use_avx {
+            // SAFETY: `use_avx` was set from `is_x86_feature_detected!("avx2")`
+            // + `("fma")` above; `row_ptr` is valid for `cols` f32 (see above).
             unsafe { peak_abs_avx2(row_ptr, cols) }
         } else {
             let mut m = 0.0f32;
             for c in start..start + cols {
+                // SAFETY: `start + cols <= rows * cols == n <= g.len()`.
                 unsafe {
                     let gi = *gp.add(c);
                     if gi.is_finite() {
@@ -469,6 +492,8 @@ pub fn sparse_adam_step(
         if weight_decay.is_finite() && weight_decay != 0.0 && lr.is_finite() && lr != 0.0 {
             let f = (1.0 - lr * weight_decay).clamp(0.0, 1.0);
             if (f - 1.0).abs() > f32::EPSILON {
+                // SAFETY: `start + c < rows * cols == n <= w.len()`; `wp`
+                // comes from the unique `&mut w`, so writes are exclusive.
                 unsafe {
                     for c in 0..cols {
                         let p = wp.add(start + c);
@@ -480,6 +505,11 @@ pub fn sparse_adam_step(
             }
         }
         if use_avx {
+            // SAFETY: `use_avx` runtime-checked AVX2+FMA; the guard at the top
+            // validates `w`/`g`/`state.m` for `rows * cols` (and `state.v` is
+            // kept in lockstep by `AdamState::zeros`/`for_strategy`), so the
+            // three `start`-offset row pointers cover `cols` elements and the
+            // four buffers are distinct allocations.
             unsafe {
                 let row_wp = wp.add(start);
                 let row_mp = mp.add(start);
@@ -491,6 +521,8 @@ pub fn sparse_adam_step(
             }
         } else {
             for c in 0..cols {
+                // SAFETY: `start + c < rows * cols == n` and all four slices
+                // are >= `n` (see the AVX2 branch above).
                 unsafe {
                     let mut gi = *gp.add(start + c);
                     if !gi.is_finite() {
@@ -516,6 +548,9 @@ pub fn scale_grad_by_tokens(g: &mut [f32], num_tokens: f32) {
     let inv = 1.0 / ntok;
     #[cfg(target_arch = "x86_64")]
     if is_x86_feature_detected!("avx2") && !g.is_empty() {
+        // SAFETY: AVX2 runtime-checked above; `gp`/`n` come from `g` itself,
+        // 8-wide unaligned loads/stores stay `<= n`, and the remainder uses
+        // `get_unchecked(_mut)` only for `j < n`.
         unsafe {
             use std::arch::x86_64::*;
             let gp = g.as_mut_ptr();

@@ -248,7 +248,7 @@ flowchart LR
 | R-33 | ECC parity bounds | 🟡 | ✅ 2026-10-13 | `mod.rs::ecc_verify_all` ahora `-> Result`: `need=ceil(prod(base)/8)` checked; owned exige `len>=need`, mmap usa `.get()` (offset+end validados); 2º loop con checked (sin `product()` wrap); `load_verified` propaga con `?`. Tests R-33 ×2 (corta→Err R-33, exacta→Ok). Antes: owned truncaba silencioso, mmap panickeaba/over-leía. 500/0/2; clippy 0. |
 | R-34 | worm embedding row | 🟡 | ✅ 2026-10-13 | `worm.rs::get_embedding_row`: exige `Float32` + shape rank-2, dims del shape (caller `hidden` debe coincidir), `checked_mul` + `.get()` + guard de `owned.len()`. Antes: ternario reinterpretado como f32 con extent `vocab*hidden` (~8× over-read). Tests R-34 ×4 (ok/ternario-None/mismatch-None/OOB-None). 500/0/2. |
 | R-35 | GEMV resto 1..7 + stride | 🟡 | ✅ 2026-10-13 | `asm/mod.rs::ternary_gemv_tail` (escalar 1..7, nibbles LSB-first = ASM) cableada en los 3 wrappers (`n_main=n&!7` al ASM + tail); strides CPU `/8`→`div_ceil(8)` (`gemv_gpu.rs` ×3 upload/row/QKV, `slime_backward.rs` stride+doc). GPU intacto ( Ash bails si `!multiple_of(8)`). Test R-35 (15×n ∈ 1..103, 1/4/8 filas vs escalar; FALLA antes ✅). `cargo test --lib --release --features proptest` 507/0/2; clippy 0. NOTA: `cargo test --all-targets --release` bloqueado por causas pre-existentes (panic=abort vs tests/, colisión lib/bin, R-62). |
-| R-36 | SAFETY comments + check | 🟠 | TODO | |
+| R-36 | SAFETY comments + check | 🟠 | ✅ 2026-10-13 | `./mud.sh unsafe-audit` (awk embebido en `mud.sh`, sin Python — P-07) → `OK - 0 sin comentario (R-36)` sobre **532 `unsafe` productivos** (excluye tests/`#[cfg(test)]`/`src/bin`); ops de alto riesgo (from_raw_parts/Mmap::map/transmute/alloc/…) con comentario **adyacente** (38 sitios); contratos `//! SAFETY:` de módulo en kernels (ezop, adam_state, slime_forward/backward, ash_backend, ash_qat_dispatcher, sandbox, rlvr) + per-site en checkpoint/inference/main/train_step/session/…. Gate añadido a `mud.sh ci` y `.github/workflows/ci.yml`. Solo comentarios (0 líneas de código; 910+/2−). Clippy 0; `cargo test --lib --release --features proptest` 507/0/2. **Hallazgos R-36 (reportados, sin fix — fuera de alcance):** (1) `fenwick.rs::build_from_linear(&[])` lee 1 elem OOB vía API segura (`n = max(1)`); (2) `sparse_adam_step` no valida `state.v` (mismo lockstep que m); (3) `slime_jepa.rs` llama el kernel con `out_z == z_ptr` (viola su doc); (4) `session/debate/train_step` reinterpretan `prq_scale`/`output_norm` como f32 sin check `t_type`; (5) `debate_trainer.rs` check AVX2 sin `bmi1` para `find_kth_avx2`. |
 | R-37 | RCE feature-gated documentado | 🟠 | TODO | |
 | R-38 | symlink escape | 🟡 | TODO | |
 | R-40 | LM head ternario batched | 🔴 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 23/55 (R-01…R-06 + R-10…R-20 + R-30…R-35) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30…R-35 ✅; R-36/R-37/R-38 TODO).
+**Estado global:** 24/55 (R-01…R-06 + R-10…R-20 + R-30…R-36) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30…R-36 ✅; R-37/R-38 TODO).
 
 ---
 

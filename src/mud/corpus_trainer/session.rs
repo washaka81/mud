@@ -332,6 +332,13 @@ impl MudCorpusTrainer {
                 Vec::new()
             } else {
                 let mut data = vec![0.0f32; elements];
+                // SAFETY: `elements = shape[0]*shape[1]` and `data` has exactly
+                // `elements` elements. `emb_tensor.data_ptr` is the tensor's
+                // load-validated backing (R-30/R-31; cols multiple of 8 per
+                // P-13), so each ternary row read (`r*u32s_per_row`) and the
+                // Float32 `prq_scale` read (`r < rows`) are in-bounds;
+                // `dequantize_ternary_row` asserts `out.len() >= n` and the F32
+                // branch copies `elements` from a backing of that size.
                 unsafe {
                     if emb_tensor.t_type == MudTensorType::Ternary2Bit {
                         let rows = emb_tensor.shape[0];
@@ -487,6 +494,9 @@ impl MudCorpusTrainer {
                 } else {
                     let t = core.tensors.get(&format!("{prefix}mhc_alpha")).unwrap();
                     let n = t.shape.iter().product::<usize>().max(1);
+                    // SAFETY: `raw` (from `tc()`) is non-null and points into
+                    // this Float32 tensor's backing (owned_data or validated
+                    // mmap); `n` = its shape product, equal to its element count.
                     let buf: Vec<f32> =
                         unsafe { std::slice::from_raw_parts(raw, n) }.to_vec();
                     let boxed = buf.into_boxed_slice();
@@ -500,6 +510,9 @@ impl MudCorpusTrainer {
                 } else {
                     let t = core.tensors.get(&format!("{prefix}mhc_beta")).unwrap();
                     let n = t.shape.iter().product::<usize>().max(1);
+                    // SAFETY: same contract as mhc_alpha above — non-null
+                    // pointer into this Float32 tensor's backing, n = its
+                    // element count.
                     let buf: Vec<f32> =
                         unsafe { std::slice::from_raw_parts(raw, n) }.to_vec();
                     let boxed = buf.into_boxed_slice();
@@ -613,6 +626,13 @@ impl MudCorpusTrainer {
             };
 
             // Inflate ternary → FP32 shadow (ELUT: 8 weights / u32 → stride cols/8)
+            // SAFETY: `inf` returns early on empty `dest`; each `dest` shadow is
+            // exactly `rows*cols` (allocated in `SlimeLayerShadowF32::new`).
+            // `t.data_ptr`/`scale_t.data_ptr` are load-validated tensor backings
+            // (R-30/R-31); `cols` is a multiple of 8 (P-13) so the row stride
+            // `cols.div_ceil(8)` matches the packer and the backing holds
+            // `rows*cols` elements; `prq_scale` is Float32 (converter contract)
+            // with `rows` elements.
             unsafe {
                 let p = format!("blk.{}.", blk);
                 let inf = |name: &str, dest: &mut [f32]| {
@@ -657,6 +677,13 @@ impl MudCorpusTrainer {
             {
                 let layer = layers.last_mut().expect("layer just pushed");
                 let shadow = shadow_layers.last_mut().expect("shadow just pushed");
+                // SAFETY: `shadow.attn_norm_w`/`ffn_norm_w` are `hidden`-element
+                // Vecs (SlimeLayerShadowF32::new), and the non-null layer
+                // pointers address Float32 norm tensors whose shape is
+                // `[hidden]` (R-30), so copying `hidden` f32 is in-bounds on
+                // both sides. The Vec is moved into a Box owned by `layer`
+                // before `layer.attn_norm_w` is repointed at it, so the new
+                // pointer stays valid for the layer's lifetime.
                 unsafe {
                     if !layer.attn_norm_w.is_null() {
                         std::ptr::copy_nonoverlapping(
@@ -1277,6 +1304,10 @@ impl MudCorpusTrainer {
                     file_tokens.push(prefetch_eos);
 
                     if !file_tokens.is_empty() {
+                        // SAFETY: `file_tokens` is a live `Vec<u32>`; its
+                        // `len()*4` bytes are in-bounds as `u8` (alignment 1)
+                        // and `writer.write_all` only reads the slice, which
+                        // does not outlive this statement.
                         let bytes = unsafe {
                             std::slice::from_raw_parts(
                                 file_tokens.as_ptr() as *const u8,
@@ -1317,6 +1348,10 @@ impl MudCorpusTrainer {
 
             let global_file =
                 std::fs::File::open(&global_bin_path).expect("Failed to open global corpus file");
+            // SAFETY: `Mmap::map` requires the file to stay unmodified while
+            // mapped; `global_file` is a read-only handle to the AOT corpus
+            // `.bin` that was just written/renamed by this same thread and is
+            // never mutated again, so the mapping stays stable for its scope.
             let mmap = unsafe {
                 memmap2::MmapOptions::new()
                     .map(&global_file)
@@ -1387,6 +1422,13 @@ impl MudCorpusTrainer {
                     }
                     let chunk_bytes = &token_bytes[byte_start..byte_end];
 
+                    // SAFETY: `chunk_bytes = &token_bytes[byte_start..byte_end]`
+                    // with `byte_end <= token_bytes.len()` (checked above);
+                    // `byte_start = start_idx*4` keeps the pointer 4-byte
+                    // aligned (token_bytes begins at the mmap + 16-byte header,
+                    // and the mmap base is page-aligned), and
+                    // `chunk_len == (byte_end-byte_start)/4` u32s fit the slice.
+                    // `.to_vec()` copies before the mmap borrow ends.
                     let chunk_tokens = unsafe {
                         std::slice::from_raw_parts(chunk_bytes.as_ptr() as *const u32, chunk_len)
                     }
@@ -1848,6 +1890,11 @@ impl MudCorpusTrainer {
                 PrefetchItem::EndOfEpoch { epoch } => {
                     if let Some(vk_qat) = vk_qat_storage.as_mut() {
                         // D4: drain_all flushes pending readbacks + waits GPU idle
+                        // SAFETY: `vk_qat` is `Some` (checked), so the ash
+                        // dispatcher owns a live Vulkan context/buffers for this
+                        // session; `pipeline_overlap`'s RefCell is only touched
+                        // on this single driver thread and is not borrowed here.
+                        // drain_all/sync_all merely flush queued GPU work.
                         unsafe {
                             if crate::mud::ash_qat_dispatcher::pipeline_overlap_enabled() {
                                 let _ = self.pipeline_overlap.borrow_mut().drain_all(vk_qat);
@@ -1881,6 +1928,8 @@ impl MudCorpusTrainer {
         // Flush any remaining ops at the very end
         if let Some(vk_qat) = vk_qat_storage.as_mut() {
             // D4: drain_all flushes pending readbacks + waits GPU idle
+            // SAFETY: same contract as the epoch-end drain above — live
+            // dispatcher/context, single-threaded RefCell access.
             unsafe {
                 if crate::mud::ash_qat_dispatcher::pipeline_overlap_enabled() {
                     let _ = self.pipeline_overlap.borrow_mut().drain_all(vk_qat);

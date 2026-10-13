@@ -48,6 +48,11 @@ pub fn gauss_mul_batch_avx2(
     let mut i = 0;
     // AVX2 path: process 8 elements at once
     while i + 8 <= n {
+        // SAFETY: the loop bound guarantees the 8-element window `i..i+8` is
+        // within `n`; the six slices are the caller's, each documented to hold
+        // `n` elements (see `# Safety` above), with `y_re`/`y_im` the only
+        // mutable outputs. The kernel is AVX2-only: AVX2 is enabled crate-wide
+        // by the native build (no per-call probe at this site).
         unsafe {
             crate::asm::cmud_gauss_mul_batch_avx2(
                 x_re.as_ptr().add(i),
@@ -88,6 +93,8 @@ pub fn wave_collapse_batch_avx2(re: &[f32], im: &[f32], out: &mut [f32], n: usiz
     let mut i = 0;
     if is_x86_feature_detected!("avx2") {
         // Constants for vectorized computation — initialized in unsafe block (target_feature)
+        // SAFETY: inside the `avx2` runtime check above; `_mm256_set1_ps` only
+        // builds constant registers and touches no memory.
         let (sign_mask, inf, eps, one) = unsafe {
             (
                 _mm256_set1_ps(-0.0f32),       // 0x80000000 — clears sign bit via vandnps
@@ -98,6 +105,10 @@ pub fn wave_collapse_batch_avx2(re: &[f32], im: &[f32], out: &mut [f32], n: usiz
         };
 
         while i + 8 <= n {
+            // SAFETY: AVX2 runtime-checked above; the loop bound keeps the
+            // 8-wide unaligned loads/stores within `n` for `re`, `im` and
+            // `out` (caller contract: each slice holds `n` elements, and `out`
+            // is disjoint from the inputs in safe callers via `&mut [f32]`).
             unsafe {
                 // Load 8 re and 8 im values
                 let v_re = _mm256_loadu_ps(re.as_ptr().add(i));

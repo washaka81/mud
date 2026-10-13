@@ -511,6 +511,11 @@ impl MudCorpusTrainer {
                 } else {
                     // Lazily initialize shadow from mmap'd data on first use.
                     if backward_ws.output_norm_shadow.is_empty() {
+                        // SAFETY: `mud_w` is non-null (checked above) and points
+                        // to `output_norm.weight`, a Float32 norm tensor by
+                        // converter contract (all norm weights are F32) with
+                        // load-validated backing (R-30/R-31); reading
+                        // `hidden_size` f32 is in-bounds.
                         unsafe {
                             let slice = std::slice::from_raw_parts(mud_w, hidden_size);
                             backward_ws.output_norm_shadow.extend_from_slice(slice);
@@ -647,6 +652,9 @@ impl MudCorpusTrainer {
             let temp_scale = 1.0 / (hidden_size as f32).sqrt();
             for (i, class_logit) in class_logits.iter_mut().enumerate().take(num_classes) {
                 let c_start = i * hidden_size;
+                // SAFETY: both operands are `hidden_size`-long live slices of
+                // `final_x` and `class_embs_flat` (`i < num_classes` keeps
+                // `c_start + hidden_size` within the class buffer).
                 let dot = unsafe {
                     forge_autograd::avx_math::dot_product_avx2(
                         &final_x[..hidden_size],
@@ -659,6 +667,8 @@ impl MudCorpusTrainer {
 
             // Softmax (AVX2 vectorized when num_classes >= 8)
             let max_logit = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && num_classes >= 8 {
+                // SAFETY: `class_logits` holds at least `num_classes` live f32
+                // (`num_classes = 1 + num_neg` within its allocation).
                 unsafe { crate::mud::ezop::max_avx2(class_logits.as_ptr(), num_classes) }
             } else {
                 class_logits[0..num_classes].iter().cloned().fold(f32::NEG_INFINITY, f32::max)
@@ -666,6 +676,9 @@ impl MudCorpusTrainer {
             // P-17: max could be -Inf if all logits are -Inf
             let max_logit = if max_logit.is_finite() { max_logit } else { 0.0 };
             if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && num_classes >= 8 {
+                // SAFETY: `class_logits` and `prob_q` are live buffers with at
+                // least `num_classes` f32 each; the kernels only read/write
+                // `[0, num_classes)`.
                 unsafe {
                     crate::mud::ezop::broadcast_sub_avx2(
                         class_logits.as_mut_ptr(), max_logit, num_classes
@@ -715,6 +728,8 @@ impl MudCorpusTrainer {
             grad_in.fill(0.0); // gradient of x
             for (i, d_l) in d_logits.iter().enumerate().take(num_classes) {
                 let c_start = i * hidden_size;
+                // SAFETY: `grad_in[..hidden_size]` and the `hidden_size`-long
+                // class-emb slice are live disjoint buffers (`i < num_classes`).
                 unsafe {
                     forge_autograd::avx_math::axpy_avx2(
                         &mut grad_in[..hidden_size],
@@ -728,6 +743,8 @@ impl MudCorpusTrainer {
                 let mut sq_sum = 0.0;
                 // AVX2 sum_sq (8 f32/iter via FMA)
                 if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
+                    // SAFETY: `pre_norm_x` is a live buffer of `hidden_size`
+                    // (at least) f32; the kernel reads `[0, hidden_size)`.
                     sq_sum = unsafe { ezop::sum_sq(pre_norm_x.as_ptr(), hidden_size) };
                 } else {
                     for &v in &pre_norm_x {
@@ -739,6 +756,10 @@ impl MudCorpusTrainer {
 
                 // AVX2 dot3: sum_dy_xnorm = sum(grad_in * w * pre_norm_x) * rms_inv
                 let sum_dy_xnorm = if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
+                    // SAFETY: `grad_in` and `pre_norm_x` are live `hidden_size`
+                    // f32 buffers; `output_norm_w` (non-null, checked above)
+                    // points to the `output_norm_shadow` buffer of the same
+                    // length. The kernel reads all three over `[0, hidden_size)`.
                     unsafe {
                         ezop::dot3_fma_avx2(
                             grad_in.as_ptr(),
@@ -750,6 +771,9 @@ impl MudCorpusTrainer {
                 } else {
                     let mut s = 0.0f32;
                     for i in 0..hidden_size {
+                        // SAFETY: `output_norm_w` (non-null, checked above)
+                        // addresses the `hidden_size`-long output_norm shadow;
+                        // `i < hidden_size`.
                         let w = unsafe { *output_norm_w.add(i) };
                         let x_norm = pre_norm_x[i] * rms_inv;
                         s += grad_in[i] * w * x_norm;
@@ -767,6 +791,10 @@ impl MudCorpusTrainer {
                 // AVX2 fused RMSNorm backward: w_grad accumulation + dx computation
                 // in a single pass (8 f32/iter via FMA), with NaN/Inf guard (P-17).
                 if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
+                    // SAFETY: all four pointers reference live `hidden_size`
+                    // f32 buffers (`grad_in`, `pre_norm_x`,
+                    // `output_norm_w_grad`, and the non-null `output_norm_w`
+                    // shadow); the kernel reads/writes only `[0, hidden_size)`.
                     unsafe {
                         ezop::rmsnorm_backward_avx2(
                             grad_in.as_mut_ptr(),
@@ -783,6 +811,9 @@ impl MudCorpusTrainer {
                         let x_norm = pre_norm_x[i] * rms_inv;
                         let g = grad_in[i] * x_norm;
                         backward_ws.output_norm_w_grad[i] += if g.is_finite() { g } else { 0.0 };
+                        // SAFETY: `output_norm_w` (non-null, checked above)
+                        // addresses the `hidden_size`-long output_norm shadow;
+                        // `i < hidden_size`.
                         let w = unsafe { *output_norm_w.add(i) };
                         let dx = (w * rms_inv) * (grad_in[i] - x_norm * mean_dy_xnorm);
                         grad_in[i] = if dx.is_finite() { dx } else { 0.0 };
@@ -846,6 +877,9 @@ impl MudCorpusTrainer {
                     if stp_grad_t.iter().all(|v| v.is_finite()) {
                         // AVX2 add: grad_in[i] += stp_grad_t[i] (8 f32/iter via FMA)
                         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && hidden_size >= 8 {
+                            // SAFETY: `grad_in` and `stp_grad_t` are live
+                            // `hidden_size` f32 buffers; the kernel touches only
+                            // `[0, hidden_size)`.
                             unsafe {
                                 ezop::axpy_avx2(grad_in.as_mut_ptr(), 1.0, stp_grad_t.as_ptr(), hidden_size);
                             }
@@ -871,6 +905,8 @@ impl MudCorpusTrainer {
             if grad_in.iter().all(|v| v.is_finite()) {
                 // AVX2 sum_sq (8 f32/iter via FMA)
                 let norm_sq = if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
+                    // SAFETY: `grad_in` is a live buffer of at least
+                    // `hidden_size` f32; the kernel reads `[0, hidden_size)`.
                     unsafe { ezop::sum_sq(grad_in.as_ptr(), hidden_size) }
                 } else {
                     grad_in.iter().map(|&g| g * g).sum()
@@ -896,6 +932,8 @@ impl MudCorpusTrainer {
                 };
                 // AVX2 scale + NaN guard: grad_in *= clip, non-finite → 0
                 if is_x86_feature_detected!("avx2") && hidden_size >= 8 {
+                    // SAFETY: `grad_in` is a live writable buffer of at least
+                    // `hidden_size` f32; the kernel touches `[0, hidden_size)`.
                     unsafe {
                         ezop::scale_finite_avx2(grad_in.as_mut_ptr(), clip, hidden_size);
                     }
@@ -963,6 +1001,9 @@ impl MudCorpusTrainer {
                     }
                     let target_slice =
                         &mut shadow_emb[input_id * hidden_size..(input_id + 1) * hidden_size];
+                    // SAFETY: `target_slice` is a live `hidden_size`-long slice
+                    // of `shadow_emb` (`input_id` indexes a valid emb row) and
+                    // `grad_in` holds at least `hidden_size` f32.
                     unsafe {
                         forge_autograd::avx_math::axpy_avx2(target_slice, -lr, &grad_in);
                     }
@@ -982,6 +1023,9 @@ impl MudCorpusTrainer {
                 }
                 let target_row =
                     &mut shadow_emb[target_id * hidden_size..(target_id + 1) * hidden_size];
+                // SAFETY: `target_row` is a live `hidden_size`-long slice of
+                // `shadow_emb` and `final_x` was resized to `hidden_size`
+                // (line ~302); `axpy_avx2` reads `b` for `a.len()` elements.
                 unsafe {
                     forge_autograd::avx_math::axpy_avx2(
                         target_row,
@@ -997,6 +1041,9 @@ impl MudCorpusTrainer {
                         neg_clip = 1.0 / (dl.abs() * x_norm).max(1e-8);
                     }
                     let neg_row = &mut shadow_emb[neg_id * hidden_size..(neg_id + 1) * hidden_size];
+                    // SAFETY: `neg_row` is a live `hidden_size`-long slice of
+                    // `shadow_emb` (`neg_id` is a valid negative id) and
+                    // `final_x` is `hidden_size` long.
                     unsafe {
                         forge_autograd::avx_math::axpy_avx2(neg_row, -lr * neg_clip * dl, &final_x);
                     }
@@ -1005,6 +1052,9 @@ impl MudCorpusTrainer {
 
             // EDGE-09: Dispatch Heartbeat to Vulkan to prevent RC6 deep sleep penalty
             if let Some(ref vk) = vk_qat {
+                // SAFETY: `vk` is `Some` (checked), so the ash dispatcher's
+                // Vulkan context is live; heartbeat only submits a trivial
+                // command buffer (caller contract of `dispatch_heartbeat_sync`).
                 let _ = unsafe { vk.dispatch_heartbeat_sync() };
             }
             crate::mud::moe_train::end_step();
@@ -1218,12 +1268,19 @@ impl MudCorpusTrainer {
                 }
                 let alpha_len = grad.mhc_alpha_grad.len();
                 let beta_len = grad.mhc_beta_grad.len();
+                // SAFETY: `mhc_alpha_w` points at the layer-owned
+                // `mhc_alpha_shadow` Box<[f32]>, whose length equals the mHC
+                // tensor's shape product; `mhc_alpha_grad` was allocated with
+                // that same length, so `alpha_len` f32 are in-bounds. The Box is
+                // owned by `layers[l_idx]`, alive for this borrow.
                 let alpha_slice = unsafe {
                     std::slice::from_raw_parts(
                         layers[l_idx].mhc_alpha_w,
                         alpha_len,
                     )
                 };
+                // SAFETY: same contract as `alpha_slice` above — layer-owned
+                // `mhc_beta_shadow` Box of `beta_len` f32, alive here.
                 let beta_slice = unsafe {
                     std::slice::from_raw_parts(
                         layers[l_idx].mhc_beta_w,
@@ -1244,6 +1301,13 @@ impl MudCorpusTrainer {
                 });
             }
 
+            // SAFETY: `vk_qat` is `Some` (this branch), so the dispatcher's
+            // Vulkan context is live. Every `AshTensorStep` in `all_steps`
+            // borrows live shadow/grad Vecs; `vk_readbacks` holds packed/scales
+            // pointers into MudFile backings that stay valid until the deferred
+            // flush at the next chunk start (dispatcher contract); each
+            // `mhc_updates` shadow slice is the layer-owned Box checked in the
+            // loop above, with `elements == shadow.len() == grad.len()`.
             unsafe {
                 if crate::mud::ash_qat_dispatcher::pipeline_overlap_enabled() {
                     // D4: 3-stage overlap (no mHC batching — pipeline doesn't support it)
@@ -1279,6 +1343,11 @@ impl MudCorpusTrainer {
 
             // Read back updated mHC weights to CPU-resident SlimeLayer pointers
             if !mhc_updates.is_empty() {
+                // SAFETY: `sync()` first waits for all GPU work (context is
+                // live — `vk_qat` is `Some`). Each `mhc_*_w` points at the
+                // layer-owned shadow Box (length `alpha_len`/`beta_len` = the
+                // grad lengths); no shared borrow of those buffers is live, so
+                // the mutable slices are the only access and stay in-bounds.
                 unsafe {
                     vk_qat.sync()?;
                     for l_idx in first_train_vk..shadow_layers.len() {
@@ -1393,6 +1462,10 @@ impl MudCorpusTrainer {
                         "down" => elements / hidden_size.max(1),
                         _ => hidden_size,
                     };
+                    // SAFETY: same exclusive-access contract as `shadow_w`
+                    // above — each options entry is processed exactly once in
+                    // this single-threaded layer loop, so the `&mut` to the
+                    // Adam state does not alias any other borrow.
                     let adam = unsafe { (*adam_p).as_mut() };
                     unsafe {
                         apply_optimizer_cpu_step_and_pack(
@@ -1407,6 +1480,11 @@ impl MudCorpusTrainer {
                 // Grads are empty for base models / frozen layers, so this is a no-op then.
                 if !grad.mhc_alpha_grad.is_empty() {
                     let inv_tok = 1.0 / num_tokens.max(1.0);
+                    // SAFETY: both `mhc_*_w` point at layer-owned writable
+                    // `mhc_*_shadow` Boxes whose length equals the respective
+                    // grad Vec length (allocated together at hidden_size), and
+                    // the kernel writes exactly `grad.len()` elements. No other
+                    // borrow of those Boxes is live here.
                     unsafe {
                         mhc_scale_sgd_step(
                             layers[l_idx].mhc_alpha_w as *mut f32,
@@ -1432,6 +1510,12 @@ impl MudCorpusTrainer {
                 // forward-pass weights in-place for the next chunk.
                 if !scales_only && !grad.attn_norm_w_grad.is_empty() {
                     let lr_norm = lr / num_tokens.max(1.0);
+                    // SAFETY: `attn_norm_w`/`ffn_norm_w` point at the
+                    // layer-owned norm shadow Boxes (len `hidden_size`, set
+                    // during session setup) and both grad Vecs have
+                    // `hidden_size` elements, so `sgd_step` writes `[0,
+                    // hidden_size)` of valid writable memory. The subsequent
+                    // `clamp_finite_avx2`/scalar loop touches the same range.
                     unsafe {
                         crate::mud::ezop::sgd_step(
                             layers[l_idx].attn_norm_w as *mut f32,
@@ -1476,6 +1560,10 @@ impl MudCorpusTrainer {
             && !scales_only
         {
             let lr_norm = lr / num_tokens.max(1.0);
+            // SAFETY: `output_norm_shadow` is a live Vec (len `n`, filled at
+            // chunk start) and `output_norm_w_grad` was resized to the same
+            // `hidden_size`; `sgd_step`/`clamp_finite_avx2` read/write exactly
+            // `[0, n)` of both buffers.
             unsafe {
                 let n = backward_ws.output_norm_shadow.len();
                 crate::mud::ezop::sgd_step(
@@ -1507,6 +1595,9 @@ impl MudCorpusTrainer {
             // pretrained output_norm.weight because the shadow was never synced.
             if let Some(core) = _mud.skills.get_mut("core") {
                 if let Some(t) = core.tensors.get_mut("output_norm.weight") {
+                    // SAFETY: `output_norm_shadow` is a live `Vec<f32>`; its
+                    // `len()*4` bytes are in-bounds as `u8` (alignment 1), and
+                    // `write_owned_bytes` copies them before the borrow ends.
                     let bytes: &[u8] = unsafe {
                         std::slice::from_raw_parts(
                             backward_ws.output_norm_shadow.as_ptr() as *const u8,

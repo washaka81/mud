@@ -17,6 +17,10 @@ use crate::mud::constants::EPSILON_FLOOR;
 ///   length. This is enforced at runtime via `assert_eq!` below.
 /// - `grad_out` MUST be uniquely borrowed (no aliasing `&mut` references) for
 ///   the duration of the call, since it is mutated in place.
+// SAFETY: the `# Safety` contract above applies: the caller guarantees AVX2
+// (via the runtime check in `compute_phase_gradients` / the `#[target_feature]`
+// dispatch contract), equal slice lengths (asserted below) and a uniquely
+// borrowed `grad_out`; accesses are unaligned `loadu`/`storeu` within `n`.
 #[target_feature(enable = "avx2")]
 pub unsafe fn compute_phase_gradients_avx2(
     x_ideal: &[f32],
@@ -123,6 +127,9 @@ pub fn compute_phase_gradients(
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 verified at runtime; slice lengths are asserted
+            // equal inside the callee and `grad_out` is the caller's unique
+            // `&mut`, so the aliasing precondition holds.
             return unsafe { compute_phase_gradients_avx2(x_ideal, x_quant, grad_out, lambda) };
         }
     }

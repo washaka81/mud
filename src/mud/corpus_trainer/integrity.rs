@@ -55,6 +55,10 @@ pub fn model_norms_alive(path: &str) -> (bool, String) {
                 continue;
             }
             let n = t.shape.iter().product::<usize>().clamp(1, 64);
+            // SAFETY: `t` is Float32 (checked above) and `data_ptr` is
+            // non-null; `n = min(shape_product, 64)` never exceeds the
+            // tensor's own element count (a loaded 0-element tensor is
+            // impossible — the shape product is >= 1 in practice).
             let slice = unsafe { std::slice::from_raw_parts(t.data_ptr as *const f32, n) };
             let nz = slice.iter().filter(|x| **x != 0.0 && x.is_finite()).count();
             checked += 1;
@@ -195,6 +199,10 @@ pub fn circuit_eval_integrity(path: &str) -> (bool, String) {
                             } else {
                                 continue;
                             };
+                            // SAFETY: `len` is the Float32 element count from
+                            // `f32_len` and `ptr` is this tensor's own backing
+                            // (owned_data, or mmap `data_ptr` validated at load
+                            // by R-30/R-31); the slice stays in-bounds.
                             let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
                             // P-01: sample every 8th element — zero-alloc, fast
                             let sat: usize = slice.iter().step_by(8)
@@ -222,6 +230,9 @@ pub fn circuit_eval_integrity(path: &str) -> (bool, String) {
                         } else {
                             continue;
                         };
+                        // SAFETY: same contract as above — `len` = element
+                        // count (shape product for Float32) and `ptr` is the
+                        // tensor's validated backing storage.
                         let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
                         if let Some(&r) = slice.first() {
                             if r < exp_min * 0.5 || r > exp_max * 4.0 {

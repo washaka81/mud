@@ -392,6 +392,10 @@ pub fn forward_last_hidden_and_head(
         {
             anyhow::bail!("R-30: token_embd.weight owned_data más corto que su shape");
         }
+        // SAFETY: Float32 branch; `emb_elems` is derived from the validated
+        // [vocab,hidden] shape (R-30) and the backing storage (owned_data
+        // length checked above, else the load-validated mmap `data_ptr`)
+        // holds at least `emb_elems` f32.
         let emb_f32_slice =
             unsafe { std::slice::from_raw_parts(emb_data_ptr, emb_elems) };
         emb_f32.copy_from_slice(emb_f32_slice);
@@ -428,12 +432,17 @@ pub fn forward_last_hidden_and_head(
                 "R-30: token_embd.weight bytes {emb_byte_len} != shape {emb_expect}"
             );
         }
+        // SAFETY: `emb_byte_len == emb_expect` was verified above, and the
+        // backing storage (owned_data or load-validated mmap `data_ptr`)
+        // holds exactly that many bytes.
         let emb_packed: &[u8] = unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
         let emb_scales_ptr = emb_scales_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_scales_tensor.data_ptr as *const f32);
+        // SAFETY: prq_scale shape == [emb_vocab] (checked above); its backing
+        // (owned_data or mmap-validated `data_ptr`) holds `emb_vocab` f32.
         let emb_scales: &[f32] = unsafe { std::slice::from_raw_parts(emb_scales_ptr, emb_vocab) };
         slime_backward::unpack_ternary2bit_to_f32(
             emb_packed,
@@ -480,6 +489,9 @@ pub fn forward_last_hidden_and_head(
             {
                 anyhow::bail!("R-30: output.weight owned_data más corto que su shape");
             }
+            // SAFETY: Float32 `output.weight`; `out_elems` from the validated
+            // [vocab,hidden] shape (R-30) and the backing storage (owned_data
+            // length checked above, else mmap-validated `data_ptr`) holds it.
             let out_f32_slice =
                 unsafe { std::slice::from_raw_parts(out_data_ptr, out_elems) };
             out_dq.copy_from_slice(out_f32_slice);
@@ -513,6 +525,8 @@ pub fn forward_last_hidden_and_head(
             if out_byte_len != out_expect {
                 anyhow::bail!("R-30: output.weight bytes {out_byte_len} != shape {out_expect}");
             }
+            // SAFETY: `out_byte_len == out_expect` verified above; backing
+            // storage (owned_data or mmap-validated `data_ptr`) holds it.
             let out_packed: &[u8] =
                 unsafe { std::slice::from_raw_parts(out_packed_ptr, out_byte_len) };
             let out_scales_ptr = out_scales_tensor
@@ -520,6 +534,8 @@ pub fn forward_last_hidden_and_head(
                 .as_ref()
                 .map(|d| d.as_ptr() as *const f32)
                 .unwrap_or(out_scales_tensor.data_ptr as *const f32);
+            // SAFETY: output.prq_scale shape == [out_vocab] (checked above);
+            // its backing holds `out_vocab` f32.
             let out_scales: &[f32] =
                 unsafe { std::slice::from_raw_parts(out_scales_ptr, out_vocab) };
             slime_backward::unpack_ternary2bit_to_f32(
@@ -586,6 +602,8 @@ pub fn forward_last_hidden_and_head(
         .as_ref()
         .map(|d| d.as_ptr())
         .unwrap_or(out_norm_tensor.data_ptr);
+    // SAFETY: output_norm.weight shape == [hidden_size] (checked above); its
+    // backing (owned_data or mmap-validated `data_ptr`) holds `hidden_size` f32.
     let out_norm_slice: &[f32] =
         unsafe { std::slice::from_raw_parts(out_norm_ptr as *const f32, hidden_size) };
 
@@ -690,6 +708,9 @@ pub fn forward_last_hidden_and_head(
         Some(out) => out,
         None => std::mem::take(&mut emb_f32),
     };
+    // SAFETY: LM-head kernel contract — `reg_f32` holds `hidden_size` f32
+    // (filled above), `head_w` is `vocab_size * hidden_size` (owned dequant or
+    // the taken embedding), `logits` has `vocab_size` f32 (R-30 validated dims).
     unsafe {
         asm::lm_head_logits_avx2(
             vocab_size,
@@ -826,6 +847,8 @@ pub fn cmud_audit(mud: &MudFile) -> CmudAudit {
     let tk = crate::model::tokenizer::Tokenizer::from_mud_metadata(&tokens, &merges);
 
     let prev = std::env::var("MUD_CMUD_THINK").ok();
+    // SAFETY: audit path runs single-threaded (CLI); no other thread reads
+    // the environment concurrently while the probe executes.
     unsafe {
         std::env::set_var("MUD_CMUD_THINK", "1");
     }
@@ -878,6 +901,7 @@ pub fn cmud_audit(mud: &MudFile) -> CmudAudit {
     out.token0_dominant = total > 0 && tok0 > total / 2;
     out.think = last_report;
 
+    // SAFETY: same single-threaded audit contract as above (restore).
     match prev {
         Some(v) => unsafe {
             std::env::set_var("MUD_CMUD_THINK", v);
@@ -950,10 +974,13 @@ pub fn cmud_compare(mud: &MudFile) -> CmudCompare {
     let base = forward_last_logits(mud, &ids).unwrap_or_default();
 
     let prev = std::env::var("MUD_CMUD_THINK").ok();
+    // SAFETY: comparison probe runs single-threaded (CLI); no concurrent
+    // environment access while the two forwards execute.
     unsafe {
         std::env::set_var("MUD_CMUD_THINK", "1");
     }
     let (cmud, _) = forward_last_logits_cmud(mud, &ids).unwrap_or_default();
+    // SAFETY: same single-threaded contract as the set above (restore).
     match prev {
         Some(v) => unsafe {
             std::env::set_var("MUD_CMUD_THINK", v);

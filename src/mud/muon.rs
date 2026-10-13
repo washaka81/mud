@@ -182,12 +182,19 @@ fn muon_step_inner_fast(
             }
         }
         // gram = xt * xt^T  →  [cols, cols]
+        // SAFETY: `use_avx` verified AVX2+FMA above; `sgemm_abt_avx2(m,n,k,a,b,c)`
+        // computes `c[i*n+j] = Σ_p a[i*k+p]*b[j*k+p]` with `a: m×k`, `b: n×k`,
+        // `c: m×n`: here m=n=cols, k=rows, `xt` is `cols*rows` and `gram` is
+        // `cols*cols` (debug-asserted), so all accesses are in-bounds.
         unsafe {
             forge_autograd::avx_math::sgemm_abt_avx2(cols, cols, rows, xt, xt, gram);
         }
         // next = x * gram  (gram symmetric ⇒ x * gram = sgemm_abt(x, gram))
         // C[i,j] = sum_p x[i,p] * gram[j,p] = sum_p x[i,p] * gram^T[p,j]
         // with symmetric gram, gram[j,p] = gram[p,j] ✓
+        // SAFETY: same AVX2+FMA runtime check; m=rows, n=cols, k=cols with
+        // `x: rows×cols`, `gram: cols×cols`, `next_x: rows×cols` (all
+        // debug-asserted above), so every read/write is in-bounds.
         unsafe {
             forge_autograd::avx_math::sgemm_abt_avx2(rows, cols, cols, x, gram, next_x);
         }

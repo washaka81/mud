@@ -57,6 +57,13 @@ impl FenwickF32 {
         } else {
             self.reset_zeroed();
         }
+        // SAFETY: `self.n = data.len().max(1)` and `self.buf` was resized to
+        // `self.n + 1` above; for `data.len() >= 1` (every in-tree caller — a
+        // histogram is only built from non-empty data) `data.as_ptr()` is valid
+        // for `self.n` reads, matching `build_from_linear_raw`'s contract.
+        // CAVEAT: an empty `data` yields `self.n == 1` while the pointer is
+        // valid for 0 elements; this safe wrapper does not reject it (flagged
+        // in the R-36 report).
         unsafe {
             self.build_from_linear_raw(data.as_ptr());
         }
@@ -93,6 +100,9 @@ impl FenwickF32 {
         let ptr = self.buf.as_ptr();
         let mut i = idx.min(self.n);
         let mut sum = 0.0f32;
+        // SAFETY: `i = idx.min(self.n)` and `buf.len() >= self.n + 1`
+        // (constructors / `build_from*`), so `i <= self.n` and `ptr.add(i)` is
+        // in-bounds for every iteration; the loop strictly decreases `i`.
         unsafe {
             while i > 0 {
                 sum += *ptr.add(i);
@@ -109,6 +119,9 @@ impl FenwickF32 {
         let ptr = self.buf.as_mut_ptr();
         let mut i = idx + 1; // 1-indexed
         let n = self.n;
+        // SAFETY: `buf.len() >= self.n + 1`; when `idx < n` then `i = idx + 1
+        // <= n` and every `ptr.add(i)` is in-bounds, and when `idx >= n` the
+        // loop body never runs. `self` is `&mut`, so the write is exclusive.
         unsafe {
             while i <= n {
                 *ptr.add(i) += delta;
@@ -128,6 +141,9 @@ impl FenwickF32 {
         }
         bitmask >>= 1;
         let mut sum = 0.0f32;
+        // SAFETY: the deref is guarded by `next <= self.n` and
+        // `buf.len() >= self.n + 1`, so `ptr.add(next)` is in-bounds; `self` is
+        // shared and this function only reads.
         unsafe {
             while bitmask > 0 {
                 let next = idx + bitmask;

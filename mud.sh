@@ -185,6 +185,7 @@ show_help() {
     echo "  scale-audit     PRQ scale audit vs BF16 source (detects vocabulary collapse)"
     echo "  pointer-audit   Raw pointer & ELUT nibble formula audit (P-00/P-01)"
     echo "  env-audit       Verify 0 env-var doc/code/mud.sh divergences (R-05)"
+    echo "  unsafe-audit    Verify 0 unjustified unsafe blocks in prod code (R-36)"
     echo "  mhc-sync        Verify mHC alpha/beta persisted to .mud after checkpoint save"
     echo ""
     echo -e "${BLUE}🧪 C-MUD (Complex Manifold Thinking):${NC}"
@@ -234,6 +235,51 @@ show_help() {
     echo "  MUD_DEBATE_JEPB_LAMBDA=0.05        JEPA intrinsic aux weight"
     echo "  MUD_DEBATE_LEARN=1                 persist shadow->MUD after session (0=off)"
     echo "  MUD_DEBATE_MAX_NEW_TOKENS=auto     per-response cap (auto by free RAM if unset)"
+}
+
+# R-36: verifica que todo `unsafe` en código de producción tenga justificación.
+# Justificado si hay `SAFETY` / `# Safety` en la misma línea o en las 8 previas.
+# Ops de ALTO RIESGO (from_raw_parts/Mmap::map/CStr::from_ptr/transmute/alloc/
+# dealloc/from_ptr/as_mut()/.offset() ) SIEMPRE exigen comentario adyacente.
+# El resto puede cubrirse con un contrato de módulo `//! SAFETY:` (no aplica a
+# alto riesgo). Se excluyen tests (tests.rs, test_*.rs, tests/, src/bin/ y
+# cuerpos #[cfg(test)] dentro de ficheros de producción).
+run_unsafe_audit() {
+    local FILES
+    FILES=$(grep -rlE '\bunsafe\b' src --include='*.rs' 2>/dev/null \
+        | grep -vE '(^|/)(tests\.rs|test_[^/]*\.rs|tests/|src/bin/)' || true)
+    if [ -z "$FILES" ]; then
+        echo -e "${GREEN}[UNSAFE-AUDIT] OK - 0 sin comentario (R-36)${NC}"
+        return 0
+    fi
+    # shellcheck disable=SC2086
+    awk '
+    BEGIN { bad = 0; total = 0 }
+    FNR == 1 { depth = 0; skipd = -1; pending = 0; first = 0; modc = 0; delete P }
+    {
+        line = $0; first++
+        if (first <= 60 && line ~ /^[ \t]*\/\/![ \t]*SAFETY/) modc = 1
+        if (line !~ /^[ \t]*\/\// && line ~ /#[ \t]*\[[ \t]*cfg\([ \t]*test[ \t]*\)[ \t]*\]/) pending = 1
+        if (pending && line ~ /^[ \t]*(pub[ \t]+)?mod[ \t]/ && line ~ /\{/) { skipd = depth; pending = 0 }
+        tmp = line
+        nd = depth + gsub(/\{/, "{", tmp) - gsub(/\}/, "}", tmp)
+        skip_line = (skipd >= 0 && depth > skipd)
+        if (skipd >= 0 && nd <= skipd) skipd = -1
+        if (!skip_line && line !~ /^[ \t]*\/\// && line ~ /(^|[^A-Za-z0-9_])unsafe([^A-Za-z0-9_]|$)/) {
+            total++
+            adj = (line ~ /SAFETY|# [Ss]afety/) ? 1 : 0
+            for (k = FNR - 1; k >= FNR - 8 && k >= 1; k--) { if (P[k] ~ /SAFETY|# [Ss]afety/) { adj = 1; break } }
+            hr = (line ~ /from_raw_parts|Mmap::map|CStr::from_ptr|transmute|alloc\(|dealloc|from_ptr|as_mut\(\)|\.offset\(/) ? 1 : 0
+            ok = adj || (!hr && modc)
+            if (!ok) { bad++; printf "    %s:%d: %s\n", FILENAME, FNR, substr(line, 1, 110) }
+        }
+        P[FNR] = line; depth = nd
+    }
+    END {
+        printf "[UNSAFE-AUDIT] unsafe: %d · sin justificar: %d\n", total, bad
+        if (bad == 0) print "OK - 0 sin comentario (R-36)"
+        exit (bad > 0)
+    }' $FILES
 }
 
 case $1 in
@@ -545,6 +591,8 @@ case $1 in
         echo -e "${PURPLE}[L-12] CI health battery${NC}"
         echo -e "${BLUE}→ cargo clippy --all-targets --all-features -D warnings${NC}"
         cargo clippy --all-targets --all-features -- -D warnings
+        echo -e "${BLUE}→ unsafe-audit (R-36)${NC}"
+        run_unsafe_audit
         echo -e "${BLUE}→ cargo test --lib --release${NC}"
         cargo test --lib --release -- --test-threads=2
         echo -e "${BLUE}→ P-13 property tests (release)${NC}"
@@ -845,6 +893,7 @@ case $1 in
         echo "  loss_certification_bench STE loss-must-fall gate (stream K)"
         echo "  extract_code_docs       Extract Rust docs + Markdown into training/corpus/mud_docs.txt"
         echo "  env-audit              Verify 0 env-var doc/code/mud.sh divergences (R-05)"
+        echo "  unsafe-audit           Verify 0 unjustified unsafe blocks in prod code (R-36)"
         echo "  circuit_telemetry       Seed-driven infinite training circuit TUI"
         ;;
     env-audit)
@@ -903,6 +952,13 @@ case $1 in
             echo -e "${YELLOW}[ENV-AUDIT] Divergencias detectadas — corregir según §3 de $REF${NC}"
         fi
         exit $ERR
+        ;;
+    unsafe-audit)
+        # R-36: every unsafe in production code must be justified (adjacent
+        # SAFETY/# Safety; enclosing //! SAFETY: module contract for
+        # non-high-risk sites; high-risk ops always adjacent).
+        run_unsafe_audit
+        exit $?
         ;;
     *)
         show_help

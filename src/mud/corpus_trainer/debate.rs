@@ -110,6 +110,13 @@ impl MudCorpusTrainer {
 
         let mut emb = vec![0.0; vocab_size * hidden];
         let emb_tensor = core.tensors.get("token_embd.weight").unwrap();
+        // SAFETY: `vocab_size = token_embd.shape[0]`, `cols = hidden` and `emb`
+        // has `vocab_size*hidden` elements. `emb_tensor.data_ptr` is the tensor's
+        // load-validated backing (R-30/R-31; hidden is a multiple of 8 per P-13),
+        // so row reads `r*cols/8` stay in-bounds; the Float32 `prq_scale` backing
+        // holds `vocab_size` f32 and the F32 branch copies exactly
+        // `vocab_size*hidden` elements. `dequantize_ternary_row` asserts
+        // `out.len() >= n`.
         unsafe {
             let cols = hidden;
             if emb_tensor.t_type == MudTensorType::Ternary2Bit {
@@ -153,6 +160,13 @@ impl MudCorpusTrainer {
         let mut out_f32 = vec![0.0f32; vocab_size * hidden];
         let output_weight;
         if let Some(t) = core.tensors.get("output.weight") {
+            // SAFETY: `vocab_size = token_embd.shape[0]` and R-30 validates
+            // `output.weight` as `[vocab_size, hidden]`; `out_f32` holds
+            // `vocab_size*hidden` elements and `t.data_ptr` is its load-validated
+            // backing (R-30/R-31). Ternary row reads `r*cols/8` (cols = hidden,
+            // multiple of 8 per P-13) and the Float32 `output.prq_scale` backing
+            // holds `vocab_size` f32; the F32 branch returns the raw backing
+            // pointer, whose extent was checked at load.
             unsafe {
                 let cols = hidden;
                 if t.t_type == MudTensorType::Ternary2Bit {
@@ -322,6 +336,13 @@ impl MudCorpusTrainer {
             );
 
             // Dequantize from layers to shadow and apply scales
+            // SAFETY: each `layer.*_w`/`layer.*_scales` pointer comes from this
+            // block's `t()`/`ts()` accessors over the load-validated tensor
+            // backings (R-30/R-31); the closure early-returns on null and
+            // derives `rows = out.len()/cols` from the destination shadow
+            // (allocated `rows*cols`), so each `packed.add(r*cols/8)` row and
+            // `scales.add(r)` read is in-bounds; `dequantize_ternary_row`
+            // asserts `out.len() >= n`.
             unsafe {
                 let dequant_with_scale =
                     |packed: *const u32, scales: *const f32, out: &mut [f32], cols: usize| {
@@ -392,6 +413,10 @@ impl MudCorpusTrainer {
         let _qat_opt: Option<&mut crate::mud::ash_qat_dispatcher::AshQatDispatcher> = None;
         let mut emb = vec![0.0; vocab_size * hidden];
         let emb_tensor = core.tensors.get("token_embd.weight").unwrap();
+        // SAFETY: identical contract as the first embedding inflate above —
+        // `vocab_size = token_embd.shape[0]`, `cols = hidden`, `emb` holds
+        // `vocab_size*hidden` elements, the tensor backing is load-validated
+        // (R-30/R-31) and the Float32 `prq_scale` backing holds `vocab_size` f32.
         unsafe {
             let cols = hidden;
             if emb_tensor.t_type == MudTensorType::Ternary2Bit {

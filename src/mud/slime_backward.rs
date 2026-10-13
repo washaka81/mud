@@ -1,3 +1,38 @@
+//! SAFETY (module contract, R-36) — the `unsafe` sites in this module are
+//! one of the following patterns; anything else carries its own adjacent
+//! `// SAFETY:` comment:
+//!
+//! (a) Dereferences/passes of raw `SlimeLayer` pointers (`q_w`/`k_w`/`v_w`/
+//!     `o_w`, `ffn_up_w`/`ffn_gate_w`/`ffn_down_w`, their `*_scales`,
+//!     `attn_norm_w`/`ffn_norm_w`, `mhc_alpha_w`/`mhc_beta_w`, and the F32
+//!     weight pointers of Q2_0-converted layers) into the STE/F32 backward
+//!     kernels. Each points either into a `MudTensor` payload validated at
+//!     load (R-30/R-31) or an owned `Box<[f32]>` shadow; the pointee outlives
+//!     the backward call, indices stay below `hidden`/`ffn_mid`/`kv_dim`, and
+//!     the packed byte count matches the R-35 per-row stride documented on
+//!     `ternary_gemv_backward`.
+//! (b) Raw views / pointer arithmetic over caller-owned buffers that live for
+//!     the whole call: `SlimeBackwardWorkspace` Vecs (`grad_ffn_*`,
+//!     `ffn_in_x`, `ffn_hid_x`, `attn_in_x`, `grad_o/q/k/v_in`,
+//!     `grad_branch`, `grad_residual_ffn`, `scratch_grad_x`), `SlimeWorkspace`
+//!     buffers, `SlimeLayerTape` buffers (`norm_i8_*`, `ffn_*_f32`,
+//!     `attn_v_jepa`/`ffn_v_jepa`, `o_act_f32`, `mhc_*`), and the caller's
+//!     `grad_in`/`grad_out`/`grads.*_grad` slices. All are sized to
+//!     `hidden`/`ffn_mid`/`8*n_in` and are distinct allocations, except where
+//!     the kernel documents in-place aliasing (`div_avx2` with `a == out`;
+//!     `backward_rmsnorm_avx2` with `grad_y == grad_x`, where each 8-lane
+//!     chunk is loaded before its store); views stay within `0..buffer.len()`.
+//! (c) AVX2/ASM kernel calls (`ezop::*`, `asm::*`,
+//!     `forge_autograd::avx_math::*`). The only supported target is x86_64
+//!     with AVX2/FMA (i7-1260P) and the crate is built with
+//!     `-C target-cpu=native` (`.cargo/config.toml`, `mud.sh`), so those
+//!     instructions are guaranteed for this binary; dispatching sites
+//!     additionally check `is_x86_feature_detected!`. Buffer/length arguments
+//!     are exactly the (a)/(b) extents.
+//!
+//! The `unpack_ternary2bit_to_f32` raw word reads/writes are covered by length
+//! assertions plus their own `// SAFETY:` notes.
+
 use crate::mud::ezop;
 use crate::mud::slime::SlimeWorkspace;
 use crate::mud::slime_forward::SlimeLayer;
@@ -213,17 +248,27 @@ pub fn unpack_ternary2bit_to_f32(packed: &[u8], scales: &[f32], cols: usize, out
         let u32_base = (r * row_words) as isize;
         let full_groups = cols / 8;
         let rem = cols % 8;
+        // SAFETY: `packed.len() == rows * row_words * 4` was asserted above,
+        // so `u32_base + g < rows * row_words` for every `g < full_groups`;
+        // read_unaligned is required since &[u8] has alignment 1. `out.len()
+        // == rows * cols` (asserted) and `o + 8 <= rows * cols` for the same
+        // reason, so the raw writes stay in-bounds.
         for g in 0..full_groups {
             // BUG-2 FIX (2026-08-03): use read_unaligned — `packed` is &[u8] (align 1),
             // so a plain *const u32 deref is UB if the pointer isn't 4-byte aligned.
             let val = unsafe { std::ptr::read_unaligned(packed_u32.offset(u32_base + g as isize)) };
             let o = row_base + (g * 8) as isize;
+            // SAFETY: `j < 8` and `o + 8 <= rows*cols` (asserted len above).
             for j in 0..8 {
                 let bits = ((val >> (j * 4)) & 0xF) as usize;
                 unsafe { *out_p.offset(o + j as isize) = lut[bits] * scale };
             }
         }
         if rem > 0 {
+            // SAFETY: the tail word (`u32_base + full_groups`) still belongs
+            // to this row because `row_words = ceil(cols/8)`; same in-bounds
+            // argument for `out` as above (writes `rem < 8` elements at
+            // `row_base + full_groups*8`, ending exactly at row end).
             let val = unsafe { std::ptr::read_unaligned(packed_u32.offset(u32_base + full_groups as isize)) };
             let o = row_base + (full_groups * 8) as isize;
             for j in 0..rem {

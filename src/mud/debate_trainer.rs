@@ -269,6 +269,12 @@ impl DebateArena {
                     // The loser's mutation is discarded, simulating replacement by the mutated clone.
                     let g_elite = if reward_a >= reward_b { g_a } else { g_b };
                     combined_grad.copy_from_slice(g_elite);
+                    // SAFETY: `packed_ptr`/`scales_ptr` were null-checked above
+                    // and come from `layers[l_idx]` (the live model tensors for
+                    // this layer, sized rows*cols for this matrix); `shadow_w`
+                    // and `combined_grad` are same-length shadow/grad slices of
+                    // that matrix, and `cols` is its row width — matching the
+                    // pointer/length contract of the function.
                     unsafe {
                         crate::mud::optim::apply_optimizer_cpu_step_and_pack(
                             shadow_w,
@@ -500,6 +506,9 @@ impl DebateArena {
                 // max_avx2 → broadcast_sub_avx2 → exp_avx2 → sum_avx2 → scale_vec_avx2
                 // → build_from_linear_raw (O(n)) → find_kth_avx2 (O(log n))
                 let max_l = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && vocab_size >= 8 {
+                    // SAFETY: `logits` is `doppel.logits_buf`, allocated with
+                    // exactly `vocab_size` f32 (Doppelganger construction); AVX2
+                    // and FMA were just detected and `vocab_size >= 8`.
                     unsafe { crate::mud::ezop::max_avx2(logits.as_ptr(), vocab_size) }
                 } else {
                     logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
@@ -515,6 +524,10 @@ impl DebateArena {
 
                 // AVX2 softmax: compute probabilities in-place in logits buffer
                 let _sum_exp = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && vocab_size >= 8 {
+                    // SAFETY: `logits_ptr` addresses the `vocab_size`-element
+                    // `logits_buf`; the AVX2 kernels read and write exactly that
+                    // range in place, and AVX2/FMA plus `vocab_size >= 8` were
+                    // checked in the guard.
                     unsafe {
                         let logits_ptr = logits.as_mut_ptr();
                         crate::mud::ezop::broadcast_sub_avx2(logits_ptr, max_l, vocab_size);
@@ -536,6 +549,11 @@ impl DebateArena {
                 // Build Fenwick tree in O(n) via linear construction (not O(n log n) per-element update)
                 let fenwick = &mut doppel.fenwick_logits;
                 if is_x86_feature_detected!("avx2") && vocab_size >= 8 {
+                    // SAFETY: `fenwick` was created with
+                    // `FenwickF32::with_capacity(vocab_size)`, so
+                    // `build_from_linear_raw` may read exactly `n == vocab_size`
+                    // f32 from `logits` (`logits_buf` has that length); AVX2 was
+                    // detected just above.
                     unsafe {
                         fenwick.reset_zeroed();
                         fenwick.build_from_linear_raw(logits.as_ptr());
@@ -554,6 +572,11 @@ impl DebateArena {
                         // Degenerate: uniform random fallback (shouldn't trigger with valid probs)
                         rng.random_range(0..vocab_size)
                     } else {
+                        // SAFETY: `fenwick` holds the just-built distribution
+                        // (n == vocab_size > 0) and `target < top_p ≤ 1`; the
+                        // guard runs on AVX2 CPUs. `find_kth_avx2` additionally
+                        // requires BMI1 (`lzcnt`), which every AVX2 CPU ships
+                        // with (Haswell+/Excavator+), matching its doc contract.
                         unsafe { fenwick.find_kth_avx2(target) }
                     }
                 } else {
@@ -624,6 +647,12 @@ impl DebateArena {
             ));
         }
 
+        // SAFETY: `self.output_weight` is fixed at construction to either the
+        // model's `output.weight` backing (R-30-validated shape [vocab,hidden])
+        // or a caller-scope `Vec<f32>` of exactly `vocab_size * hidden`
+        // elements (dequantized ternary / tied-embedding path) that outlives
+        // the arena; `self.vocab_size` and `workspace.hidden_size` are the same
+        // dims it was built from. The slice is read-only.
         let out_w = unsafe {
             std::slice::from_raw_parts(
                 self.output_weight,

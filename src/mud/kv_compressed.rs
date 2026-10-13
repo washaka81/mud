@@ -205,6 +205,11 @@ impl CompressedKvCache {
                 }
 
                 // Comprimir deltas con LZ4
+                // SAFETY: `delta_buf` was just resized to exactly
+                // `actual_elems` f32; viewing its storage as `actual_elems * 4`
+                // bytes needs only alignment 1 (satisfied), the range covers
+                // exactly the initialized vector, and the borrow keeps it alive
+                // and unaliased for the LZ4 call.
                 let delta_bytes = unsafe {
                     std::slice::from_raw_parts(
                         delta_buf.as_ptr() as *const u8,
@@ -215,6 +220,11 @@ impl CompressedKvCache {
             });
         } else {
             // Sin delta: comprimir directamente con LZ4
+            // SAFETY: `compress_block`'s documented caller contract (doc above)
+            // requires `data` to contain `valid_tokens * n_kv_heads * head_dim
+            // == actual_elems` f32, so the `actual_elems * 4` byte range is
+            // within the initialized slice; alignment 1 for u8 is satisfied and
+            // the shared borrow outlives the compression.
             let data_bytes = unsafe {
                 std::slice::from_raw_parts(
                     data.as_ptr() as *const u8,

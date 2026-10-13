@@ -46,6 +46,14 @@ impl<'a> SlimeDrafter<'a> {
     /// Proposes K tokens.
     /// The drafter uses the main workspace, temporarily advancing the KV cache.
     /// The main model will overwrite these positions during verification.
+    ///
+    /// # Safety
+    /// - `token_embd_ptr` must point to a `vocab_size × hidden` row-major f32
+    ///   embedding table, and `current_token` must be `< vocab_size`.
+    /// - `self.output_weight` (set in [`SlimeDrafter::new`]) must cover
+    ///   `vocab_size × hidden` f32, and `ws` must be shaped for
+    ///   `self.hidden`/`self.vocab_size`.
+    /// - `start_pos + k` must stay within the workspace KV-cache capacity (`evaluate_slime_block` writes those; see R-36).
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn propose_tokens(
         &mut self,
@@ -73,6 +81,10 @@ impl<'a> SlimeDrafter<'a> {
             // 1. Embed token
             let row_start = tok as usize * self.hidden;
             for h in 0..self.hidden {
+                // SAFETY: `tok < vocab_size` (the `current_token` contract on
+                // entry; later `best_id` is an argmax over `vocab_size` logits),
+                // so `row_start + h < vocab_size * hidden`, the table size the
+                // caller guarantees.
                 let emb_val = unsafe { *token_embd_ptr.add(row_start + h) };
                 crate::mud::slime::SlimeRegister::init_from_embed(
                     &mut ws.registers[h],
@@ -117,6 +129,14 @@ impl<'a> SlimeDrafter<'a> {
                     let w_ptr = out_w_p as *const f32;
                     let rows = end_row - start_row;
 
+                    // SAFETY: `r_ptr`/`l_ptr` come from `self.regs_buf`
+                    // (`hidden`) and `self.logits_buf` (`vocab_size`), captured
+                    // as addresses because `PCorePool` needs `'static` jobs; the
+                    // 8 tasks own disjoint `start_row..end_row` ranges of
+                    // `output_weight` and write disjoint `logits` slices, so the
+                    // captures do not alias across threads. `pool.wait_all()`
+                    // joins before `logits_buf` is read; `sgemm_abt` is AVX2-only
+                    // (native build enables AVX2 crate-wide, no runtime probe).
                     unsafe {
                         // Compute sgemm for a subset of the vocabulary (subset of rows of output_weight)
                         // sgemm_abt computes: out[i] = dot(A[0], B[i])

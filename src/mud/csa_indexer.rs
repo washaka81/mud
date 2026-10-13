@@ -211,6 +211,11 @@ pub fn lsh_signature_learned(v: &[f32], w_compress: &[f32], n_bits: usize) -> u6
     let mut sig = 0u64;
     for b in 0..n_bits {
         let w_row = &w_compress[b * d..(b + 1) * d];
+        // SAFETY: `d == v.len()` and `w_row.len() == d` (subslice bounds; the
+        // `w_compress.len() >= n_bits * d` assert above keeps the range valid),
+        // so the ASM dot reads exactly `d` f32 from each pointer. The kernel is
+        // AVX2-only; AVX2 is enabled crate-wide by the native build (no runtime
+        // probe at this site).
         let dot = unsafe { crate::asm::dot_product_avx2(d, v.as_ptr(), w_row.as_ptr()) };
         if dot >= 0.0 {
             sig |= 1u64 << b;

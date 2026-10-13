@@ -41,6 +41,9 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
+            // SAFETY: AVX2+FMA runtime-checked above; `dot_product_avx2`
+            // iterates `a.len()` and indexes `b[i]` for `i < a.len()`, and every
+            // caller passes equal-length `d1`/`d2` (`hidden`) slices.
             return unsafe { forge_autograd::avx_math::dot_product_avx2(a, b) };
         }
     }
@@ -136,6 +139,11 @@ pub fn stp_loss_and_grad(
 
                 // GPU axpy: out = grad + 1.0 * target
                 // grad_h_r += g_d1
+                // SAFETY: `step_elementwise_sync` is `unsafe` for the Vulkan
+                // call itself but validates `input.len()/output.len()/
+                // target.len() >= n` and returns `Err` otherwise; here n ==
+                // hidden and `grad_h_r`/`out`/`d1` are distinct `hidden`-length
+                // buffers (asserted at function entry).
                 let _ = unsafe {
                     g.step_elementwise_sync(
                         grad_h_r, out, d1, hidden, 6, 1.0, 1.0,
@@ -144,6 +152,8 @@ pub fn stp_loss_and_grad(
                 grad_h_r.copy_from_slice(out);
 
                 // grad_h_t += g_d2
+                // SAFETY: same as above — callee length-checked, and
+                // `grad_h_t`/`out`/`d2` are distinct `hidden`-length buffers.
                 let _ = unsafe {
                     g.step_elementwise_sync(
                         grad_h_t, out, d2, hidden, 6, 1.0, 1.0,
@@ -152,6 +162,8 @@ pub fn stp_loss_and_grad(
                 grad_h_t.copy_from_slice(out);
 
                 // grad_h_s += neg_sum
+                // SAFETY: same as above — `grad_h_s`/`out`/`neg_sum` are
+                // distinct `hidden`-length buffers over disjoint scratch.
                 let _ = unsafe {
                     g.step_elementwise_sync(
                         grad_h_s, out, neg_sum, hidden, 6, 1.0, 1.0,

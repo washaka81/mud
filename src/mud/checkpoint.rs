@@ -95,6 +95,9 @@ pub(crate) fn hash_trained_weights(mud: &MudFile) -> u64 {
                 }
                 _ => 4,
             };
+            // SAFETY: mmap-backed tensor — `data_ptr` was validated at load
+            // (R-30/R-31) and `n_bytes` is derived from this tensor's own
+            // shape (product × bytes/element), so the slice stays in extent.
             let slice = unsafe { std::slice::from_raw_parts(t.data_ptr, n_bytes) };
             for &b in slice {
                 fnv(b);
@@ -183,6 +186,8 @@ unsafe fn stable_pack_ternary_rows(
     for r in 0..rows {
         let start = r * cols;
         let s_new = {
+            // SAFETY: fn contract `weights.len() == rows*cols`; `start =
+            // r*cols` with `r < rows`, so this row slice is in-bounds.
             let row = unsafe { std::slice::from_raw_parts(weights.as_ptr().add(start), cols) };
             let absmean = row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
             (absmean * std::f32::consts::FRAC_1_SQRT_2).max(1e-8)
@@ -195,6 +200,10 @@ unsafe fn stable_pack_ternary_rows(
         scales.push(s);
         let delta = crate::mud::constants::TERNARY_DEADZONE * s;
         let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
+        // SAFETY: fn contract `packed.len() == rows*cols.div_ceil(8)*4`;
+        // `r * row_words * 4` with `r < rows` keeps `word_ptr` in-bounds and
+        // `weights.as_ptr().add(start)` is valid for `cols` f32 (same row
+        // bound as above). `word_ptr` is exclusively borrowed here.
         unsafe {
             crate::mud::ezop::pack_ternary_into(
                 weights.as_ptr().add(start), cols, delta, word_ptr,
@@ -215,6 +224,9 @@ unsafe fn stable_pack_ternary_rows(
                 }
             }
         } else if !prev_data_ptr.is_null() {
+            // SAFETY: caller contract — non-null `prev_data_ptr` addresses the
+            // previous ternary codes for the same layout (`rows * row_bytes`);
+            // `r*row_bytes + row_bytes <= rows*row_bytes`.
             let pv = unsafe { std::slice::from_raw_parts(prev_data_ptr.add(r * row_bytes), row_bytes) };
             for (a, b) in pv.iter().zip(rb.iter()) {
                 bits += (a != b) as u64;
@@ -232,6 +244,8 @@ unsafe fn stable_pack_ternary_rows(
     if bits > 0 && had_prev {
         for r in 0..rows {
             let start = r * cols;
+            // SAFETY: same row bounds as Phase 1 (`start = r*cols`, r < rows,
+            // fn contract `weights.len() == rows*cols`).
             let s_new = unsafe {
                 let row = std::slice::from_raw_parts(weights.as_ptr().add(start), cols);
                 let absmean = row.iter().map(|v| v.abs()).sum::<f32>() / cols as f32;
@@ -241,6 +255,7 @@ unsafe fn stable_pack_ternary_rows(
             scales[r] = s;
             let delta = crate::mud::constants::TERNARY_DEADZONE * s;
             let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
+            // SAFETY: same `packed` bounds as Phase 1 (fn contract; r < rows).
             unsafe {
                 crate::mud::ezop::pack_ternary_into(
                     weights.as_ptr().add(start), cols, delta, word_ptr,
@@ -260,6 +275,7 @@ unsafe fn stable_pack_ternary_rows(
                     }
                 }
             } else if !prev_data_ptr.is_null() {
+                // SAFETY: same `prev_data_ptr` contract as Phase 1.
                 let pv = unsafe { std::slice::from_raw_parts(prev_data_ptr.add(r * row_bytes), row_bytes) };
                 for (a, b) in pv.iter().zip(rb.iter()) {
                     final_bits += (a != b) as u64;
@@ -351,6 +367,10 @@ pub(crate) fn sync_shadow_to_mud(
                     packed.resize(byte_count, 0u8);
                     scales.clear();
                     scales.reserve(rows);
+                    // SAFETY: `stable_pack_ternary_rows` contract — `shadow_emb`
+                    // is rows*cols f32 (embedding shadow), `packed` was resized
+                    // to `byte_count = len.div_ceil(8)*4` just above, and
+                    // `scales` reserves >= rows.
                     let (bits, bt) = unsafe {
                         stable_pack_ternary_rows(
                             shadow_emb,
@@ -378,6 +398,9 @@ pub(crate) fn sync_shadow_to_mud(
                 // ΔW: compare old vs new PRQ scale for embedding
                 if let Some(prev_s) = scale_tensor.owned_data.as_deref() {
                     if prev_s.len() == scales_emb.len() * 4 {
+                        // SAFETY: Float32 `prq_scale` owned_data (converter
+                        // contract); byte length == scales*4 checked just
+                        // above, so the f32 view covers exactly those bytes.
                         let prev_f = unsafe {
                             std::slice::from_raw_parts(prev_s.as_ptr() as *const f32, prev_s.len() / 4)
                         };
@@ -387,12 +410,16 @@ pub(crate) fn sync_shadow_to_mud(
                         }
                     }
                 }
+                // SAFETY: read-only byte view of the live `scales_emb` Vec
+                // (`len*4` bytes), consumed immediately by write_owned_bytes.
                 let scale_bytes: &[u8] = unsafe {
                     std::slice::from_raw_parts(scales_emb.as_ptr() as *const u8, scales_emb.len() * 4)
                 };
                 write_owned_bytes(scale_tensor, scale_bytes);
             } else {
                 // Scale tensor doesn't exist yet — create from the already-extracted scales_emb
+                // SAFETY: read-only byte view of the live `scales_emb` Vec
+                // (`len*4` bytes); `.to_vec()` copies before any mutation.
                 let scale_bytes = unsafe {
                     std::slice::from_raw_parts(scales_emb.as_ptr() as *const u8, scales_emb.len() * 4).to_vec()
                 };
@@ -417,6 +444,8 @@ pub(crate) fn sync_shadow_to_mud(
             emb_scales = Some(&scales_emb);
         } else {
             // F32 embedding: avoid to_vec() — use &[u8] view directly
+            // SAFETY: read-only byte view of the live `shadow_emb: &[f32]`
+            // (`len*4` bytes), used only for comparison/copy below.
             let bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(shadow_emb.as_ptr() as *const u8, shadow_emb.len() * 4)
             };
@@ -463,6 +492,10 @@ pub(crate) fn sync_shadow_to_mud(
             ($name_suffix:expr, $cpu_weights:expr) => {{
                 if let Some(vk) = vk_qat.as_deref() {
                     let name = format!("blk.{}.{}", blk, $name_suffix);
+                    // SAFETY: `vk` is the live QAT dispatcher (borrowed from
+                    // the Option); `readback_shadow` fences GPU work first and
+                    // copies into `$cpu_weights`, whose length equals the
+                    // tensor's element count (trainer workspace invariant).
                     unsafe {
                         vk.readback_shadow(&name, $cpu_weights);
                     }
@@ -680,6 +713,8 @@ fn sync_f32_shadow_tensor(
     dbg_bytes_total: &mut u64,
 ) {
     let byte_len = shadow.len() * 4;
+    // SAFETY: read-only byte view of the live `shadow: &[f32]` (`len*4`
+    // bytes), used only for the ΔW comparison and the owned-data copy below.
     let bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(shadow.as_ptr() as *const u8, byte_len)
     };
@@ -754,6 +789,8 @@ fn sync_tied_output_weight(
             Some(s) if !s.is_empty() => s,
             _ => return,
         };
+        // SAFETY: read-only byte view of the live `emb_scales` slice
+        // (`len*4` bytes), consumed by the write below.
         let scale_bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(scales.as_ptr() as *const u8, scales.len() * 4)
         };
@@ -761,6 +798,8 @@ fn sync_tied_output_weight(
         if let Some(st) = core.tensors.get_mut(key) {
             if let Some(prev_s) = st.owned_data.as_deref() {
                 if prev_s.len() == scale_bytes.len() {
+                    // SAFETY: Float32 `output.prq_scale` owned_data; byte
+                    // length checked just above, so the f32 view is exact.
                     let prev_f = unsafe {
                         std::slice::from_raw_parts(prev_s.as_ptr() as *const f32, prev_s.len() / 4)
                     };
@@ -804,6 +843,8 @@ fn pack_ternary(ternary_data: &[f32]) -> Vec<u8> {
         };
         packed_vec[i / 8] |= bit << ((i % 8) * 4);
     }
+    // SAFETY: read-only byte view of the local `packed_vec` (`len*4` bytes);
+    // `.to_vec()` copies immediately (test-only helper).
     unsafe {
         std::slice::from_raw_parts(packed_vec.as_ptr() as *const u8, packed_vec.len() * 4).to_vec()
     }
@@ -837,6 +878,8 @@ fn update_layer_tensor(
             new_scales.reserve(rows);
             for r in 0..rows {
                 let start = r * cols;
+                // SAFETY: trainer invariant `weights.len() == rows*cols` for
+                // this tensor's shadow; `start = r*cols` with `r < rows`.
                 let absmean = unsafe {
                     let row = std::slice::from_raw_parts(
                         weights.as_ptr().add(start),
@@ -854,6 +897,8 @@ fn update_layer_tensor(
         // P-01: mem::take avoids clone — move scales out of thread-local
         let scales_move = SYNC_SCALES_BUF.with_borrow_mut(std::mem::take::<Vec<f32>>);
         if let Some(scale_t) = core.tensors.get_mut(&format!("{}{}.prq_scale", p, name)) {
+            // SAFETY: read-only byte view of the live `scales_move` Vec
+            // (`len*4` bytes), consumed by the write below.
             let scale_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(scales_move.as_ptr() as *const u8, scales_move.len() * 4)
             };
@@ -883,6 +928,8 @@ fn update_layer_tensor(
     }
     if !is_ternary {
         // F32 path: zero-copy view of weights bytes
+        // SAFETY: read-only byte view of the live `weights: &[f32]`
+        // (`len*4` bytes), consumed by the write below.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(weights.as_ptr() as *const u8, weights.len() * 4)
         };
@@ -921,6 +968,11 @@ fn update_layer_tensor(
             packed.resize(byte_count, 0u8);
             new_scales.clear();
             new_scales.reserve(rows);
+            // SAFETY: `stable_pack_ternary_rows` contract — `weights.len() ==
+            // rows*cols` (trainer shadow invariant), `packed` resized to
+            // `byte_count = weights.div_ceil(8)*4` just above, `new_scales`
+            // reserves >= rows, `prev_codes`/`prev_data_ptr` are this tensor's
+            // previous codes (owned or mmap-validated backing).
             let (bits, bt) = unsafe {
                 stable_pack_ternary_rows(
                     weights,
@@ -947,6 +999,8 @@ fn update_layer_tensor(
     }
 
     // P-01: use &[u8] view of new_scales directly — no to_vec()
+    // SAFETY: read-only byte view of the live `new_scales_move` Vec
+    // (`len*4` bytes), consumed by the write below.
     let scale_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(new_scales_move.as_ptr() as *const u8, new_scales_move.len() * 4)
     };
@@ -956,10 +1010,14 @@ fn update_layer_tensor(
             let owned: Option<&Vec<u8>> = scale_t.owned_data.as_ref();
             if let Some(ex) = owned {
                 let n = ex.len() / 4;
+                // SAFETY: Float32 prq_scale owned_data; n = len/4 f32 exactly
+                // covers the byte buffer.
                 Some(unsafe {
                     std::slice::from_raw_parts(ex.as_ptr() as *const f32, n)
                 })
             } else if !scale_t.data_ptr.is_null() {
+                // SAFETY: mmap-backed prq_scale (Float32, shape validated at
+                // load R-30/R-31); length equals the new scales count.
                 Some(unsafe {
                     std::slice::from_raw_parts(
                         scale_t.data_ptr as *const f32,

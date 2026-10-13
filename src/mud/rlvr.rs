@@ -1,3 +1,10 @@
+//! SAFETY contract (R-36): this module contains no `unsafe` code. The token the
+//! gate flags is the cargo feature name `unsafe-rce` inside `#[cfg]` attributes
+//! and inside the warning/error strings of the safe stub — never an unsafe
+//! operation. The feature gates `evaluate_rust_code`, which intentionally runs
+//! `rustc` on attacker-controlled input (RCE by design, research only);
+//! production builds compile the stub that always returns `-1.0`.
+
 #[cfg(feature = "unsafe-rce")]
 use std::fs;
 #[cfg(feature = "unsafe-rce")]
@@ -70,6 +77,8 @@ impl RlvrCritic {
     /// Safe stub: always returns the negative reward.
     /// When the `unsafe-rce` feature is enabled, `evaluate_rust_code` is the
     /// real implementation (and shadows this one).
+    // SAFETY: `unsafe-rce` is a cargo feature name only (no unsafe operation);
+    // the code below is the production stub compiled when the feature is off.
     #[cfg(not(feature = "unsafe-rce"))]
     pub fn evaluate_rust_code(&self, _code: &str) -> (f32, String) {
         log::warn!(

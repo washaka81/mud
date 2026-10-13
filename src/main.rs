@@ -233,6 +233,10 @@ fn main() -> anyhow::Result<()> {
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_tensor.data_ptr as *const f32);
+        // SAFETY: Float32 `token_embd.weight`; `MudFile::load` ran
+        // `validate_model_shapes` (R-30), so its shape is [vocab,hidden] and
+        // the backing (owned_data or mmap-validated `data_ptr`) holds
+        // `vocab_size * hidden_size` f32.
         let emb_f32_slice =
             unsafe { std::slice::from_raw_parts(emb_data_ptr, vocab_size * hidden_size) };
         emb_f32.copy_from_slice(emb_f32_slice);
@@ -255,12 +259,17 @@ fn main() -> anyhow::Result<()> {
                 let n: usize = vocab_size * hidden_size;
                 n.div_ceil(8) * 4
             });
+        // SAFETY: `emb_byte_len` is the owned length or the canonical packed
+        // size for the R-30-validated [vocab,hidden] shape; the pointer is the
+        // tensor's own backing.
         let emb_packed: &[u8] = unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
         let emb_scales_ptr = emb_scales_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_scales_tensor.data_ptr as *const f32);
+        // SAFETY: `token_embd.prq_scale` shape == [vocab] (R-30); its backing
+        // holds `vocab_size` f32.
         let emb_scales: &[f32] = unsafe { std::slice::from_raw_parts(emb_scales_ptr, vocab_size) };
 
         forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
@@ -296,6 +305,8 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|d| d.as_ptr() as *const f32)
                 .unwrap_or(out_tensor.data_ptr as *const f32);
+            // SAFETY: Float32 `output.weight`; R-30 validated shape
+            // [vocab,hidden]; backing holds `vocab_size * hidden_size` f32.
             let out_f32_slice =
                 unsafe { std::slice::from_raw_parts(out_data_ptr, vocab_size * hidden_size) };
             out_dq.copy_from_slice(out_f32_slice);
@@ -314,6 +325,8 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|d| d.len())
                 .unwrap_or_else(|| (vocab_size * hidden_size).div_ceil(8) * 4);
+            // SAFETY: `out_byte_len` = owned length or canonical packed size
+            // for the R-30-validated shape; pointer is the tensor's backing.
             let out_packed: &[u8] =
                 unsafe { std::slice::from_raw_parts(out_packed_ptr, out_byte_len) };
             let out_scales_ptr = out_scales_tensor
@@ -321,6 +334,8 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|d| d.as_ptr() as *const f32)
                 .unwrap_or(out_scales_tensor.data_ptr as *const f32);
+            // SAFETY: `output.prq_scale` shape == [vocab] (R-30); backing holds
+            // `vocab_size` f32.
             let out_scales: &[f32] =
                 unsafe { std::slice::from_raw_parts(out_scales_ptr, vocab_size) };
             forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
@@ -405,6 +420,8 @@ fn main() -> anyhow::Result<()> {
         .as_ref()
         .map(|d| d.as_ptr())
         .unwrap_or(out_norm_tensor.data_ptr);
+    // SAFETY: `output_norm.weight` shape == [hidden] (R-30); backing holds
+    // `hidden_size` f32.
     let out_norm_slice: &[f32] =
         unsafe { std::slice::from_raw_parts(out_norm_ptr as *const f32, hidden_size) };
 
@@ -612,6 +629,12 @@ fn main() -> anyhow::Result<()> {
             if debug && generated == 0 {
                 println!("{}reg_f32[0..5]={:?}{}", COLOR_DIM, &reg_f32[..5], COLOR_RESET);
             }
+            // SAFETY: `reg_f32`/`logits` were pre-allocated with `hidden_size`
+            // and `vocab_size` elements (above); `out_slice_ternary` is either
+            // `emb_f32` or the untied `out_f32_owned` Vec, both sized
+            // `vocab_size * hidden_size` and alive for the whole generation
+            // loop. `lm_head_logits_avx2` reads `weights[v*hidden_size..]` for
+            // `v < vocab_size` and writes `logits[..vocab_size]`.
             unsafe {
                 forge_llm::asm::lm_head_logits_avx2(
                     vocab_size,

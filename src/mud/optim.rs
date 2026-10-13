@@ -215,6 +215,9 @@ fn apply_sgd_shadow_update(
         return;
     }
     if core_arch_x86_64_has_avx2() {
+        // SAFETY: AVX2 verified by `core_arch_x86_64_has_avx2()`; `n` is the
+        // shorter of the two slices and both are re-borrowed with `..n`, so the
+        // kernel reads/writes exactly the elements both sides own.
         unsafe {
             forge_autograd::avx_math::sgd_step_avx2(
                 &mut shadow_w[..n],
@@ -499,10 +502,14 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                 let floor = crate::mud::constants::EPSILON_FLOOR;
                 for r in 0..rows {
                     let base = (r * cols) as isize;
-                    // AVX2 sum-of-abs (8 f32/iter, 4-accumulator unroll)
+                    // SAFETY: `shadow_w.len() == rows * cols` was verified by
+                    // the early return above, so `base + cols <= rows*cols`;
+                    // both the AVX2 kernel and the scalar fallback touch only
+                    // in-bounds elements of `shadow_w` (the slice owns `p`).
                     let abs_sum = if cols >= 8 && std::is_x86_feature_detected!("avx2") {
                         unsafe { crate::mud::ezop::sum_abs_avx2(p.offset(base), cols) }
                     } else {
+                        // SAFETY: `c < cols` so `base + c < base + cols <= rows*cols`.
                         let mut s = 0.0f32;
                         for c in 0..cols {
                             s += unsafe { (*p.offset(base + c as isize)).abs() };
@@ -510,7 +517,10 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                         s
                     };
                     let bound = (abs_sum / cols as f32 * k).max(floor);
-                    // AVX2 clamp (8 f32/iter, NaN→0, clamp to [-bound, bound])
+                    // SAFETY: same bounds as the sum above — `p.offset(base)`
+                    // is valid for `cols` f32 (base = r*cols, r < rows, and
+                    // shadow_w.len() == rows*cols). NaN→0 and clamp are
+                    // element-wise; no aliasing (p is the sole data pointer).
                     if cols >= 8 && std::is_x86_feature_detected!("avx2") {
                         unsafe {
                             crate::mud::ezop::clamp_finite_avx2(
@@ -522,6 +532,7 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                             );
                         }
                     } else {
+                        // SAFETY: `off = base + c < base + cols <= rows*cols`.
                         for c in 0..cols {
                             let off = base + c as isize;
                             let v = unsafe { *p.offset(off) };
@@ -539,6 +550,10 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if scales_only {
+            // SAFETY: caller contract of `apply_optimizer_cpu_step_and_pack`
+            // covers `packed_ptr` (`shadow_w.len()` ELUT nibbles, i.e.
+            // `rows * ceil(cols/8)` u32 words) and `scales_ptr` (`rows` f32);
+            // `rows * cols == shadow_w.len()` was verified above.
             unsafe {
                 update_prq_scales_only(shadow_w, packed_ptr, scales_ptr, rows, cols);
             }
@@ -576,6 +591,13 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                     // sharing). Row `abs_row` starts at `abs_row * row_bytes`.
                     let row_words = cols.div_ceil(8);
                     let row_bytes = row_words * 4;
+                    // SAFETY: `sw`/`sc`/`pk` are row-partitioned views of the
+                    // caller-validated buffers (`shadow_w` reads, `scales_ptr`
+                    // and `packed_ptr` writes); each task owns the disjoint row
+                    // range `start_row..end_row <= rows`, so `r * cols + c <
+                    // rows * cols`, `abs_row < rows`, and each row packs exactly
+                    // `row_words` u32. `pool.wait_all()` joins every task before
+                    // the buffers are touched again.
                     unsafe {
                         for r in 0..nrows {
                             let abs_row = start_row + r;

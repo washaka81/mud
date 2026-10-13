@@ -108,13 +108,22 @@ impl HardwareProfile {
         let mut vlk_device_name = "None".to_string();
         let mut vlk_is_integrated = false;
 
+        // SAFETY: Vulkan loader entry; ash guarantees a null-return on
+        // failure. Handles are created/destroyed inside this function and
+        // every query below only needs a valid instance/device pair that
+        // this scope owns.
         if let Ok(entry) = unsafe { ash::Entry::load() } {
             if let Ok(instance) =
                 unsafe { entry.create_instance(&ash::vk::InstanceCreateInfo::default(), None) }
             {
                 if let Ok(devices) = unsafe { instance.enumerate_physical_devices() } {
                     if let Some(device) = devices.first() {
+                        // SAFETY: `device` came from `enumerate_physical_devices`
+                        // and is destroyed before `instance` at scope end.
                         let props = unsafe { instance.get_physical_device_properties(*device) };
+                        // SAFETY: `device_name` is a fixed-size NUL-terminated
+                        // array inside the driver-written properties struct;
+                        // the returned borrow ends before `props` is dropped.
                         let name_cstr =
                             unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
                         vlk_device_name = name_cstr.to_string_lossy().into_owned();

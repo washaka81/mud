@@ -56,6 +56,13 @@ impl PCorePool {
                     let ptr = slot.load(Ordering::Acquire);
 
                     if !ptr.is_null() {
+                        // SAFETY: `ptr` was published by `execute` as
+                        // `Box::into_raw(Box::new(job))` into this slot via
+                        // compare_exchange (Release); this worker loaded it with
+                        // Acquire and is the unique taker, so `Box::from_raw`
+                        // reclaims exactly that allocation (run once, then the
+                        // slot is cleared with Release before any other worker
+                        // can see it).
                         let job = unsafe { Box::from_raw(ptr) };
                         job();
 

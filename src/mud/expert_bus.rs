@@ -251,6 +251,11 @@ impl ExpertBus {
         Ok(())
     }
 
+    // SAFETY: private helper, only called from `forward` (line 220) whose
+    // `# Safety` contract (mounted weight pointers and router pointers valid,
+    // x/out ≥ hidden) is inherited here. Inside, `self.router_w` /
+    // `self.router_scales` are null-checked before the ternary GEMV, and
+    // `scratch` was `ensure`d by the caller to ≥ hidden/ffn_mid/logits(n).
     unsafe fn route_into(
         &self,
         x: &[f32],

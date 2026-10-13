@@ -109,6 +109,9 @@ impl GGUFModel {
     /// `unsafe` pointer is formed.
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let file = File::open(path)?;
+        // SAFETY: `file` is a valid read-only handle; memmap2 maps exactly
+        // `file`'s length. The mapping outlives every `data_ptr` derived
+        // from it because this `Arc<Mmap>` is stored in the returned model.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
         let buf: &[u8] = &mmap;
         let mut cur = GgufCursor { buf, pos: 0 };
