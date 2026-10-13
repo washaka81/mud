@@ -375,6 +375,85 @@ fn test_ternary_gemv_8rows_matches_4rows() {
     }
 }
 
+// ============================================================
+// R-35: GEMV resto 1..7 + stride div_ceil — los tres wrappers deben
+// coincidir con la referencia escalar para n = 8k+r (r = 1..7),
+// sin over-read de `x` ni gotas de la cola.
+// ============================================================
+#[test]
+fn test_r35_gemv_wrappers_exact_on_remainder() {
+    let mut rng = rand::rng();
+    for n in [1usize, 3, 7, 8, 9, 13, 15, 16, 17, 23, 24, 25, 31, 100, 103] {
+        let x: Vec<f32> = (0..n).map(|_| rng.random_range(-2.0..2.0)).collect();
+        let rows = 8usize;
+        // Canonical per-row padded stride (R-15): div_ceil, not floor.
+        let stride = n.div_ceil(8);
+        let mut packed = vec![0u32; rows * stride];
+        let mut raw: Vec<Vec<i8>> = Vec::new();
+        for r in 0..rows {
+            let row: Vec<i8> = (0..n).map(|_| rng.random_range(-1..=1)).collect();
+            let pw = pack_ternary_row(&row);
+            packed[r * stride..r * stride + pw.len()].copy_from_slice(&pw);
+            raw.push(row);
+        }
+        let scale = 0.7f32;
+        let reference: Vec<f32> = raw
+            .iter()
+            .map(|row| {
+                scale * row.iter().enumerate().map(|(i, &w)| x[i] * w as f32).sum::<f32>()
+            })
+            .collect();
+
+        // Single-row wrapper, one call per row.
+        for (r, ref_val) in reference.iter().enumerate().take(rows) {
+            let mut out = 0.0f32;
+            unsafe {
+                ternary_gemv(n, x.as_ptr(), packed.as_ptr().add(r * stride), &mut out, scale);
+            }
+            assert!(
+                (out - ref_val).abs() < 1e-4,
+                "R-35 single n={n} row {r}: {out} vs {ref_val}"
+            );
+        }
+        // 4-row wrapper, two batches of 4.
+        for base in (0..rows).step_by(4) {
+            let mut out = [0.0f32; 4];
+            unsafe {
+                ternary_gemv_4rows(
+                    n,
+                    x.as_ptr(),
+                    packed.as_ptr().add(base * stride),
+                    out.as_mut_ptr(),
+                    scale,
+                    stride,
+                );
+            }
+            for r in 0..4 {
+                assert!(
+                    (out[r] - reference[base + r]).abs() < 1e-4,
+                    "R-35 4rows n={n} row {}: {} vs {}",
+                    base + r,
+                    out[r],
+                    reference[base + r]
+                );
+            }
+        }
+        // 8-row wrapper, single batch.
+        let mut out8 = [0.0f32; 8];
+        unsafe {
+            ternary_gemv_8rows(n, x.as_ptr(), packed.as_ptr(), out8.as_mut_ptr(), scale, stride);
+        }
+        for r in 0..rows {
+            assert!(
+                (out8[r] - reference[r]).abs() < 1e-4,
+                "R-35 8rows n={n} row {r}: {} vs {}",
+                out8[r],
+                reference[r]
+            );
+        }
+    }
+}
+
 #[test]
 fn bench_ternary_gemv_comparison() {
     let n = 2048;

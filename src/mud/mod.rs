@@ -963,7 +963,7 @@ impl MudFile {
     /// Single-bit errors are corrected; parity-bit errors are logged.
     pub fn load_verified(path: &str) -> anyhow::Result<Self> {
         let mut mud = Self::load(path)?;
-        let (corrected, parity_err) = mud.ecc_verify_all();
+        let (corrected, parity_err) = mud.ecc_verify_all()?;
         if corrected > 0 || parity_err > 0 {
             log::warn!(
                 "[ECC] {} single-bit corrected, {} parity errors (data intact)",
@@ -1032,7 +1032,14 @@ impl MudFile {
     /// Verify and correct all Ternary2Bit tensors using stored .ecc parity.
     /// Single-bit flips are corrected in owned_data.
     /// Returns (total_single_bit_corrected, total_parity_bit_errors).
-    pub fn ecc_verify_all(&mut self) -> (u32, u32) {
+    ///
+    /// R-33: the parity read is validated against the BASE tensor's extent
+    /// (`need = ceil(prod(base.shape)/8)` bytes). A short/truncated ECC
+    /// tensor is a hard error (fail-fast, P-17) — previously the mmap path
+    /// sliced `mmap[start..start + u32_count]` with the base tensor's count
+    /// (panic on short ECC, silent over-read into neighbour data on a big
+    /// mmap) and the owned path silently truncated via `.take()`.
+    pub fn ecc_verify_all(&mut self) -> anyhow::Result<(u32, u32)> {
         use crate::mud::ecc::{
             as_u32_slice_le_mut, base_tensor_name, ecc_verify_buf, is_ecc_tensor,
         };
@@ -1060,18 +1067,48 @@ impl MudFile {
                     let Some(ecc_tensor) = skill.tensors.get(&ecc_name) else {
                         continue;
                     };
-                    let n: usize = base_tensor.shape.iter().product();
-                    let u32_count = n.div_ceil(8);
+                    // R-33: checked element count (no `product()` wrap) +
+                    // required parity bytes derived from the BASE shape.
+                    let mut elements = 1usize;
+                    for &d in &base_tensor.shape {
+                        elements = elements.checked_mul(d).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "R-33: base tensor '{base_name}' shape product overflows"
+                            )
+                        })?;
+                    }
+                    let need = elements.div_ceil(8);
                     let ecc_data: Vec<u8> = if let Some(owned) = &ecc_tensor.owned_data {
-                        owned.clone()
+                        if owned.len() < need {
+                            anyhow::bail!(
+                                "R-33: ECC tensor '{ecc_name}' too short ({} < {need} bytes for '{base_name}')",
+                                owned.len()
+                            );
+                        }
+                        owned[..need].to_vec()
                     } else if let Some(mmap) = &ecc_tensor.mmap {
-                        let start = ecc_tensor.data_base + ecc_tensor.offset;
-                        mmap[start..start + u32_count].to_vec()
+                        let start = ecc_tensor
+                            .data_base
+                            .checked_add(ecc_tensor.offset)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("R-33: ECC tensor '{ecc_name}' offset overflows")
+                            })?;
+                        let avail = mmap.get(start..).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "R-33: ECC tensor '{ecc_name}' offset {start} past EOF {}",
+                                mmap.len()
+                            )
+                        })?;
+                        let take = avail.get(..need).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "R-33: ECC tensor '{ecc_name}' too short ({} < {need} bytes for '{base_name}')",
+                                avail.len()
+                            )
+                        })?;
+                        take.to_vec()
                     } else {
                         continue;
                     };
-                    // Truncate to actual u32 count
-                    let ecc_data = ecc_data.into_iter().take(u32_count).collect();
                     list.push((skill_name.clone(), base_name.to_string(), ecc_data));
                 }
             }
@@ -1086,18 +1123,39 @@ impl MudFile {
                 continue;
             };
 
-            let n: usize = tensor.shape.iter().product();
-            let u32_count = n.div_ceil(8);
+            // R-33: same checked count as above (shapes already validated,
+            // so this cannot fail — skip defensively, never wrap).
+            let mut elements = 1usize;
+            let mut ok = true;
+            for &d in &tensor.shape {
+                match elements.checked_mul(d) {
+                    Some(v) => elements = v,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let u32_count = elements.div_ceil(8);
+            let Some(byte_len) = u32_count.checked_mul(4) else {
+                continue;
+            };
 
             if let Some(owned) = &mut tensor.owned_data {
-                if owned.len() >= u32_count * 4 {
+                if owned.len() >= byte_len {
                     let slice = as_u32_slice_le_mut(owned);
                     let (c, p) = ecc_verify_buf(slice, ecc_data);
                     total_corrected += c;
                     total_parity_err += p;
                 }
             } else if tensor.mmap.is_some() {
-                let src = unsafe { std::slice::from_raw_parts(tensor.data_ptr, u32_count * 4) };
+                // SAFETY: base tensor extent was validated at load (R-30/R-31:
+                // data_base + offset + byte_len <= mmap.len()); byte_len is
+                // checked above, so from_raw_parts cannot over-read.
+                let src = unsafe { std::slice::from_raw_parts(tensor.data_ptr, byte_len) };
                 let mut owned = crate::mud::ecc::aligned_copy(src);
                 {
                     let slice = as_u32_slice_le_mut(&mut owned);
@@ -1111,7 +1169,7 @@ impl MudFile {
             }
         }
 
-        (total_corrected, total_parity_err)
+        Ok((total_corrected, total_parity_err))
     }
 }
 

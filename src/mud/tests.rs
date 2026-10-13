@@ -1158,3 +1158,74 @@ fn test_r31_huge_dim_file_rejected_without_panic() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+// ============================================================
+// R-33: ECC parity bounds — la paridad se valida contra el extent
+// del tensor BASE; una ECC diminuta es Err, no panic ni over-read.
+// ============================================================
+
+/// Build an in-memory MudFile with one Ternary2Bit base tensor (shape
+/// [16] => need = ceil(16/8) = 2 parity bytes) plus a `.ecc` sibling
+/// carrying `ecc_len` owned parity bytes.
+fn r33_file_with_ecc(ecc_len: usize) -> MudFile {
+    use crate::mud::{MudSkill, MudTensor};
+    let base = MudTensor {
+        name: "w.weight".into(),
+        t_type: MudTensorType::Ternary2Bit,
+        shape: vec![16],
+        data_ptr: std::ptr::null(),
+        offset: 0,
+        data_base: 0,
+        mmap: None,
+        owned_data: Some(vec![0u8; 8]), // 16 ternary = 2 u32 = 8 bytes
+    };
+    let ecc = MudTensor {
+        name: "w.weight.ecc".into(),
+        t_type: MudTensorType::Uint8,
+        shape: vec![ecc_len],
+        data_ptr: std::ptr::null(),
+        offset: 0,
+        data_base: 0,
+        mmap: None,
+        owned_data: Some(vec![0u8; ecc_len]),
+    };
+    let mut tensors = std::collections::HashMap::new();
+    tensors.insert(base.name.clone(), base);
+    tensors.insert(ecc.name.clone(), ecc);
+    let mut skills = std::collections::HashMap::new();
+    skills.insert(
+        "core".into(),
+        MudSkill {
+            name: "core".into(),
+            tensors,
+            metadata: std::collections::HashMap::new(),
+        },
+    );
+    MudFile {
+        mmap: None,
+        skills,
+        global_metadata: std::collections::HashMap::new(),
+        path: None,
+    }
+}
+
+#[test]
+fn test_r33_short_ecc_is_err() {
+    // need = 2 bytes, ECC carries 1 => must be Err (before: owned path
+    // silently `.take()`-truncated; mmap path panicked on slicing).
+    let mut f = r33_file_with_ecc(1);
+    let err = f.ecc_verify_all().expect_err("ECC diminuta debe ser Err");
+    assert!(
+        err.to_string().contains("R-33"),
+        "el error debe mencionar R-33, got: {err}"
+    );
+}
+
+#[test]
+fn test_r33_exact_ecc_is_ok() {
+    // need = 2, ECC carries exactly 2 => Ok (zero-filled data verifies
+    // clean: all-zero words have parity 0).
+    let mut f = r33_file_with_ecc(2);
+    let (corrected, parity_err) = f.ecc_verify_all().expect("ECC exacta debe ser Ok");
+    assert_eq!((corrected, parity_err), (0, 0));
+}

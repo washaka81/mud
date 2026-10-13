@@ -209,7 +209,7 @@ pub(crate) unsafe fn try_gpu_ternary_gemv(
         return false;
     }
 
-    let blocks = n_in / 8;
+    let blocks = n_in.div_ceil(8);
     let w_words = n_out * blocks;
     let packed = std::slice::from_raw_parts(w_u8 as *const u32, w_words);
     let sc = std::slice::from_raw_parts(scales, n_out);
@@ -260,7 +260,10 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
     n_out: usize,
     n_in: usize,
 ) {
-    let row_u32s = n_in / 8;
+    // R-35: row stride is u32 words per PADDED row (canonical R-15 layout:
+    // rows*div_ceil(cols,8)*4 bytes). Floor (n_in/8) mis-strided every row
+    // past the first when n_in % 8 != 0.
+    let row_u32s = n_in.div_ceil(8);
     let w_u32 = w_u8 as *const u32;
 
     // FIX (2026-08-03): Small-matrix fast path — inline execution avoids
@@ -493,7 +496,7 @@ pub(crate) unsafe fn try_gpu_ternary_gemv_qkv(
         return false;
     }
 
-    let blocks = n_in / 8;
+    let blocks = n_in.div_ceil(8);
     let q_words = n_q * blocks;
     let k_words = n_kv * blocks;
     let v_words = n_kv * blocks;

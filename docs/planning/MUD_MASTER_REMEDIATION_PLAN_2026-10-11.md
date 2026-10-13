@@ -245,9 +245,9 @@ flowchart LR
 | R-30 | Validación metadata↔shape | 🔴 | ✅ 2026-10-12 | `mod.rs::validate_model_shapes` (emb/head/normas/attn QKVO+scales/FFN denso/mhc vs dims, `hidden%n_heads==0`, checked) llamada en `load` + al inicio del forward (defensa en profundidad); `inference.rs` deriva longitudes del shape (no metadata) con checked + cap OOM. Tests R-30 ×3 (ok/mismatch/no-divisible). `diagnose_model models/ale.mud` 🟢 119 tensores. 480/0/2. |
 | R-31 | Aritmética checked en loader | 🔴 | ✅ 2026-10-12 | `mod.rs`: `MAX_TENSOR_DIM=1<<28`, shape-body/offset/producto/`expected_bytes`/`end` todo checked+bail (el `.expect` panickeaba = SEC-H2); `data_size` saturating + `checked_data_size`. Tests R-31 ×2 (overflow→None, dim gigante→Err R-31 sin panic). 480/0/2. |
 | R-32 | Cotas parser GGUF | 🟠 | ✅ 2026-10-13 | `src/gguf/mod.rs`: cursor con bounds-checks (truncado→Err, nunca panic), caps SEC-H1 (kv/tensor counts, key/name/string len, rank, dim 1<<28 + producto checked), arrays con cap 4M + reserva incremental + nesting ≤8, `general.alignment` validado (≠0, pot2, ≤1M), offsets con `checked_add` + tamaño exacto por tipo (F32/F16/Q4_x/Q5_x/Q8_x). Tests R-32 ×12 (truncado/counts/len/arrays/nesting/alignment/rank/dim/offset/end/happy-path) + proptest fuzz ×2 (arbitrary + magic). `cargo test --lib --release --features proptest` 500/0/2; clippy 0. |
-| R-33 | ECC parity bounds | 🟡 | TODO | |
-| R-34 | worm embedding row | 🟡 | TODO | |
-| R-35 | GEMV resto 1..7 + stride | 🟡 | TODO | |
+| R-33 | ECC parity bounds | 🟡 | ✅ 2026-10-13 | `mod.rs::ecc_verify_all` ahora `-> Result`: `need=ceil(prod(base)/8)` checked; owned exige `len>=need`, mmap usa `.get()` (offset+end validados); 2º loop con checked (sin `product()` wrap); `load_verified` propaga con `?`. Tests R-33 ×2 (corta→Err R-33, exacta→Ok). Antes: owned truncaba silencioso, mmap panickeaba/over-leía. 500/0/2; clippy 0. |
+| R-34 | worm embedding row | 🟡 | ✅ 2026-10-13 | `worm.rs::get_embedding_row`: exige `Float32` + shape rank-2, dims del shape (caller `hidden` debe coincidir), `checked_mul` + `.get()` + guard de `owned.len()`. Antes: ternario reinterpretado como f32 con extent `vocab*hidden` (~8× over-read). Tests R-34 ×4 (ok/ternario-None/mismatch-None/OOB-None). 500/0/2. |
+| R-35 | GEMV resto 1..7 + stride | 🟡 | ✅ 2026-10-13 | `asm/mod.rs::ternary_gemv_tail` (escalar 1..7, nibbles LSB-first = ASM) cableada en los 3 wrappers (`n_main=n&!7` al ASM + tail); strides CPU `/8`→`div_ceil(8)` (`gemv_gpu.rs` ×3 upload/row/QKV, `slime_backward.rs` stride+doc). GPU intacto ( Ash bails si `!multiple_of(8)`). Test R-35 (15×n ∈ 1..103, 1/4/8 filas vs escalar; FALLA antes ✅). `cargo test --lib --release --features proptest` 507/0/2; clippy 0. NOTA: `cargo test --all-targets --release` bloqueado por causas pre-existentes (panic=abort vs tests/, colisión lib/bin, R-62). |
 | R-36 | SAFETY comments + check | 🟠 | TODO | |
 | R-37 | RCE feature-gated documentado | 🟠 | TODO | |
 | R-38 | symlink escape | 🟡 | TODO | |
@@ -281,7 +281,7 @@ flowchart LR
 | R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
 | R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
 
-**Estado global:** 20/55 (R-01…R-06 + R-10…R-20 + R-30…R-32) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30/R-31/R-32 ✅, resto TODO).
+**Estado global:** 23/55 (R-01…R-06 + R-10…R-20 + R-30…R-35) · F0 cerrada; Ola 1 (F1) cerrada; Ola 2 (F2) parcial (R-30…R-35 ✅; R-36/R-37/R-38 TODO).
 
 ---
 

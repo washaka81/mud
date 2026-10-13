@@ -338,7 +338,7 @@ static TERNARY_NIBBLE_TO_F32: [f32; 16] = {
 /// Helper: Compute gradients for a Ternary GEMV layer using the Straight-Through Estimator (STE).
 /// Since we use ELUT 4-bit nibble packing, the weight unpacking will be needed for `grad_x`.
 /// # Safety
-/// Caller must ensure `w_u8` points to a valid 4-bit ELUT packed array of size `(n_in / 8) * 4 * n_out` bytes,
+/// Caller must ensure `w_u8` points to a valid 4-bit ELUT packed array of size `n_out * n_in.div_ceil(8) * 4` bytes (R-35: canonical per-row padded stride),
 /// and `scales` points to an array of size `n_out`.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::needless_range_loop)]
@@ -365,7 +365,8 @@ pub unsafe fn ternary_gemv_backward(
     let scales_p = scales as usize;
     let gw_p = grad_w.as_mut_ptr() as usize;
     let scratch_p = scratch_grad_x.as_mut_ptr() as usize;
-    let w_u32_stride = n_in / 8;
+    // R-35: padded-row stride (canonical R-15 layout), not floor(n_in/8).
+    let w_u32_stride = n_in.div_ceil(8);
 
     for i in 0..8 {
         let start_row = (i * rows_per_task).min(n_out);

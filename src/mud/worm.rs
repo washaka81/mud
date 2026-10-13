@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::mud::memory_continuity::{MemoryContinuityTable, MemoryPointerEntry};
-use crate::mud::MudFile;
+use crate::mud::{MudFile, MudTensorType};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -274,6 +274,13 @@ impl WormSegment {
 
     /// Extract the token embedding row for a given token ID.
     /// Returns None if the tensor is missing or the token is out of range.
+    ///
+    /// R-34: the embedding MUST be `Float32` with a rank-2 `[vocab, hidden]`
+    /// shape; both dims come from the validated SHAPE (never metadata), the
+    /// caller's `hidden` must match the shape, and all index math is checked.
+    /// Previously a ternary (packed-nibble) tensor was reinterpreted as
+    /// `*const f32` with a `vocab*hidden`-element extent — a ~8x over-read
+    /// of garbage as floats.
     pub fn get_embedding_row(&self, token_id: u32, hidden: usize) -> Option<Vec<f32>> {
         let skill = self.mud_file.skills.get("default")
             .or_else(|| self.mud_file.skills.values().next())?;
@@ -281,18 +288,39 @@ impl WormSegment {
         if emb.data_ptr.is_null() {
             return None;
         }
-        let vocab = emb.shape.first().copied().unwrap_or(0);
+        // R-34: only dense f32 embeddings are readable as f32 rows.
+        if emb.t_type != MudTensorType::Float32 {
+            return None;
+        }
+        let [vocab, emb_hidden] = emb.shape.as_slice() else {
+            return None;
+        };
+        let (vocab, emb_hidden) = (*vocab, *emb_hidden);
+        if hidden != emb_hidden {
+            return None;
+        }
         if token_id as usize >= vocab {
             return None;
         }
-        let row_start = (token_id as usize) * hidden;
-        let emb_data = unsafe {
-            std::slice::from_raw_parts(emb.data_ptr as *const f32, vocab * hidden)
-        };
-        if row_start + hidden > emb_data.len() {
-            return None;
+        let len = vocab.checked_mul(emb_hidden)?;
+        let byte_len = len.checked_mul(4)?;
+        // R-34: for owned tensors the allocation itself is the bound
+        // (mmap-backed extents were validated at load, R-30/R-31).
+        if let Some(owned) = &emb.owned_data {
+            if owned.len() < byte_len {
+                return None;
+            }
         }
-        Some(emb_data[row_start..row_start + hidden].to_vec())
+        // SAFETY: t_type == Float32 (4 B/elem) checked above; `len` is
+        // checked; extent validated at load (mmap) or just above (owned);
+        // the tensor keeps its backing alive (owned_data / mmap field).
+        // `.get()` below converts any residual mismatch into None.
+        let emb_data = unsafe {
+            std::slice::from_raw_parts(emb.data_ptr as *const f32, len)
+        };
+        let row_start = (token_id as usize).checked_mul(emb_hidden)?;
+        let row_end = row_start.checked_add(emb_hidden)?;
+        Some(emb_data.get(row_start..row_end)?.to_vec())
     }
 }
 
@@ -1225,5 +1253,97 @@ mod tests {
         assert!(unseated);
         assert_eq!(propagator.worm_chain.len(), 0);
         assert!(propagator.get_entry(5).is_none());
+    }
+
+    // ============================================================
+    // R-34: worm embedding row — sólo Float32 rank-2, dims del shape,
+    // hidden del llamante verificado, math checked. Estáticos para
+    // garantizar alineamiento + lifetime sin leaks.
+    // ============================================================
+    static R34_EMB: [f32; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    static R34_TERN: [u8; 4] = [0x11, 0x22, 0x33, 0x44];
+
+    fn r34_segment(
+        t_type: MudTensorType,
+        shape: Vec<usize>,
+        data_ptr: *const u8,
+    ) -> WormSegment {
+        use crate::mud::{MudSkill, MudTensor};
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "token_embd.weight".into(),
+            MudTensor {
+                name: "token_embd.weight".into(),
+                t_type,
+                shape,
+                data_ptr,
+                offset: 0,
+                data_base: 0,
+                mmap: None,
+                owned_data: None,
+            },
+        );
+        let mut skills = HashMap::new();
+        skills.insert(
+            "core".into(),
+            MudSkill {
+                name: "core".into(),
+                tensors,
+                metadata: HashMap::new(),
+            },
+        );
+        let mud_file = Arc::new(MudFile {
+            mmap: None,
+            skills,
+            global_metadata: HashMap::new(),
+            path: None,
+        });
+        WormSegment::new(0, mud_file, JepaState::default(), MhCoupler::default())
+    }
+
+    #[test]
+    fn test_r34_f32_emb_row_ok() {
+        // vocab=2, hidden=4: token 1 => [5,6,7,8].
+        let seg = r34_segment(
+            MudTensorType::Float32,
+            vec![2, 4],
+            R34_EMB.as_ptr() as *const u8,
+        );
+        assert_eq!(seg.get_embedding_row(1, 4), Some(vec![5.0, 6.0, 7.0, 8.0]));
+        assert_eq!(seg.get_embedding_row(0, 4), Some(vec![1.0, 2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn test_r34_ternary_emb_returns_none() {
+        // Ternary packed nibbles must NOT be reinterpreted as f32
+        // (before: Some() over garbage + ~8x over-read extent).
+        let seg = r34_segment(
+            MudTensorType::Ternary2Bit,
+            vec![8, 4],
+            R34_TERN.as_ptr(),
+        );
+        assert_eq!(seg.get_embedding_row(0, 4), None);
+    }
+
+    #[test]
+    fn test_r34_hidden_mismatch_returns_none() {
+        // Caller's hidden (8) disagrees with shape hidden (4).
+        let seg = r34_segment(
+            MudTensorType::Float32,
+            vec![2, 4],
+            R34_EMB.as_ptr() as *const u8,
+        );
+        assert_eq!(seg.get_embedding_row(0, 8), None);
+    }
+
+    #[test]
+    fn test_r34_token_oob_returns_none() {
+        let seg = r34_segment(
+            MudTensorType::Float32,
+            vec![2, 4],
+            R34_EMB.as_ptr() as *const u8,
+        );
+        assert_eq!(seg.get_embedding_row(2, 4), None);
+        assert_eq!(seg.get_embedding_row(u32::MAX, 4), None);
     }
 }

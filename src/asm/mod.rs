@@ -242,9 +242,64 @@ pub unsafe fn q4_0_gemv_fused(
 #[cfg(test)]
 mod tests;
 
+/// R-35: scalar 1..7 tail for ternary GEMV rows.
+///
+/// The ASM kernels only cover multiples of 8: `ternary_gemv_avx2`'s
+/// `.leftover8` unconditionally processes a full 8-wide block (over-reading
+/// `x` and accumulating garbage lanes when `n % 8 != 0`), while the 4/8-row
+/// kernels silently DROP the remainder. This helper accumulates the exact
+/// tail (`n_tail` in 1..=7, nibbles LSB-first per the ELUT convention) so
+/// every wrapper below is bit-correct for any `n` with zero over-read.
+///
+/// Layout: canonical per-row padded (R-15) — row `r` owns `stride` u32 words
+/// and the tail lives in word `n_main/8` at nibble positions `0..n_tail`.
+/// `x` points at the tail activations (`x_base + n_main`).
+///
+/// # Safety
+/// `x` valid for `n_tail` f32; each of the `rows` rows has `stride` valid
+/// u32 words with `word_idx = n_main/8 < stride`; `out` valid for `rows` f32.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn ternary_gemv_tail(
+    rows: usize,
+    n_main: usize,
+    n_tail: usize,
+    x: *const f32,
+    weights: *const u32,
+    stride: usize,
+    out: *mut f32,
+    scale: f32,
+) {
+    if n_tail == 0 {
+        return;
+    }
+    // R-35: FFI-boundary contract — the tail word must exist in every row.
+    debug_assert!(n_main.is_multiple_of(8));
+    debug_assert!((1..8).contains(&n_tail));
+    debug_assert!(n_main / 8 < stride);
+    let word_idx = n_main / 8;
+    for r in 0..rows {
+        let w = *weights.add(r * stride + word_idx);
+        let mut acc = 0.0f32;
+        for j in 0..n_tail {
+            let code = (w >> (4 * j)) & 0xF;
+            // ELUT: 0x1 -> +1, 0xF -> -1, else 0 (same as the ASM compare).
+            let v = match code {
+                1 => 1.0f32,
+                0xF => -1.0f32,
+                _ => 0.0f32,
+            };
+            acc += v * *x.add(j);
+        }
+        *out.add(r) += scale * acc;
+    }
+}
+
 #[inline(always)]
 /// # Safety
 /// The caller must ensure that the pointers point to valid memory and n, stride are correct.
+/// R-35: `stride` is u32 words per row and MUST be `>= n.div_ceil(8)`
+/// (canonical per-row padded layout); `x` valid for `n` f32. Any `n` is
+/// exact — the 1..7 remainder is accumulated by [`ternary_gemv_tail`].
 pub unsafe fn ternary_gemv_4rows(
     n: usize,
     x: *const f32,
@@ -253,12 +308,16 @@ pub unsafe fn ternary_gemv_4rows(
     scale: f32,
     stride: usize,
 ) {
-    ternary_gemv_4rows_avx2(n, x, weights, out, scale, stride);
+    let n_main = n & !7;
+    ternary_gemv_4rows_avx2(n_main, x, weights, out, scale, stride);
+    ternary_gemv_tail(4, n_main, n - n_main, x.add(n_main), weights, stride, out, scale);
 }
 
 #[inline(always)]
 /// # Safety
 /// Pointers must be valid for 8 output rows spaced by `stride` u32 words.
+/// R-35: same contract as [`ternary_gemv_4rows`] — any `n` is exact via
+/// [`ternary_gemv_tail`].
 pub unsafe fn ternary_gemv_8rows(
     n: usize,
     x: *const f32,
@@ -267,12 +326,17 @@ pub unsafe fn ternary_gemv_8rows(
     scale: f32,
     stride: usize,
 ) {
-    ternary_gemv_8rows_avx2(n, x, weights, out, scale, stride);
+    let n_main = n & !7;
+    ternary_gemv_8rows_avx2(n_main, x, weights, out, scale, stride);
+    ternary_gemv_tail(8, n_main, n - n_main, x.add(n_main), weights, stride, out, scale);
 }
 
 #[inline(always)]
 /// # Safety
 /// The caller must ensure that the pointers point to valid memory and n is correct.
+/// R-35: the row must hold `>= n.div_ceil(8)` u32 words; any `n` is exact —
+/// the ASM kernel covers `n & !7` and [`ternary_gemv_tail`] the rest (the old
+/// `.leftover8` path over-read `x` and accumulated garbage on remainders).
 pub unsafe fn ternary_gemv(
     n: usize,
     x: *const f32,
@@ -280,7 +344,10 @@ pub unsafe fn ternary_gemv(
     out: *mut f32,
     scale: f32,
 ) {
-    ternary_gemv_avx2(n, x, weights, out, scale);
+    let n_main = n & !7;
+    ternary_gemv_avx2(n_main, x, weights, out, scale);
+    // Single contiguous row: words 0..div_ceil(n,8) are adjacent.
+    ternary_gemv_tail(1, n_main, n - n_main, x.add(n_main), weights, n.div_ceil(8).max(1), out, scale);
 }
 
 #[inline(always)]
