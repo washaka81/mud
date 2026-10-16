@@ -150,6 +150,16 @@ strip = true
 # Target CPU features should be specified during compilation (e.g. RUSTFLAGS="-C target-cpu=native")
 # mud.sh automatically sets RUSTFLAGS="-C target-cpu=native" for all cargo invocations.
 
+# ── R-62 (2026-10-16): test profile for `cargo test --all-targets` ─────────────
+# `[profile.release] panic = "abort"` (hardening: no unwinding in production) is
+# incompatible with integration-test targets in `tests/`, which require `unwind`.
+# `release-test` inherits all release optimizations with `panic = "unwind"` so
+# the all-targets battery compiles and runs. Production artifacts MUST keep
+# using `--release` (abort). CI uses `--profile release-test` for all-targets.
+[profile.release-test]
+inherits = "release"
+panic = "unwind"
+
 # ── SECURITY FEATURES (V25 audit SEC-1/SEC-2 + SEC-H2 2026-07-27) ────────────
 # Default builds ship with NO arbitrary code execution primitives. Opt-in only.
 # - `unsafe-rce`    : enables `RlvrCritic::evaluate_rust_code` (executes `rustc`

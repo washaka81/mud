@@ -14,6 +14,10 @@ env:
   CARGO_TERM_COLOR: always
   # Library tests that touch ash skip gracefully if Vulkan is missing.
   MUD_USE_VULKAN: "0"
+  # Harden crates.io fetches against transient HTTP2/network flakes
+  # (nightly-cert-loss failed on `dyn-stack` download, 2026-10-16).
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_TIMEOUT: "60"
 
 jobs:
   health-battery:
@@ -46,11 +50,21 @@ jobs:
       - name: Stream K loss_cert unit tests (release)
         run: cargo test --lib --release loss_cert -- --test-threads=1
 
-      - name: All-targets tests (release)
-        run: cargo test --all-targets --release
+      # R-62: release-test inherits release opts with panic=unwind, because
+      # [profile.release] panic="abort" cannot link integration-test targets.
+      # (The broken tests/test_tokenizer.rs `fn main` was removed 2026-10-16
+      # per P-08; this profile keeps the gate green if tests/ grows again.)
+      - name: All-targets tests (release-test)
+        run: cargo test --all-targets --profile release-test
 
       - name: Build audit bins
-        run: cargo build --release --bin training_healthcheck --bin mud_full_audit --bin loss_certification_bench --bin pipeline_overlap_bench
+        run: |
+          for i in 1 2 3; do
+            if cargo build --release --bin training_healthcheck --bin mud_full_audit --bin loss_certification_bench --bin pipeline_overlap_bench; then break; fi
+            echo "cargo build failed (attempt $i/3)" >&2
+            [ "$i" = 3 ] && exit 1
+            sleep 30
+          done
 
       - name: Model healthcheck + full audit (if .mud present)
         run: |
@@ -104,7 +118,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build loss certification bench
-        run: cargo build --release --bin loss_certification_bench --bin pipeline_overlap_bench
+        run: |
+          for i in 1 2 3; do
+            if cargo build --release --bin loss_certification_bench --bin pipeline_overlap_bench; then break; fi
+            echo "cargo build failed (attempt $i/3)" >&2
+            [ "$i" = 3 ] && exit 1
+            sleep 30
+          done
 
       - name: Nightly cert-loss (fast gate)
         run: |

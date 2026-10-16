@@ -1,6 +1,10 @@
 # --- RUST & BUILD ---
 /target
-/Cargo.lock
+# NOTE (2026-10-16): Cargo.lock MUST be committed for this binary crate.
+# crates.io yanked all zip 7.x/8.x (only 9.0.3/9.0.4 remain) and candle-core
+# 0.10.2..0.11.0 still requires zip ^7/^8, so fresh resolution without a
+# lockfile fails with `version 8.6.0 is yanked`. The committed lockfile pins
+# the yanked-but-downloadable crates; do NOT re-add /Cargo.lock here.
 
 # --- VIRTUAL ENVIRONMENTS ---
 .venv/

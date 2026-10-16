@@ -599,8 +599,8 @@ case $1 in
         cargo test --lib --release p13 -- --test-threads=1
         echo -e "${BLUE}→ loss_cert unit tests (stream K, release)${NC}"
         cargo test --lib --release loss_cert -- --test-threads=1
-        echo -e "${BLUE}→ all-targets tests (release)${NC}"
-        cargo test --all-targets --release
+        echo -e "${BLUE}→ all-targets tests (release-test; R-62: release panic=abort cannot link tests/)${NC}"
+        cargo test --all-targets --profile release-test
         echo -e "${BLUE}→ training_healthcheck${NC}"
         MODEL=${2:-$MODEL_PATH}
         if [ -f "$MODEL" ]; then
