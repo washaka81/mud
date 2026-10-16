@@ -529,7 +529,7 @@ fn bytes_to_unicode() -> HashMap<u8, char> {
     }
 
     let mut map = HashMap::new();
-    for (b, c) in bs.into_iter().zip(cs.into_iter()) {
+    for (b, c) in bs.into_iter().zip(cs) {
         map.insert(b, std::char::from_u32(c).unwrap());
     }
     map

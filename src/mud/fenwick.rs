@@ -9,6 +9,16 @@
 
 // ── F4 Fenwick trees (P-01: zero-alloc, pub(crate)) ──────────────────────────
 
+/// Lowest set bit of `x` (`x & -x`). Written as shift-over-`trailing_zeros`
+/// (instead of `x & x.wrapping_neg()`) so the code compiles on toolchains
+/// predating `usize::isolate_lowest_one` while also satisfying
+/// `clippy::manual_isolate_lowest_one` on newer ones. All call sites
+/// guarantee `x > 0` (1-indexed BIT loops), so the shift never overflows.
+#[inline]
+fn lowbit(x: usize) -> usize {
+    1usize << x.trailing_zeros()
+}
+
 /// Fenwick tree for f32 prefix sums. Supports `prefix_sum`, `update`, and
 /// `find_kth` (binary search for the smallest index where prefix_sum ≥ k).
 ///
@@ -29,9 +39,7 @@ impl FenwickF32 {
 
     /// Reset buffer to all zeros. O(n) but no alloc — reuses the Vec.
     pub fn reset_zeroed(&mut self) {
-        for v in &mut self.buf {
-            *v = 0.0;
-        }
+        self.buf.fill(0.0);
     }
 
     /// Build from a slice in O(n). Resets first.
@@ -86,7 +94,7 @@ impl FenwickF32 {
         // Step 2: Propagate each element to its parent (linear-time Fenwick build)
         // For each i in 1..=n: buf[i + (i & -i)] += buf[i] (if in bounds)
         for i in 1..=n {
-            let parent = i + (i & i.wrapping_neg());
+            let parent = i + lowbit(i);
             if parent <= n {
                 *buf_ptr.add(parent) += *buf_ptr.add(i);
             }
@@ -106,7 +114,7 @@ impl FenwickF32 {
         unsafe {
             while i > 0 {
                 sum += *ptr.add(i);
-                i -= i & i.wrapping_neg();
+                i -= lowbit(i);
             }
         }
         sum
@@ -125,7 +133,7 @@ impl FenwickF32 {
         unsafe {
             while i <= n {
                 *ptr.add(i) += delta;
-                i += i & i.wrapping_neg();
+                i += lowbit(i);
             }
         }
     }
@@ -253,7 +261,7 @@ impl FenwickF32 {
         let mut sum = 0.0f32;
         while i > 0 {
             sum += self.buf[i];
-            i -= i & i.wrapping_neg();
+            i -= lowbit(i);
         }
         sum
     }
@@ -264,7 +272,7 @@ impl FenwickF32 {
         let mut i = idx + 1; // 1-indexed
         while i <= self.n {
             self.buf[i] += delta;
-            i += i & i.wrapping_neg();
+            i += lowbit(i);
         }
     }
 
@@ -310,9 +318,7 @@ impl FenwickU32 {
     }
 
     pub fn reset_zeroed(&mut self) {
-        for v in &mut self.buf {
-            *v = 0;
-        }
+        self.buf.fill(0);
     }
 
     /// Build from a slice in O(n). Resets first.
@@ -334,7 +340,7 @@ impl FenwickU32 {
         let mut sum = 0u32;
         while i > 0 {
             sum += self.buf[i];
-            i -= i & i.wrapping_neg();
+            i -= lowbit(i);
         }
         sum
     }
@@ -344,7 +350,7 @@ impl FenwickU32 {
         let mut i = idx + 1;
         while i <= self.n {
             self.buf[i] += delta;
-            i += i & i.wrapping_neg();
+            i += lowbit(i);
         }
     }
 
@@ -388,9 +394,7 @@ impl FenwickI32 {
     }
 
     pub fn reset_zeroed(&mut self) {
-        for v in &mut self.buf {
-            *v = 0;
-        }
+        self.buf.fill(0);
     }
 
     /// Build from a slice in O(n). Resets first.
@@ -412,7 +416,7 @@ impl FenwickI32 {
         let mut sum = 0i32;
         while i > 0 {
             sum += self.buf[i];
-            i -= i & i.wrapping_neg();
+            i -= lowbit(i);
         }
         sum
     }
@@ -422,7 +426,7 @@ impl FenwickI32 {
         let mut i = idx + 1;
         while i <= self.n {
             self.buf[i] += delta;
-            i += i & i.wrapping_neg();
+            i += lowbit(i);
         }
     }
 
@@ -459,9 +463,7 @@ impl FenwickLogF32 {
     }
 
     pub fn reset_zeroed(&mut self) {
-        for v in &mut self.buf {
-            *v = 0.0;
-        }
+        self.buf.fill(0.0);
     }
 
     /// Build from a slice of positive f32 values. Stores log(x) in the tree.
@@ -485,7 +487,7 @@ impl FenwickLogF32 {
         let mut i = idx + 1;
         while i <= self.n {
             self.buf[i] += log_delta;
-            i += i & i.wrapping_neg();
+            i += lowbit(i);
         }
     }
 
@@ -496,7 +498,7 @@ impl FenwickLogF32 {
         let mut sum_log = 0.0f32;
         while i > 0 {
             sum_log += self.buf[i];
-            i -= i & i.wrapping_neg();
+            i -= lowbit(i);
         }
         sum_log.exp()
     }

@@ -643,7 +643,7 @@ pub fn forward_last_hidden_and_head(
     ws.jepa_inv_sigma.fill(0.0);
     ws.jepa_var_ema.fill(0.0);
 
-    let vocab_size = if hidden_size > 0 { emb_slice.len() / hidden_size } else { 0 };
+    let vocab_size = emb_slice.len().checked_div(hidden_size).unwrap_or(0);
     let mut current_pos = 0;
     while current_pos < tokens.len() {
         ws.clear_registers();

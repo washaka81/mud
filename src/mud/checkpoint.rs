@@ -328,8 +328,8 @@ pub(crate) fn sync_shadow_to_mud(
         .map(|b| {
             let n = b.len() / 4;
             let mut v = Vec::with_capacity(n);
-            for w in b.chunks_exact(4) {
-                v.push(f32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+            for w in b.as_chunks::<4>().0 {
+                v.push(f32::from_le_bytes(*w));
             }
             v
         })
@@ -951,8 +951,8 @@ fn update_layer_tensor(
         .map(|bytes| {
             let n = bytes.len() / 4;
             let mut v = Vec::with_capacity(n);
-            for w in bytes.chunks_exact(4) {
-                v.push(f32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+            for w in bytes.as_chunks::<4>().0 {
+                v.push(f32::from_le_bytes(*w));
             }
             v
         })

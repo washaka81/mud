@@ -278,7 +278,7 @@ fn main() -> anyhow::Result<()> {
 
     match load_tokenizer_from_dir(&args[tokenizer_dir_idx]) {
         Ok((tokens, merges_opt)) => {
-            println!("  ✅ Loaded tokenizer from {}", &args[tokenizer_dir_idx]);
+            println!("  ✅ Loaded tokenizer from {}", args[tokenizer_dir_idx]);
             global_metadata.insert("tokenizer.tokens".to_string(), tokens);
             if let Some(m) = merges_opt {
                 global_metadata.insert("tokenizer.merges".to_string(), m);

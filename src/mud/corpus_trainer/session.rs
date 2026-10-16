@@ -1810,7 +1810,7 @@ impl MudCorpusTrainer {
                                         blocks: blocks_total,
                                         loss: chunk_loss,
                                         lr: qat_lr,
-                                        tps: toks_per_sec as f32,
+                                        tps: toks_per_sec,
                                         prog: progress_pct as f32,
                                         grad_norm: avg_grad_norm,
                                         entropy: avg_entropy,

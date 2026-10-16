@@ -264,20 +264,18 @@ fn main() -> anyhow::Result<()> {
                             scale = f32::from_le_bytes(b);
                         }
                     }
-                    safetensors::tensor::Dtype::BF16 => {
-                        if bytes.len() == 2 {
-                            let mut b = [0u8; 2];
-                            b.copy_from_slice(bytes);
-                            scale = half::bf16::from_le_bytes(b).to_f32();
-                        }
+                    safetensors::tensor::Dtype::BF16 if bytes.len() == 2 => {
+                        let mut b = [0u8; 2];
+                        b.copy_from_slice(bytes);
+                        scale = half::bf16::from_le_bytes(b).to_f32();
                     }
-                    safetensors::tensor::Dtype::F16 => {
-                        if bytes.len() == 2 {
-                            let mut b = [0u8; 2];
-                            b.copy_from_slice(bytes);
-                            scale = half::f16::from_le_bytes(b).to_f32();
-                        }
+                    safetensors::tensor::Dtype::BF16 => {}
+                    safetensors::tensor::Dtype::F16 if bytes.len() == 2 => {
+                        let mut b = [0u8; 2];
+                        b.copy_from_slice(bytes);
+                        scale = half::f16::from_le_bytes(b).to_f32();
                     }
+                    safetensors::tensor::Dtype::F16 => {}
                     _ => {}
                 }
                 bitnet_scales.insert(name.replace(".weight_scale", ".weight"), scale);

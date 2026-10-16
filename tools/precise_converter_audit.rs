@@ -699,11 +699,7 @@ fn main() -> anyhow::Result<()> {
         .or_else(|| mud.global_metadata.get("num_key_value_heads"))
         .and_then(|s| s.parse().ok())
         .unwrap_or(num_heads);
-    let head_dim = if num_heads > 0 {
-        hidden_size / num_heads
-    } else {
-        0
-    };
+    let head_dim = hidden_size.checked_div(num_heads).unwrap_or(0);
 
     if hidden_size == 0 || num_heads == 0 {
         anyhow::bail!("Could not infer hidden_size or num_heads from MUD metadata");
@@ -810,7 +806,7 @@ fn main() -> anyhow::Result<()> {
             cum_error.record(tensor_idx, metrics.mse as f32, metrics.mae as f32, metrics.sqnr_db as f32);
             println!(
                 "  {:<42} {:>8} {:>10.4} {:>10.2} dB",
-                &mud_name,
+                mud_name,
                 "Float32",
                 metrics.mse,
                 metrics.sqnr_db,
@@ -871,7 +867,7 @@ fn main() -> anyhow::Result<()> {
 
             println!(
                 "  {:<42} {:>8} {:>10.6} {:>8.2} dB {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {}",
-                &mud_name,
+                mud_name,
                 "Ternary",
                 metrics.mse,
                 metrics.sqnr_db,
@@ -998,7 +994,7 @@ fn main() -> anyhow::Result<()> {
                 for m in has_cal.iter().take(5) {
                     println!(
                         "    {:<40} cal_factor={:.4}  sqnr={:.2} dB",
-                        &m.name, m.calibration_factor, m.sqnr_db
+                        m.name, m.calibration_factor, m.sqnr_db
                     );
                 }
                 if has_cal.len() > 5 {
