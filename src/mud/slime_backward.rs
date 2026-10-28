@@ -279,11 +279,171 @@ pub fn unpack_ternary2bit_to_f32(packed: &[u8], scales: &[f32], cols: usize, out
     }
 }
 
+/// R-42: Decode TernaryTQ (5 trits/byte) into f32, applying a per-row PRQ scale.
+/// Each byte packs 5 ternary trits using base-3 encoding:
+///   byte_value = t0 + 3*t1 + 9*t2 + 27*t3 + 81*t4  (range 0..243)
+/// where ti ∈ {0,1,2} maps to {-1, 0, +1}.
+/// `packed` must have at least `rows * ceil(cols/5)` bytes.
+/// `scales` must have `rows` entries (one PRQ scale per row).
+pub fn unpack_ternary_tq_to_f32(packed: &[u8], scales: &[f32], cols: usize, out: &mut [f32]) {
+    let rows = scales.len();
+    assert_eq!(out.len(), rows * cols);
+    assert_eq!(packed.len(), rows * cols.div_ceil(5usize));
+
+    for (r, &scale) in scales.iter().enumerate() {
+        let row_base = r * cols;
+        let byte_base = r * cols.div_ceil(5usize);
+        for c in 0..cols {
+            let byte_idx = byte_base + c / 5;
+            let trit_idx = c % 5;
+            let val = TQ_DECODE_LUT[packed[byte_idx] as usize * 5 + trit_idx] as f32;
+            out[row_base + c] = val * scale;
+        }
+    }
+}
+
+/// R-42: LUT for fast TernaryTQ byte → 5 trits decoding.
+/// TQ_DECODE_LUT[byte * 5 + i] = trit i of byte (0→-1, 1→0, 2→+1).
+static TQ_DECODE_LUT: [i8; 256 * 5] = {
+    let mut lut = [0i8; 256 * 5];
+    let mut byte = 0usize;
+    while byte < 256 {
+        let mut v = byte;
+        let mut i = 0;
+        while i < 5 {
+            let trit = (v % 3) as i8;
+            lut[byte * 5 + i] = match trit {
+                0 => -1,
+                2 => 1,
+                _ => 0,
+            };
+            v /= 3;
+            i += 1;
+        }
+        byte += 1;
+    }
+    lut
+};
+
+/// R-42: AVX2-optimized GEMV for TernaryTQ (5 trits/byte) weights.
+/// Uses LUT for byte→trit decoding and AVX2 for multiply-accumulate.
+/// Falls back to scalar if AVX2 is not available.
+#[cfg(target_arch = "x86_64")]
+pub fn ternary_tq_gemv_avx2(
+    packed: &[u8],
+    scales: &[f32],
+    x: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+) {
+    use std::arch::x86_64::*;
+    assert_eq!(packed.len(), rows * cols.div_ceil(5usize));
+    assert_eq!(scales.len(), rows);
+    assert_eq!(x.len(), cols);
+    assert_eq!(out.len(), rows);
+
+    if !is_x86_feature_detected!("avx2") {
+        // Fallback to scalar
+        ternary_tq_gemv(packed, scales, x, out, rows, cols);
+        return;
+    }
+
+    for r in 0..rows {
+        let byte_base = r * cols.div_ceil(5usize);
+        let mut acc_vec = unsafe { _mm256_setzero_ps() };
+        let mut c = 0usize;
+
+        // Process 8 columns at a time
+        while c + 8 <= cols {
+            // Load 8 activations
+            let x_vec = unsafe { _mm256_loadu_ps(x.as_ptr().add(c)) };
+
+            // Decode 8 trits via LUT (scalar), then pack into AVX2.
+            let mut trits = [0.0f32; 8];
+            for (i, trit) in trits.iter_mut().enumerate() {
+                let col = c + i;
+                let byte_idx = byte_base + col / 5;
+                let trit_idx = col % 5;
+                *trit = TQ_DECODE_LUT[packed[byte_idx] as usize * 5 + trit_idx] as f32;
+            }
+            let w_vec = unsafe { _mm256_loadu_ps(trits.as_ptr()) };
+
+            // Multiply and accumulate
+            let prod = unsafe { _mm256_mul_ps(w_vec, x_vec) };
+            acc_vec = unsafe { _mm256_add_ps(acc_vec, prod) };
+
+            c += 8;
+        }
+
+        // Scalar remainder
+        let mut acc_scalar = 0.0f32;
+        // Extract accumulated sum from AVX2
+        let mut tmp = [0.0f32; 8];
+        unsafe { _mm256_storeu_ps(tmp.as_mut_ptr(), acc_vec) };
+        for v in tmp.iter() {
+            acc_scalar += v;
+        }
+        while c < cols {
+            let byte_idx = byte_base + c / 5;
+            let trit_idx = c % 5;
+            let w = TQ_DECODE_LUT[packed[byte_idx] as usize * 5 + trit_idx] as f32;
+            acc_scalar += w * x[c];
+            c += 1;
+        }
+
+        out[r] += acc_scalar * scales[r];
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn ternary_tq_gemv_avx2(
+    packed: &[u8],
+    scales: &[f32],
+    x: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+) {
+    ternary_tq_gemv(packed, scales, x, out, rows, cols);
+}
+
+/// R-42: GEMV for TernaryTQ (5 trits/byte) weights. Computes
+///   out[row] = scale[row] * sum_c (trit(row, c) * x[c])
+/// where trit maps 0→-1, 1→0, 2→+1.
+/// `packed` holds `rows * ceil(cols/5)` bytes. `scales` holds `rows` f32.
+/// `x` holds `cols` f32. `out` holds `rows` f32 (accumulated, not zeroed).
+pub fn ternary_tq_gemv(
+    packed: &[u8],
+    scales: &[f32],
+    x: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+) {
+    assert_eq!(packed.len(), rows * cols.div_ceil(5usize));
+    assert_eq!(scales.len(), rows);
+    assert_eq!(x.len(), cols);
+    assert_eq!(out.len(), rows);
+
+    for r in 0..rows {
+        let byte_base = r * cols.div_ceil(5usize);
+        let mut acc = 0.0f32;
+        for (c, &xv) in x.iter().enumerate() {
+            let byte_idx = byte_base + c / 5;
+            let trit_idx = c % 5;
+            let w = TQ_DECODE_LUT[packed[byte_idx] as usize * 5 + trit_idx] as f32;
+            acc += w * xv;
+        }
+        out[r] += acc * scales[r];
+    }
+}
+
 /// Memory structure for storing intermediate activations of a SINGLE layer for a SINGLE token.
 /// These are required to compute exact derivatives during the Backward Pass (Activation Checkpointing).
 pub struct SlimeLayerTape {
-    pub norm_i8_attn: Vec<i8>,  // i8 input to Attention Q, K, V projections
-    pub norm_i8_ffn: Vec<i8>,   // i8 input to FFN Up, Gate projections
+    pub norm_f32_attn: Vec<f32>,  // f32 input to Attention Q, K, V projections (R-43: no i8 round-trip)
+    pub norm_f32_ffn: Vec<f32>,   // f32 input to FFN Up, Gate projections (R-43: no i8 round-trip)
     pub q_f32: Vec<f32>,        // Output of Q projection
     pub k_f32: Vec<f32>,        // Output of K projection
     pub v_f32: Vec<f32>,        // Output of V projection
@@ -292,8 +452,10 @@ pub struct SlimeLayerTape {
     pub ffn_up_f32: Vec<f32>,   // Output of FFN Up projection
     pub ffn_gate_f32: Vec<f32>, // Output of FFN Gate projection
     pub ffn_mid_f32: Vec<f32>,  // Intermediate FFN activation: relu2(gate) * up
-    pub attn_act_scale: f32,    // Scaling factor for Attn i8 input
-    pub ffn_act_scale: f32,     // Scaling factor for FFN i8 input
+    // R-43: scales removed (f32 stored directly, no i8 round-trip). Kept as
+    // 1.0 for backward-compat with any code that still reads them.
+    pub attn_act_scale: f32,
+    pub ffn_act_scale: f32,
     pub attn_v_jepa: Vec<f32>,  // Latent state before Attn jepa_stabilizer
     pub ffn_v_jepa: Vec<f32>,   // Latent state before FFN jepa_stabilizer
     // Phase 1 (mHC trainable): inputs needed to differentiate alpha/beta.
@@ -320,8 +482,8 @@ impl SlimeLayerTape {
     ) -> Self {
         let kv_dim = n_kv_heads * head_dim;
         Self {
-            norm_i8_attn: vec![0; hidden],
-            norm_i8_ffn: vec![0; hidden],
+            norm_f32_attn: vec![0.0; hidden],
+            norm_f32_ffn: vec![0.0; hidden],
             q_f32: vec![0.0; hidden],
             k_f32: vec![0.0; kv_dim],
             v_f32: vec![0.0; kv_dim],
@@ -343,8 +505,8 @@ impl SlimeLayerTape {
     }
 
     pub fn reset(&mut self) {
-        self.norm_i8_attn.fill(0);
-        self.norm_i8_ffn.fill(0);
+        self.norm_f32_attn.fill(0.0);
+        self.norm_f32_ffn.fill(0.0);
         self.q_f32.fill(0.0);
         self.k_f32.fill(0.0);
         self.v_f32.fill(0.0);
@@ -766,23 +928,8 @@ pub fn backward_slime_block(
         }
 
         // 3. FFN Up & Gate Projection Backward (F32)
-        #[cfg(target_arch = "x86_64")]
-        {
-            unsafe {
-                crate::mud::ezop::scale_i8_to_f32_avx2(
-                    tape.norm_i8_ffn.as_ptr(),
-                    b_ws.ffn_in_x.as_mut_ptr(),
-                    tape.ffn_act_scale,
-                    hidden,
-                );
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            for i in 0..hidden {
-                b_ws.ffn_in_x[i] = tape.norm_i8_ffn[i] as f32 * tape.ffn_act_scale;
-            }
-        }
+        // R-43: f32 stored directly, no i8 round-trip.
+        b_ws.ffn_in_x[..hidden].copy_from_slice(&tape.norm_f32_ffn[..hidden]);
 
         b_ws.grad_ffn_in_up.fill(0.0);
         unsafe {
@@ -825,13 +972,8 @@ pub fn backward_slime_block(
         let mean_dy_xnorm: f32;
         unsafe {
             if is_x86_feature_detected!("avx2") && hidden >= 8 {
-                // Step 1: dequantize i8 norm → f32 into scratch_grad_x
-                crate::mud::ezop::scale_i8_to_f32_avx2(
-                    tape.norm_i8_ffn.as_ptr(),
-                    y_f32_ptr,
-                    tape.ffn_act_scale,
-                    hidden,
-                );
+                // Step 1: copy f32 norm → scratch_grad_x (R-43: no i8 round-trip)
+                b_ws.scratch_grad_x[..hidden].copy_from_slice(&tape.norm_f32_ffn[..hidden]);
                 // Step 2: y_unscaled = y_f32 / w (in-place: div_avx2 supports a==out)
                 crate::mud::ezop::div_avx2(
                     y_f32_ptr, layer.ffn_norm_w, y_f32_ptr, 0.0, hidden,
@@ -848,7 +990,7 @@ pub fn backward_slime_block(
                 // Scalar fallback
                 let mut sum_dy_xnorm = 0.0f32;
                 for i in 0..hidden {
-                    let y_f32 = tape.norm_i8_ffn[i] as f32 * tape.ffn_act_scale;
+                    let y_f32 = tape.norm_f32_ffn[i];
                     let w = *layer.ffn_norm_w.add(i);
                     let y_unscaled = if w.abs() > 1e-8 { y_f32 / w } else { 0.0 };
                     b_ws.scratch_grad_x[i] = y_unscaled;
@@ -999,21 +1141,8 @@ pub fn backward_slime_block(
         }
 
         // 7. Attention Q, K, V Projection Backward (F32) — batched (no sync overhead)
-        // AVX2 dequantize: attn_in_x[i] = norm_i8_attn[i] * attn_act_scale (8 i8→f32/iter)
-        if is_x86_feature_detected!("avx2") && hidden >= 8 {
-            unsafe {
-                ezop::scale_i8_to_f32_avx2(
-                    tape.norm_i8_attn.as_ptr(),
-                    b_ws.attn_in_x.as_mut_ptr(),
-                    tape.attn_act_scale,
-                    hidden,
-                );
-            }
-        } else {
-            for i in 0..hidden {
-                b_ws.attn_in_x[i] = tape.norm_i8_attn[i] as f32 * tape.attn_act_scale;
-            }
-        }
+        // R-43: f32 stored directly, no i8 round-trip.
+        b_ws.attn_in_x[..hidden].copy_from_slice(&tape.norm_f32_attn[..hidden]);
 
         b_ws.grad_residual_ffn.fill(0.0);
         unsafe {
@@ -1179,23 +1308,8 @@ pub fn backward_slime_block(
     }
 
     // 3. FFN Up & Gate Projection Backward (Ternary STE)
-    // Both Up and Gate share the exact same input: norm_i8_ffn.
-    // Dequantize input to exact f32 float using the tape's ffn_act_scale.
-    // AVX2 dequantize: ffn_in_x[i] = norm_i8_ffn[i] * ffn_act_scale (8 i8→f32/iter)
-    if is_x86_feature_detected!("avx2") && hidden >= 8 {
-        unsafe {
-            crate::mud::ezop::scale_i8_to_f32_avx2(
-                tape.norm_i8_ffn.as_ptr(),
-                b_ws.ffn_in_x.as_mut_ptr(),
-                tape.ffn_act_scale,
-                hidden,
-            );
-        }
-    } else {
-        for i in 0..hidden {
-            b_ws.ffn_in_x[i] = tape.norm_i8_ffn[i] as f32 * tape.ffn_act_scale;
-        }
-    }
+    // R-43: f32 stored directly, no i8 round-trip.
+    b_ws.ffn_in_x[..hidden].copy_from_slice(&tape.norm_f32_ffn[..hidden]);
 
     b_ws.grad_ffn_in_up.fill(0.0);
     unsafe {
@@ -1351,9 +1465,8 @@ pub fn backward_slime_block(
     }
 
     // 7. Attention Q, K, V Projection Backward
-    for i in 0..hidden {
-        b_ws.attn_in_x[i] = tape.norm_i8_attn[i] as f32 * tape.attn_act_scale;
-    }
+    // R-43: f32 stored directly, no i8 round-trip.
+    b_ws.attn_in_x[..hidden].copy_from_slice(&tape.norm_f32_attn[..hidden]);
 
     b_ws.grad_residual_ffn.fill(0.0); // Re-use buffer for accumulating QKV gradients
     unsafe {
@@ -1462,6 +1575,104 @@ mod tests {
     use super::*;
     use crate::mud::slime::SlimeWorkspace;
     use crate::mud::slime_forward::SlimeLayer;
+
+    #[test]
+    fn test_ternary_tq_gemv_avx2() {
+        // Same test as scalar, but using AVX2 path.
+        let vals_row0: Vec<i8> = vec![1, 1, 1, 1, 1, 1, 1, 1];
+        let vals_row1: Vec<i8> = vec![1, -1, 0, 1, -1, 0, 1, -1];
+        let cols: usize = 8;
+        let rows: usize = 2;
+        let nbytes = rows * cols.div_ceil(5usize);
+        let mut packed = vec![0u8; nbytes];
+        for (r, vals) in [vals_row0.as_slice(), vals_row1.as_slice()].iter().enumerate() {
+            let byte_base = r * cols.div_ceil(5usize);
+            for c in 0..cols {
+                let trit = match vals[c] {
+                    -1 => 0u8,
+                    0 => 1u8,
+                    1 => 2u8,
+                    _ => 1u8,
+                };
+                packed[byte_base + c / 5] += trit * 3u8.pow((c % 5) as u32);
+            }
+        }
+        let scales = [1.0f32, 2.0f32];
+        let x = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mut out = vec![0.0f32; rows];
+        ternary_tq_gemv_avx2(&packed, &scales, &x, &mut out, rows, cols);
+        // Row 0: sum = 1+2+3+4+5+6+7+8 = 36, scale 1.0 → 36.0
+        assert!((out[0] - 36.0).abs() < 1e-5, "row0: {}", out[0]);
+        // Row 1: 1-2+0+4-5+0+7-8 = -3, scale 2.0 → -6.0
+        assert!((out[1] - (-6.0)).abs() < 1e-5, "row1: {}", out[1]);
+    }
+
+    #[test]
+    fn test_ternary_tq_gemv() {
+        // 2 rows, 5 cols. Row 0: all +1, Row 1: alternating.
+        let vals_row0: Vec<i8> = vec![1, 1, 1, 1, 1];
+        let vals_row1: Vec<i8> = vec![1, -1, 0, 1, -1];
+        let cols: usize = 5;
+        let rows: usize = 2;
+        let nbytes = rows * cols.div_ceil(5usize); // 2 bytes (1 per row)
+        let mut packed = vec![0u8; nbytes];
+        for (r, vals) in [vals_row0.as_slice(), vals_row1.as_slice()].iter().enumerate() {
+            let byte_base = r * cols.div_ceil(5usize);
+            for c in 0..cols {
+                let trit = match vals[c] {
+                    -1 => 0u8,
+                    0 => 1u8,
+                    1 => 2u8,
+                    _ => 1u8,
+                };
+                packed[byte_base] += trit * 3u8.pow((c % 5) as u32);
+            }
+        }
+        let scales = [1.0f32, 2.0f32];
+        let x = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let mut out = vec![0.0f32; rows];
+        ternary_tq_gemv(&packed, &scales, &x, &mut out, rows, cols);
+        // Row 0: sum = 1+2+3+4+5 = 15, scale 1.0 → 15.0
+        assert!((out[0] - 15.0).abs() < 1e-6);
+        // Row 1: 1*1 + (-1)*2 + 0*3 + 1*4 + (-1)*5 = 1-2+0+4-5 = -2, scale 2.0 → -4.0
+        assert!((out[1] - (-4.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unpack_ternary_tq_roundtrip() {
+        // Encode 10 ternary values as base-3, decode, verify.
+        let vals: Vec<i8> = vec![-1, 0, 1, -1, 1, 0, -1, 0, 1, -1];
+        let scale = 2.5f32;
+        let cols = vals.len();
+        let rows = 1;
+        let nbytes = rows * cols.div_ceil(5usize);
+        let mut packed = vec![0u8; nbytes];
+        // Encode
+        for (c, &val) in vals.iter().enumerate() {
+            let byte_idx = c / 5;
+            let trit_idx = c % 5;
+            let trit = match val {
+                -1 => 0u8,
+                0 => 1u8,
+                1 => 2u8,
+                _ => 1u8,
+            };
+            packed[byte_idx] += trit * 3u8.pow(trit_idx as u32);
+        }
+        let scales = [scale];
+        let mut out = vec![0.0f32; rows * cols];
+        unpack_ternary_tq_to_f32(&packed, &scales, cols, &mut out);
+        for (i, &v) in vals.iter().enumerate() {
+            let expected = v as f32 * scale;
+            assert!(
+                (out[i] - expected).abs() < 1e-6,
+                "idx {}: got {} expected {}",
+                i,
+                out[i],
+                expected
+            );
+        }
+    }
 
     #[allow(clippy::needless_range_loop)]
     #[test]

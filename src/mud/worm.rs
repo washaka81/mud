@@ -482,6 +482,11 @@ impl WormPropagator {
     /// 3. Seats each model into a Continuity Table slot
     /// 4. Builds a WormChain that acts as a single unified model
     pub fn propagate(&mut self) -> anyhow::Result<usize> {
+        self.propagate_except(None)
+    }
+
+    /// Like [`propagate`] but skips a model file by name (e.g. the base model).
+    pub fn propagate_except(&mut self, exclude: Option<&str>) -> anyhow::Result<usize> {
         let path = std::path::Path::new(&self.models_dir);
         if !path.exists() || !path.is_dir() {
             log::warn!("[WORM] Directory not found: {}", self.models_dir);
@@ -492,6 +497,7 @@ impl WormPropagator {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("mud"))
+            .filter(|p| exclude.map(|e| p.file_name().and_then(|n| n.to_str()) != Some(e)).unwrap_or(true))
             .collect();
 
         for file_path in entries {

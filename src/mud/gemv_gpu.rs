@@ -15,12 +15,16 @@ static MUD_GEMV_ROWS_8: AtomicU64 = AtomicU64::new(0);
 #[inline]
 pub(crate) fn prefer_gemv_8_rows() -> bool {
     match MUD_GEMV_ROWS_8.load(Ordering::Relaxed) {
+        // 2 => explicitly disabled via env
+        2 => false,
         1 => true,
         _ => {
+            // Default to 8-row: bench (asm_kernel_bench) shows 6.5x vs 4.0x
+            // throughput per row. Override with MUD_GEMV_ROWS=4 to force 4-row.
             let v = std::env::var("MUD_GEMV_ROWS")
-                .map(|s| s.trim() == "8")
-                .unwrap_or(false);
-            MUD_GEMV_ROWS_8.store(if v { 1 } else { 0 }, Ordering::Relaxed);
+                .map(|s| s.trim() != "4")
+                .unwrap_or(true);
+            MUD_GEMV_ROWS_8.store(if v { 1 } else { 2 }, Ordering::Relaxed);
             v
         }
     }
@@ -305,9 +309,8 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
 
     let pool = crate::mud::pcore_pool::get_pool();
     let n_tasks = pool.num_threads().max(1);
-    // T11: `MUD_GEMV_ROWS=8` enables 8-row kernel. Default 4 — microbench on
-    // i7-1260P (hidden=2048, warm L2) shows 4-row ≥ 8-row; 8-row helps more when
-    // x is cold / multi-thread thrash (opt-in until host re-calib).
+    // Default 8-row: asm_kernel_bench shows 8-row = 6.5x vs 4-row = 4.0x per row.
+    // Override with MUD_GEMV_ROWS=4 to force the 4-row kernel.
     let prefer_8 = prefer_gemv_8_rows();
     let align = if prefer_8 { 8 } else { 4 };
     let raw_chunk = (n_out / n_tasks).max(align);
@@ -764,7 +767,9 @@ fn try_gpu_rms_output_norm(ws: &mut SlimeWorkspace, output_norm_w: *const f32, e
     // `dispatch_rms_norm_sync`, which fences before readback.
     unsafe {
         let x_ptr = ws.q_f32.as_ptr() as *mut f32;
-        let y_ptr = ws.k_f32.as_ptr() as *mut f32;
+        // k_f32 is only n_kv_heads*head_dim (too small for hidden-sized output
+        // norm); use ffn_out_f32 (hidden_size) as the y buffer instead.
+        let y_ptr = ws.ffn_out_f32.as_ptr() as *mut f32;
         for (i, reg) in ws.registers.iter().take(hidden).enumerate() {
             *x_ptr.add(i) = reg.read_accum();
         }

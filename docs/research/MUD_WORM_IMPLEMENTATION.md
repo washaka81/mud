@@ -393,3 +393,42 @@ Speedup:  90×
 2. **Fase 3:** CellV5 KV cache pre-compression (16-24× total)
 3. **Integración:** WormholeNetwork + CellV5 + KV compression
 4. **Validación:** clippy + tests (objetivo: 410+ tests)
+
+---
+
+## 7. Hot-Plug (2026-10-26)
+
+### 7.1 Status
+
+✅ **Wired into inference** (opt-in). Previously `WormPropagator` / `WormChain` had no callers (research-only). Now reachable from the inference CLI via env flag.
+
+### 7.2 Usage
+
+```bash
+# Place mini-model .mud files in models/ (distinct from the base model).
+# The base model is automatically excluded from propagation.
+MUD_WORM_HOTPLUG=1 ./target/release/forge_llm models/<base>.mud
+# → "[WORM] Hot-plug: N mini-model(s) seated."
+```
+
+### 7.3 Implementation details
+
+- `src/mud/worm.rs`: added `WormPropagator::propagate_except(exclude: Option<&str>)`. `propagate()` delegates with `None`.
+- `src/main.rs`: when `MUD_WORM_HOTPLUG=1` (or `true`), a `WormPropagator` is built from the base model's parent directory, propagating all `.mud` except the base file. The propagator is held for the whole session.
+- In the auto-regressive generation loop, after `registers_to_f32_into` and `maybe_think_collapse_rms_scaled`, the hidden state `reg_f32` is passed through `prop.forward(&reg_f32, hidden_size)` and blended 50/50 with the host hidden state before the LM-head. No-op when no segments are seated.
+
+### 7.4 Requirements / caveats
+
+- Mini-models must have a compatible `hidden_size` for the coupling to be dimensionally valid (the blend requires matching lengths; mismatched segments are skipped).
+- `WormChain::forward` performs latent coupling (scale + mHC blend), not a full transformer forward pass per mini-model. It is a lightweight hot-plug of latent modules, not a full model ensemble.
+- Default OFF (`MUD_WORM_HOTPLUG` unset) → no behavior change; 0 overhead in the normal path.
+- The "50% host compute reduction" claim for wormholes remains **retired** (R-67, 2026-10-11); this wiring does not reintroduce it.
+
+### 7.5 Verification
+
+```bash
+cargo build --release
+cargo clippy --all-targets          # 0 warnings
+cargo test --lib                    # 511 passed, 0 failed, 2 ignored
+MUD_WORM_HOTPLUG=1 ./target/release/forge_llm models/ale.mud   # prints seated count
+```

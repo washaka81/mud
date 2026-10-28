@@ -419,6 +419,9 @@ mod tests {
             std::env::remove_var("RAYON_NUM_THREADS");
         }
         let n2 = default_pcore_threads();
-        assert!((1..=8).contains(&n2), "default capped at PCORE_THREADS_CAP");
+        assert!(
+            (1..=crate::mud::constants::PCORE_THREADS_CAP).contains(&n2),
+            "default capped at PCORE_THREADS_CAP"
+        );
     }
 }

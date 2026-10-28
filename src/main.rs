@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
     // preserved (panic on missing) but the panic message now includes a
     // remediation hint (re-convert the .mud) instead of a bare field name.
     use forge_llm::mud::error::expect_metadata;
-    let hidden_size = expect_metadata(
+    let hidden_size: usize = expect_metadata(
         "hidden_size",
         mud.global_metadata
             .get("hidden_size")
@@ -219,39 +219,29 @@ fn main() -> anyhow::Result<()> {
     let tokenizer = forge_llm::mud::smart_tokenizer::SmartTokenizer::from_mud_metadata(tokens_str, merges_str, &mud.global_metadata);
 
     // Setup embedding and output weights.
-    // SAFETY: token_embd.weight is Ternary2Bit (ELUT 4-bit nibble packed).
-    // Reading it as *const f32 would treat packed ternary bits as IEEE floats — wrong.
-    // We must dequantize via unpack_ternary2bit_to_f32 using the PRQ scales.
+    // R-41: do NOT materialize the full `vocab × hidden` f32 embedding matrix.
+    // Keep the packed backing (ternary) or a slice over the mmap (F32) and
+    // de-quantize only the row that is actually needed at lookup time. This
+    // keeps the RSS of inference below ~40 MB on `ale.mud` instead of ~155 MB.
     let emb_tensor = core
         .tensors
         .get("token_embd.weight")
         .ok_or_else(|| anyhow::anyhow!("Missing token_embd.weight"))?;
-    let mut emb_f32 = vec![0.0f32; vocab_size * hidden_size];
-    let emb_rms_sum_local = if emb_tensor.t_type == forge_llm::mud::MudTensorType::Float32 {
-        let emb_data_ptr = emb_tensor
-            .owned_data
-            .as_ref()
-            .map(|d| d.as_ptr() as *const f32)
-            .unwrap_or(emb_tensor.data_ptr as *const f32);
-        // SAFETY: Float32 `token_embd.weight`; `MudFile::load` ran
-        // `validate_model_shapes` (R-30), so its shape is [vocab,hidden] and
-        // the backing (owned_data or mmap-validated `data_ptr`) holds
-        // `vocab_size * hidden_size` f32.
-        let emb_f32_slice =
-            unsafe { std::slice::from_raw_parts(emb_data_ptr, vocab_size * hidden_size) };
-        emb_f32.copy_from_slice(emb_f32_slice);
-        emb_f32_slice.iter().map(|&x| x * x).sum::<f32>() / (hidden_size as f32)
-    } else {
+
+    // Stored backing for on-demand row dequantization.
+    let emb_is_ternary = emb_tensor.t_type == forge_llm::mud::MudTensorType::Ternary2Bit;
+    // For ternary: packed bytes + scales + row stride.
+    let (emb_packed_ptr, emb_byte_len, emb_scales_ptr) = if emb_is_ternary {
         let emb_scales_tensor = core
             .tensors
             .get("token_embd.prq_scale")
             .ok_or_else(|| anyhow::anyhow!("Missing token_embd.prq_scale"))?;
-        let emb_packed_ptr = emb_tensor
+        let packed_ptr = emb_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr())
             .unwrap_or(emb_tensor.data_ptr);
-        let emb_byte_len = emb_tensor
+        let byte_len = emb_tensor
             .owned_data
             .as_ref()
             .map(|d| d.len())
@@ -259,37 +249,89 @@ fn main() -> anyhow::Result<()> {
                 let n: usize = vocab_size * hidden_size;
                 n.div_ceil(8) * 4
             });
-        // SAFETY: `emb_byte_len` is the owned length or the canonical packed
-        // size for the R-30-validated [vocab,hidden] shape; the pointer is the
-        // tensor's own backing.
-        let emb_packed: &[u8] = unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
-        let emb_scales_ptr = emb_scales_tensor
+        let scales_ptr = emb_scales_tensor
             .owned_data
             .as_ref()
             .map(|d| d.as_ptr() as *const f32)
             .unwrap_or(emb_scales_tensor.data_ptr as *const f32);
-        // SAFETY: `token_embd.prq_scale` shape == [vocab] (R-30); its backing
-        // holds `vocab_size` f32.
-        let emb_scales: &[f32] = unsafe { std::slice::from_raw_parts(emb_scales_ptr, vocab_size) };
+        (packed_ptr, byte_len, scales_ptr)
+    } else {
+        (std::ptr::null(), 0usize, std::ptr::null())
+    };
+    // For F32: a slice over the (mmap or owned) backing, never copied.
+    let emb_f32_ptr: *const f32 = if !emb_is_ternary {
+        emb_tensor
+            .owned_data
+            .as_ref()
+            .map(|d| d.as_ptr() as *const f32)
+            .unwrap_or(emb_tensor.data_ptr as *const f32)
+    } else {
+        std::ptr::null()
+    };
+    let emb_row_words = hidden_size.div_ceil(8);
 
-        forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
-            emb_packed,
-            emb_scales,
-            hidden_size,
-            &mut emb_f32,
-        );
-        let mut hist = std::collections::HashMap::new();
-        for &v in emb_f32.iter().take(100000) {
-            if v != 0.0 {
-                let v_scaled = v / emb_scales[0]; // roughly
-                *hist.entry(v_scaled.round() as i32).or_insert(0) += 1;
-            }
+    // emb_rms_sum over the (unscaled) dequantized values — computed by
+    // iterating rows one at a time so we never hold the full matrix.
+    let emb_rms_sum_local = if emb_is_ternary {
+        // SAFETY: emb_scales_ptr holds `vocab_size` f32 (R-30); emb_packed_ptr
+        // holds `emb_byte_len` bytes.
+        let emb_scales: &[f32] =
+            unsafe { std::slice::from_raw_parts(emb_scales_ptr, vocab_size) };
+        let emb_packed: &[u8] =
+            unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
+        let mut sum_sq = 0.0f32;
+        let mut row_buf = vec![0.0f32; hidden_size];
+        for r in 0..vocab_size {
+            let row_packed = &emb_packed[r * emb_row_words * 4..(r + 1) * emb_row_words * 4];
+            let row_scale = emb_scales[r];
+            forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
+                row_packed,
+                &[row_scale],
+                hidden_size,
+                &mut row_buf,
+            );
+            sum_sq += row_buf.iter().map(|&x| x * x).sum::<f32>();
         }
-        if debug_mode() {
-            println!("{}Emb hist: {:?}{}", COLOR_DIM, hist, COLOR_RESET);
+        sum_sq / (hidden_size as f32)
+    } else {
+        // SAFETY: Float32 `token_embd.weight`; R-30 validated shape
+        // [vocab,hidden]; backing holds `vocab_size * hidden_size` f32.
+        let emb_slice: &[f32] =
+            unsafe { std::slice::from_raw_parts(emb_f32_ptr, vocab_size * hidden_size) };
+        emb_slice.iter().map(|&x| x * x).sum::<f32>() / (hidden_size as f32)
+    };
+
+    // Scratch buffer reused for every on-demand row dequantization.
+    let mut emb_row_buf = vec![0.0f32; hidden_size];
+
+    // Helper closure: dequantize row `tid` into `emb_row_buf`, applying the
+    // ternary PRQ scale (or copying the F32 row). Does NOT apply `scale_up`
+    // (caller does that).
+    // We capture the raw pointers by value (they are Copy).
+    let dequant_emb_row = |tid: usize, buf: &mut [f32]| {
+        if emb_is_ternary {
+            // SAFETY: emb_scales_ptr holds `vocab_size` f32; emb_packed_ptr
+            // holds `emb_byte_len` bytes (R-30 validated shape).
+            let emb_scales: &[f32] =
+                unsafe { std::slice::from_raw_parts(emb_scales_ptr, vocab_size) };
+            let emb_packed: &[u8] =
+                unsafe { std::slice::from_raw_parts(emb_packed_ptr, emb_byte_len) };
+            let r = tid.min(vocab_size - 1);
+            let row_packed = &emb_packed[r * emb_row_words * 4..(r + 1) * emb_row_words * 4];
+            forge_llm::mud::slime_backward::unpack_ternary2bit_to_f32(
+                row_packed,
+                &[emb_scales[r]],
+                hidden_size,
+                buf,
+            );
+        } else {
+            // SAFETY: emb_f32_ptr holds `vocab_size * hidden_size` f32.
+            let emb_slice: &[f32] =
+                unsafe { std::slice::from_raw_parts(emb_f32_ptr, vocab_size * hidden_size) };
+            let r = tid.min(vocab_size - 1);
+            let start = r * hidden_size;
+            buf.copy_from_slice(&emb_slice[start..start + hidden_size]);
         }
-        // Compute RMS over dequantized values (not PRQ scales) — same formula as Float32 branch
-        emb_f32.iter().map(|&x| x * x).sum::<f32>() / (hidden_size as f32)
     };
 
     // Output projection: reuse the embedding (tied weights) or load separate output.weight
@@ -329,11 +371,13 @@ fn main() -> anyhow::Result<()> {
             None
         };
 
-    let mut out_f32_owned: Option<Vec<f32>> = if tied_output || ternary_head.is_some() {
+    let mut out_f32_owned: Option<Vec<f32>> = if ternary_head.is_some() {
         None
     } else {
-        // F32 head only (Q2_0→F32 converted models). Ternary heads take the
-        // packed path above and no longer build this matrix.
+        // F32 head (tied F32 embedding or untied F32 output.weight).
+        // Q2_0→F32 converted models keep the embedding as Float32 and tie
+        // the LM head to it, so the head must be materialized from the
+        // embedding backing instead of being skipped.
         if out_tensor.t_type != forge_llm::mud::MudTensorType::Float32 {
             anyhow::bail!(
                 "R-40: unsupported output.weight type {:?} (Float32 or Ternary2Bit required)",
@@ -364,18 +408,8 @@ fn main() -> anyhow::Result<()> {
         .sqrt()
         .max(forge_llm::mud::constants::EPSILON_FLOOR);
 
-    let mut hist = std::collections::HashMap::new();
-    for &v in emb_f32.iter().take(10000) {
-        if v.abs() > 1e-5 {
-            let v_scaled = v / 0.02709961; // roughly
-            *hist.entry(v_scaled.round() as i32).or_insert(0) += 1;
-        }
-    }
-    if debug_mode() {
-        println!("{}Emb hist (first 10k): {:?}{}", COLOR_DIM, hist, COLOR_RESET);
-    }
+    // R-41: emb no longer materialized; debug hist skipped.
 
-    let emb_is_ternary = emb_tensor.t_type == forge_llm::mud::MudTensorType::Ternary2Bit;
     // FP32 emb (HF convert): leave scale_up=1 — already calibrated.
     // Ternary emb: also default 1; use MUD_INFER_SCALE_UP=auto only if needed.
     let scale_up = match std::env::var("MUD_INFER_SCALE_UP")
@@ -399,11 +433,8 @@ fn main() -> anyhow::Result<()> {
         "[Inference] emb_rms={:.4e} scale_up={:.3} logit_scale={:.4} tied={} ternary={}",
         emb_rms, scale_up, logit_scale, tied_output, emb_is_ternary
     );
-    if (scale_up - 1.0).abs() > 1e-6 {
-        for v in emb_f32.iter_mut() {
-            *v *= scale_up;
-        }
-    }
+    // R-41: scale_up is applied per-row at lookup time (emb_f32 no longer
+    // materialized). Only the F32 head matrix (out_f32_owned) is scaled here.
     if let Some(ref mut out) = out_f32_owned {
         let s = scale_up * logit_scale;
         if (s - 1.0).abs() > 1e-6 {
@@ -421,7 +452,11 @@ fn main() -> anyhow::Result<()> {
         scale_up * logit_scale
     };
 
-    let emb_slice: &[f32] = &emb_f32;
+    // R-41: emb is no longer materialized as a flat f32 matrix. `emb_slice`
+    // is only used as a fallback for the F32 (non-ternary) LM-head path,
+    // where `out_f32_owned` is `Some`. Keep an empty slice as the (unused)
+    // fallback to satisfy the type.
+    let emb_slice: &[f32] = &[];
     // Tied: LM-head rows == emb; untied: separate buffer (optionally logit-scaled)
     let out_slice_ternary: &[f32] = out_f32_owned.as_deref().unwrap_or(emb_slice);
 
@@ -441,11 +476,26 @@ fn main() -> anyhow::Result<()> {
 
     let head_dim = hidden_size / n_heads;
 
-    // Dynamically compute max_emb if missing to prevent mHC geometric prison
-    let computed_max_emb = emb_slice
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0f32, |a, b| a.max(b));
+    // Dynamically compute max_emb if missing to prevent mHC geometric prison.
+    // R-41: iterate rows one at a time instead of holding the full matrix.
+    let computed_max_emb = {
+        let mut mx = 0.0f32;
+        let mut row_buf = vec![0.0f32; hidden_size];
+        for tid in 0..vocab_size {
+            dequant_emb_row(tid, &mut row_buf);
+            if (scale_up - 1.0).abs() > 1e-6 {
+                for v in row_buf.iter_mut() {
+                    *v *= scale_up;
+                }
+            }
+            for &v in row_buf.iter() {
+                if v.abs() > mx {
+                    mx = v.abs();
+                }
+            }
+        }
+        mx
+    };
     let max_emb = mud
         .global_metadata
         .get("max_emb")
@@ -469,6 +519,38 @@ fn main() -> anyhow::Result<()> {
         forge_llm::mud::moe_load::load_model_buses(&mud, num_layers, hidden_size, ffn_mid, top_k);
     let multi = forge_llm::mud::moe_load::model_has_multi_expert(&moe_buses);
     let mut moe_scratch = ExpertScratch::new(hidden_size, ffn_mid, top_k.max(8));
+
+    // MUD-WORM hot-plug (opt-in): discover & seat mini-models from models/
+    // (excluding the base model) and apply latent coupling to the hidden state.
+    let worm_hotplug = std::env::var("MUD_WORM_HOTPLUG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let worm_propagator: Option<forge_llm::mud::worm::WormPropagator> = if worm_hotplug {
+        let base_name = std::path::Path::new(model_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let models_dir = std::path::Path::new(model_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("models")
+            .to_string();
+        let mut prop = forge_llm::mud::worm::WormPropagator::new(&models_dir);
+        match prop.propagate_except(Some(&base_name)) {
+            Ok(n) => {
+                println!("[WORM] Hot-plug: {} mini-model(s) seated.", n);
+                Some(prop)
+            }
+            Err(e) => {
+                eprintln!("[WORM] Propagation failed: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if multi {
         println!(
             "[MoE] Multi-expert FFN active (top_k={top_k}). Clone: MUD_MOE_CLONE=N for dense→MoE tests."
@@ -583,12 +665,16 @@ fn main() -> anyhow::Result<()> {
             // (e.g., pad/EOS) outside `emb_slice`'s allocated vocab_size.
             let vocab_len = vocab_size.max(1);
             let tid = (tokens[current_pos] as usize).min(vocab_len - 1);
-            let emb_start = tid * hidden_size;
 
-            for (i, v) in emb_slice[emb_start..emb_start + hidden_size]
-                .iter()
-                .enumerate()
-            {
+            // R-41: dequantize the needed row on demand instead of slicing a
+            // materialized matrix.
+            dequant_emb_row(tid, &mut emb_row_buf);
+            if (scale_up - 1.0).abs() > 1e-6 {
+                for v in emb_row_buf.iter_mut() {
+                    *v *= scale_up;
+                }
+            }
+            for (i, v) in emb_row_buf.iter().enumerate() {
                 forge_llm::mud::slime::SlimeRegister::init_from_embed(
                     &mut ws.registers[i],
                     &mut ws.jepa_z,
@@ -640,6 +726,17 @@ fn main() -> anyhow::Result<()> {
             // Optional C-MUD complex reasoning pass (research §3): no-op unless
             // MUD_CMUD_THINK=1. Acts on the hidden state before the LM-head.
             forge_llm::mud::cmud::maybe_think_collapse_rms_scaled(&mut reg_f32);
+            // MUD-WORM hot-plug: latent coupling with seated mini-models.
+            if let Some(prop) = worm_propagator.as_ref() {
+                if !prop.worm_chain.is_empty() {
+                    let coupled = prop.forward(&reg_f32, hidden_size);
+                    if coupled.len() == reg_f32.len() {
+                        for (a, b) in reg_f32.iter_mut().zip(coupled.iter()) {
+                            *a = 0.5 * *a + 0.5 * *b;
+                        }
+                    }
+                }
+            }
             if debug && generated == 0 {
                 println!("{}reg_f32[0..5]={:?}{}", COLOR_DIM, &reg_f32[..5], COLOR_RESET);
             }
@@ -829,11 +926,15 @@ fn main() -> anyhow::Result<()> {
             }
 
             ws.clear_registers();
-            let emb_start = best_idx * hidden_size;
-            for (i, v) in emb_slice[emb_start..emb_start + hidden_size]
-                .iter()
-                .enumerate()
-            {
+            let tid = (best_idx as usize).min(vocab_size - 1);
+            // R-41: dequantize the needed row on demand.
+            dequant_emb_row(tid, &mut emb_row_buf);
+            if (scale_up - 1.0).abs() > 1e-6 {
+                for v in emb_row_buf.iter_mut() {
+                    *v *= scale_up;
+                }
+            }
+            for (i, v) in emb_row_buf.iter().enumerate() {
                 forge_llm::mud::slime::SlimeRegister::init_from_embed(
                     &mut ws.registers[i],
                     &mut ws.jepa_z,

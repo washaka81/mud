@@ -97,7 +97,11 @@ pub fn qat_learning_rate() -> f32 {
 pub const SLIME_RESEAT_STRIDE: usize = 256;
 
 /// Default upper bound for PCorePool when hardware detection is unavailable.
-pub const PCORE_THREADS_CAP: usize = 8;
+/// Upper bound for PCorePool. Raised from 8 to 16 to allow P+E core usage
+/// on i7-1260P (4 P-cores ×2 HT + 8 E-cores = 16 logical). R-44: thread
+/// policy is configurable via `MUD_PCORE_THREADS`; default still detects
+/// available cores clamped to this cap.
+pub const PCORE_THREADS_CAP: usize = 16;
 
 /// Cached process-wide core count for HW path of [`default_pcore_threads`].
 ///

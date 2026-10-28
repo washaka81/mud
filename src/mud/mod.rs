@@ -103,6 +103,9 @@ pub enum MudTensorType {
     Float16 = 2,
     Int4 = 3,
     Uint8 = 4,
+    /// 5 trits per byte (1.6 bits/weight). TQ1_0-style packing (R-42).
+    /// Each byte holds 5 ternary values (base-3: 0→-1, 1→0, 2→+1).
+    TernaryTQ = 5,
 }
 
 pub struct MudTensor {
@@ -164,6 +167,7 @@ impl MudTensor {
             MudTensorType::Float16 => elements.saturating_mul(2),
             MudTensorType::Int4 => elements.div_ceil(2),
             MudTensorType::Uint8 => elements,
+            MudTensorType::TernaryTQ => elements.div_ceil(5),
         }
     }
 
@@ -179,6 +183,7 @@ impl MudTensor {
             MudTensorType::Float16 => elements.checked_mul(2),
             MudTensorType::Int4 => Some(elements.div_ceil(2)),
             MudTensorType::Uint8 => Some(elements),
+            MudTensorType::TernaryTQ => Some(elements.div_ceil(5)),
         }
     }
 }
@@ -263,6 +268,7 @@ impl StreamingMudWriter {
                 MudTensorType::Float16 => elements * 2,
                 MudTensorType::Int4 => elements.div_ceil(2),
                 MudTensorType::Uint8 => elements,
+                MudTensorType::TernaryTQ => elements.div_ceil(5),
             };
 
             header_data.write_u64::<LittleEndian>(curr_offset as u64)?;
@@ -389,6 +395,7 @@ impl MudFile {
                     MudTensorType::Float16 => elements * 2,
                     MudTensorType::Int4 => elements.div_ceil(2),
                     MudTensorType::Uint8 => elements,
+                    MudTensorType::TernaryTQ => elements.div_ceil(5),
                 }
             };
             // Defensive: a tensor left on mmap may have had its `data_ptr` reset to
@@ -421,6 +428,7 @@ impl MudFile {
                     MudTensorType::Float16 => elements * 2,
                     MudTensorType::Int4 => elements.div_ceil(2),
                     MudTensorType::Uint8 => elements,
+                    MudTensorType::TernaryTQ => elements.div_ceil(5),
                 };
                 // `tensor.offset` is relative to the start of the data region; the
                 // absolute position in the mmap is `data_base + offset` (both already
@@ -439,6 +447,7 @@ impl MudFile {
                     MudTensorType::Float16 => elements * 2,
                     MudTensorType::Int4 => elements.div_ceil(2),
                     MudTensorType::Uint8 => elements,
+                    MudTensorType::TernaryTQ => elements.div_ceil(5),
                 };
                 file.write_all(&vec![0u8; s_expected])?;
                 s_expected
@@ -598,6 +607,7 @@ impl MudFile {
                 2 => MudTensorType::Float16,
                 3 => MudTensorType::Int4,
                 4 => MudTensorType::Uint8,
+                5 => MudTensorType::TernaryTQ,
                 _ => anyhow::bail!("Unknown tensor type: {}", t_type_val),
             };
 
@@ -696,6 +706,7 @@ impl MudFile {
                 })?,
                 MudTensorType::Int4 => n_elements.div_ceil(2),
                 MudTensorType::Uint8 => n_elements,
+                MudTensorType::TernaryTQ => n_elements.div_ceil(5),
             };
 
             let end = ptr_offset.checked_add(expected_bytes).ok_or_else(|| {

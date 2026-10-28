@@ -808,7 +808,10 @@ pub fn evaluate_slime_block_moe(
     let hca_max_pos = ws.hca_slots.max(1);
     let hca_kv_offset = hca_max_pos * head_d;
     let hca_layer_offset = layer_idx * (n_kv_heads * hca_kv_offset);
-    // ── Step 1: RMSNorm → i8 ──
+    // ── Step 1: RMSNorm → f32 (R-43: no i8 round-trip) ──
+    // slime_rmsnorm_i8 still runs to compute the normalized f32 in gemv_accum
+    // (and the i8 quantization is discarded). We copy gemv_accum → ffn_out_f32
+    // directly, skipping the i8→f32 dequantization.
     let act_scale = slime_rmsnorm_i8(
         &ws.registers[..hidden],
         &mut ws.gemv_accum,
@@ -817,27 +820,23 @@ pub fn evaluate_slime_block_moe(
         eps,
     );
 
+    // R-43: store f32 directly, skip i8 round-trip.
+    ws.ffn_out_f32[..hidden].copy_from_slice(&ws.gemv_accum[..hidden]);
+
     if let Some(t) = tape.as_mut() {
-        t.norm_i8_attn.copy_from_slice(&ws.norm_i8);
-        t.attn_act_scale = act_scale;
+        t.norm_f32_attn[..hidden].copy_from_slice(&ws.ffn_out_f32[..hidden]);
+        t.attn_act_scale = 1.0; // no quantization
     }
 
     if !act_scale.is_finite() {
         nan_skip(&NAN_RMSNORM_ATTN_COUNT, "NaN act_scale from RMSNorm attn", layer_idx, pos);
     }
-    let peak_norm = if std::is_x86_feature_detected!("avx2") && ws.norm_i8.len() >= 32 {
-        unsafe { ezop::peak_abs_i8_avx2(ws.norm_i8.as_ptr(), ws.norm_i8.len()) }
-    } else {
-        let mut peak = 0i8;
-        for &v in ws.norm_i8.iter() {
-            let av = v.abs();
-            if av > peak {
-                peak = av;
-            }
-        }
-        peak
-    };
-    if peak_norm == 0 && act_scale < 1e-7 {
+    // R-43: compute peak from f32 gemv_accum (no i8).
+    let peak_f32 = ws.gemv_accum[..hidden]
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f32, f32::max);
+    if peak_f32 < 1e-7 && act_scale < 1e-7 {
         // Diagnostic scan — values used only for the throttled log inside `nan_skip`.
         let mut _nz_regs: i32 = 0;
         let mut _first_nz: usize = hidden;
@@ -857,22 +856,9 @@ pub fn evaluate_slime_block_moe(
         );
     }
 
-    // ── Step 2: Dequantize i8→f32, then Q/K/V GEMV (Phase B: single barrier) ──
-    // P-01: use pre-allocated ffn_out_f32 buffer. AVX2 dequant (8 i8→f32/iter).
-    if is_x86_feature_detected!("avx2") && hidden >= 8 {
-        unsafe {
-            ezop::scale_i8_to_f32_avx2(
-                ws.norm_i8.as_ptr(),
-                ws.ffn_out_f32.as_mut_ptr(),
-                act_scale,
-                hidden,
-            );
-        }
-    } else {
-        for i in 0..hidden {
-            ws.ffn_out_f32[i] = ws.norm_i8[i] as f32 * act_scale;
-        }
-    }
+    // ── Step 2: ffn_out_f32 already populated (R-43: no i8 round-trip) ──
+    // The i8→f32 dequantization is eliminated; ffn_out_f32 holds the RMSNorm
+    // result directly from gemv_accum.
     unsafe {
         if layer.is_f32_weights {
             // F32 path: overlap Q/K/V projections (submit 3, wait once).
@@ -1427,7 +1413,7 @@ pub fn evaluate_slime_block_moe(
     }
 
     // ── Step 8: FFN RMSNorm → i8 ──
-    let ffn_act_scale = slime_rmsnorm_i8(
+    let _ffn_act_scale = slime_rmsnorm_i8(
         &ws.registers[..hidden],
         &mut ws.gemv_accum,
         layer.ffn_norm_w,
@@ -1435,28 +1421,17 @@ pub fn evaluate_slime_block_moe(
         eps,
     );
 
+    // R-43: store f32 directly, skip i8 round-trip.
+    ws.ffn_out_f32[..hidden].copy_from_slice(&ws.gemv_accum[..hidden]);
+
     if let Some(t) = tape.as_mut() {
-        t.norm_i8_ffn.copy_from_slice(&ws.norm_i8);
-        t.ffn_act_scale = ffn_act_scale;
+        t.norm_f32_ffn[..hidden].copy_from_slice(&ws.ffn_out_f32[..hidden]);
+        t.ffn_act_scale = 1.0; // no quantization
     }
 
     // ── Step 9–12: FFN (dense or L-11 Mini MoE) ──
     let ffn_mid = layer.ffn_mid;
-    // Dequantize norm_i8 → ffn_out_f32 (AVX2, 8 i8→f32/iter)
-    if is_x86_feature_detected!("avx2") && hidden >= 8 {
-        unsafe {
-            ezop::scale_i8_to_f32_avx2(
-                ws.norm_i8.as_ptr(),
-                ws.ffn_out_f32.as_mut_ptr(),
-                ffn_act_scale,
-                hidden,
-            );
-        }
-    } else {
-        for i in 0..hidden {
-            ws.ffn_out_f32[i] = ws.norm_i8[i] as f32 * ffn_act_scale;
-        }
-    }
+    // R-43: ffn_out_f32 already populated (no i8 round-trip).
 
     let use_moe = moe
         .map(|b| b.mounted_count() > 0 && b.hidden == hidden)

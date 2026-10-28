@@ -5,9 +5,14 @@ use std::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// Cache-line-padded slot to avoid false sharing between worker threads
+/// (R-44: fusionar pases + padding/alineado de slots).
+#[repr(align(64))]
+struct PaddedSlot(AtomicPtr<Job>);
+
 pub struct PCorePool {
     workers: Vec<Worker>,
-    slots: Arc<Vec<AtomicPtr<Job>>>,
+    slots: Arc<Vec<PaddedSlot>>,
     pending_tasks: Arc<AtomicUsize>,
     terminate: Arc<AtomicBool>,
     num_threads: usize,
@@ -19,9 +24,9 @@ struct Worker {
 
 impl PCorePool {
     pub fn new(num_threads: usize) -> PCorePool {
-        let mut slots_vec: Vec<AtomicPtr<Job>> = Vec::with_capacity(num_threads);
+        let mut slots_vec: Vec<PaddedSlot> = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            slots_vec.push(AtomicPtr::new(std::ptr::null_mut()));
+            slots_vec.push(PaddedSlot(AtomicPtr::new(std::ptr::null_mut())));
         }
         let slots = Arc::new(slots_vec);
         let pending_tasks = Arc::new(AtomicUsize::new(0));
@@ -53,7 +58,7 @@ impl PCorePool {
                     }
 
                     let slot = &slots_clone[slot_idx];
-                    let ptr = slot.load(Ordering::Acquire);
+                    let ptr = slot.0.load(Ordering::Acquire);
 
                     if !ptr.is_null() {
                         // SAFETY: `ptr` was published by `execute` as
@@ -67,7 +72,7 @@ impl PCorePool {
                         job();
 
                         pending_clone.fetch_sub(1, Ordering::Release);
-                        slot.store(std::ptr::null_mut(), Ordering::Release);
+                        slot.0.store(std::ptr::null_mut(), Ordering::Release);
                     } else {
                         // FIX (2026-07-30): Bounded spin before yield to avoid
                         // context-switch overhead on the hot GEMV dispatch path.
@@ -111,8 +116,9 @@ impl PCorePool {
 
         loop {
             for slot in self.slots.iter() {
-                if slot.load(Ordering::Acquire).is_null()
+                if slot.0.load(Ordering::Acquire).is_null()
                     && slot
+                        .0
                         .compare_exchange(
                             std::ptr::null_mut(),
                             job_ptr,
