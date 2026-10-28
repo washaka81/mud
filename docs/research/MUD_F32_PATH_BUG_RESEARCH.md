@@ -22,3 +22,27 @@ F. **Activation barrier check**: in `dense_ffn_swiglu` F32 branch, ensure `wait_
 
 ## Immediate next step
 Implement (D) and (A) first — they are cheap and will localize the defect before any risky change.
+
+## Live diagnostic (2026-10-28)
+Instrumented `inference.rs` with `MUD_DEBUG_LAYERS=1` on the Kaggle F32 model (896 hidden, 24 layers, single token). Measured hidden-norm (L2 of registers) per layer:
+
+| layer | pre-norm | post-layer |
+|-------|----------|------------|
+| 0     | 0.53     | 34.06      |
+| 1     | 34.06    | 44.90      |
+| 2     | 44.90    | 44.90      |
+
+The explosion happens inside layer 0 (0.53 → 34.06), i.e. the very first transformer block. Subsequent layers saturate. This points to the attention or FFN residual of layer 0, not to depth accumulation.
+
+## Next concrete steps
+1. Instrument `evaluate_slime_block` (gated by `MUD_DEBUG_LAYERS`) to print per-sub-block norms for layer 0: post-attn-norm, Q/K/V norms, attention-out norm, post-FFN-norm, residual. This localizes whether the blow-up is in attention (Q/K/V magnitude) or FFN (up/gate/down).
+2. Compare with a pure-ternary model (`ale.mud`) running the same instrumentation: if ternary also explodes, the defect is in shared code (RMSNorm/attention); if only F32 explodes, it is in the F32 GEMV or scale path.
+3. Candidate fix based on (1)/(2):
+   - If Q/K/V norms are >>1: add per-row output scaling or RMSNorm on Q/K (Qwen2 has `attn_q_norm`/`attn_k_norm` — verify these tensors are loaded and applied in the F32 path; `q_norm_w`/`k_norm_w` may be null for Qwen2.5-Coder).
+   - If FFN-out explodes: check SiLU gate magnitude and down-projection scale; possibly the down weight is not normalized.
+   - If residual accumulates: verify the residual add uses `read_accum`/`write_accum` with correct f16 dual packing (P-02) and that `act_scale` is applied.
+
+## Status
+- Per-layer norm diagnostic: DONE (finding documented above).
+- Per-sub-block diagnostic: PENDING.
+- Fix: PENDING (depends on (1)).
