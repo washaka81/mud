@@ -1,2 +1,3 @@
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native"]
+# target-cpu=native is intentionally NOT set here: it breaks CI runners whose
+# CPU lacks the dev machine's specific features (SIGILL in build script).
+# For local perf, set RUSTFLAGS="-C target-cpu=native" in your shell.
