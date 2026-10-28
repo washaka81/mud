@@ -368,7 +368,10 @@ pub(crate) unsafe fn f32_gemv_submit(
     if n_out < SMALL_GEMV_THRESHOLD {
         for r in 0..n_out {
             let row_ptr = w.add(r * n_in);
-            let val = crate::asm::dot_product_avx2(n_in, acts_f32.as_ptr(), row_ptr);
+            let mut val = 0.0f32;
+            for c in 0..n_in {
+                val += acts_f32[c] * *row_ptr.add(c);
+            }
             *out_f32.as_mut_ptr().add(r) = val;
         }
         return;
@@ -394,7 +397,10 @@ pub(crate) unsafe fn f32_gemv_submit(
 
             for r in start..end {
                 let row_ptr = unsafe { w.add(r * n_in) };
-                let val = unsafe { crate::asm::dot_product_avx2(n_in, acts, row_ptr) };
+                let mut val = 0.0f32;
+                for c in 0..n_in {
+                    val += unsafe { *acts.add(c) } * unsafe { *row_ptr.add(c) };
+                }
                 unsafe { *out.add(r) = val };
             }
         });
@@ -1855,5 +1861,25 @@ mod tests {
             max_diff < 1e-2,
             "GPU/CPU GEMV divergence {max_diff} (tolerance 1e-2 for UMA float)"
         );
+    }
+
+    #[test]
+    fn test_f32_gemv_rowwise_matches_scalar() {
+        let n_out = 7;
+        let n_in = 13;
+        let acts: Vec<f32> = (0..n_in).map(|i| (i as f32 + 1.0) * 0.25).collect();
+        let w: Vec<f32> = (0..(n_out * n_in)).map(|i| (i as f32 + 1.0) * 0.01 - 0.5).collect();
+        let mut out = vec![0.0f32; n_out];
+        unsafe {
+            f32_gemv_rowwise(&acts, w.as_ptr() as *const u8, &mut out, n_out, n_in);
+        }
+        for r in 0..n_out {
+            let mut refv = 0.0f32;
+            for c in 0..n_in {
+                refv += w[r * n_in + c] * acts[c];
+            }
+            assert!((out[r] - refv).abs() < 1e-5,
+                "row {} = {} expected {}", r, out[r], refv);
+        }
     }
 }

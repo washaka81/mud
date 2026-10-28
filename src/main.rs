@@ -421,7 +421,7 @@ fn main() -> anyhow::Result<()> {
         s if !s.is_empty() && s != "0" && s != "off" && s != "none" => {
             s.parse::<f32>().unwrap_or(1.0).clamp(0.1, 128.0)
         }
-        _ => 1.0,
+        _ => if emb_is_ternary { 1.0 } else { (1.0 / emb_rms).clamp(1.0, 8.0) },
     };
     let logit_scale = if !tied_output {
         // Untied duplicate of emb → match HF/convert float path

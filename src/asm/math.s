@@ -8,6 +8,7 @@ dot_product_avx2:
     mov %rsp, %rbp
     vxorps %ymm0, %ymm0, %ymm0
     vxorps %ymm3, %ymm3, %ymm3
+    vxorps %xmm4, %xmm4, %xmm4
 .dot_loop:
     cmp $16, %rdi
     jl .dot_leftover
@@ -34,16 +35,19 @@ dot_product_avx2:
     sub $8, %rdi
 .dot_done:
     # scalar leftover 0..7
+    # scalar leftover: accumulate into xmm4, then fold into ymm0 at hsum
+    vxorps %xmm4, %xmm4, %xmm4
     test %rdi, %rdi
     jz .dot_hsum
 .dot_scalar:
     vmovss (%rsi), %xmm1
     vmulss (%rdx), %xmm1, %xmm1
-    vaddss %xmm1, %xmm0, %xmm0
+    vaddss %xmm1, %xmm4, %xmm4
     add $4, %rsi
     add $4, %rdx
     dec %rdi
     jnz .dot_scalar
+    vaddss %xmm4, %xmm0, %xmm0
 .dot_hsum:
     vaddps %ymm3, %ymm0, %ymm0
     vextractf128 $1, %ymm0, %xmm1
