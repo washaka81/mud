@@ -828,10 +828,6 @@ pub fn evaluate_slime_block_moe(
 
     // R-43: store f32 directly, skip i8 round-trip.
     ws.ffn_out_f32[..hidden].copy_from_slice(&ws.gemv_accum[..hidden]);
-    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
-        let n: f32 = ws.ffn_out_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
-        eprintln!("[DBG] L0 post-attn-norm norm={:.4}", n);
-    }
 
     if let Some(t) = tape.as_mut() {
         t.norm_f32_attn[..hidden].copy_from_slice(&ws.ffn_out_f32[..hidden]);
@@ -903,12 +899,6 @@ pub fn evaluate_slime_block_moe(
         }
     }
 
-    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
-        let qn: f32 = ws.q_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
-        let kn: f32 = ws.k_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
-        let vn: f32 = ws.v_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
-        eprintln!("[DBG] L0 QKV q_norm={:.4} k_norm={:.4} v_norm={:.4} (qnorm_w_null={})", qn, kn, vn, layer.q_norm_w.is_null());
-    }
 
     // ── Step 2a: Qwen3 q_norm / k_norm (per-head RMSNorm) before RoPE ──
     // Weights are `[head_dim]`; applied independently to each head slice.
@@ -1440,11 +1430,6 @@ pub fn evaluate_slime_block_moe(
             layer.mhc_alpha_w,
             layer.mhc_beta_w,
         );
-    }
-    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
-        let n: f32 = ws.registers.iter().take(hidden).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
-        let on: f32 = ws.o_act_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
-        eprintln!("[DBG] L0 post-attn-residual hidden_norm={:.4} o_act_norm={:.4} radius={:.4}", n, on, layer_radius);
     }
 
     // ── Step 8: FFN RMSNorm → i8 ──

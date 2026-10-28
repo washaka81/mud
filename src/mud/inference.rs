@@ -237,9 +237,6 @@ pub fn forward_last_hidden_and_head(
         .or_else(|| mud.global_metadata.get("rope_theta"))
         .and_then(|v| v.parse().ok())
         .unwrap_or(10000.0);
-    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") {
-        eprintln!("[DBG] rope_theta={} (metadata)", rope_theta);
-    }
 
     // R-30: defensa en profundidad — revalida metadata↔shape aquí también
     // (cubre `MudFile`s construidos a mano que no pasaron por `load`).
@@ -663,16 +660,7 @@ pub fn forward_last_hidden_and_head(
             );
         }
         for (l_idx, layer) in layers.iter().enumerate() {
-            if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx == 0 && current_pos == 0 {
-            let tid_dbg = (tokens[0] as usize).min(vocab_size.saturating_sub(1));
-            let emb_norm: f32 = emb_slice[tid_dbg*hidden_size..(tid_dbg+1)*hidden_size].iter().map(|v| v*v).sum::<f32>().sqrt();
-            eprintln!("[DBG] first_token={} tid={} emb_row_norm={:.4}", tokens[0], tid_dbg, emb_norm);
-        }
-        if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx < 3 {
-            let nrm: f32 = ws.registers.iter().take(hidden_size).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
-            eprintln!("[DBG] layer {} pre-norm hidden_norm={:.4}", l_idx, nrm);
-        }
-            let use_moe = moe_buses
+                let use_moe = moe_buses
                 .get(l_idx)
                 .and_then(|b| b.as_ref())
                 .map(|b| b.mounted_count() > 1)
