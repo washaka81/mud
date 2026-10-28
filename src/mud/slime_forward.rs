@@ -1383,7 +1383,7 @@ pub fn evaluate_slime_block_moe(
     // The ternary attention block can produce ~50x amplification on the first
     // layer; scaling by 0.5 keeps the residual stream bounded and stable.
     for i in 0..hidden {
-        ws.o_act_f32[i] *= 0.5;
+        ws.o_act_f32[i] *= 0.25;
     }
 
     // ── Step 7: Attention JEPA + Residual ──
@@ -1512,7 +1512,7 @@ pub fn evaluate_slime_block_moe(
 
     // Scale FFN output to prevent residual explosion.
     for i in 0..hidden {
-        ws.ffn_out_f32[i] *= 0.5;
+        ws.ffn_out_f32[i] *= 0.25;
     }
 
     // ── Step 13: FFN JEPA + Residual ──
