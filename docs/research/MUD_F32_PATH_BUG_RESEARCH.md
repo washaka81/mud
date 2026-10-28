@@ -46,3 +46,21 @@ The explosion happens inside layer 0 (0.53 → 34.06), i.e. the very first trans
 - Per-layer norm diagnostic: DONE (finding documented above).
 - Per-sub-block diagnostic: PENDING.
 - Fix: PENDING (depends on (1)).
+
+## Live diagnostic #2 (2026-10-28) — per-sub-block
+Instrumented `evaluate_slime_block_moe` (gated by `MUD_DEBUG_LAYERS=1`, layer 0 only). Measured norms for the Kaggle model (896 hidden, single token):
+
+| checkpoint | norm |
+|------------|------|
+| input (pre-norm) | 0.53 |
+| post-attn-norm (RMSNorm) | 2.88 |
+| post-attn-residual (after mHC) | 26.72 (o_act_norm 26.73, radius 44.90) |
+| layer post (after FFN+mHC) | 34.06 |
+
+Conclusion: the blow-up originates in the **attention block** (residual jumps 0.53→26.7), not in RMSNorm or depth. The mHC radius (44.9) is too loose to prevent a 50× amplification in a single layer. The FFN adds a further ~7.3. The defect is shared with ternary models (both explode), so it is not F32-specific; the F32 embedding/scale only modulates severity.
+
+## Updated candidate fixes
+- Tighten mHC radius per layer (e.g. radius ∝ sqrt(hidden) not 1.5·sqrt) or make it trainable and clamp harder.
+- Scale attention output (o_proj) by 1/sqrt(num_layers) or apply a learned gain.
+- Verify Qwen2.5 q/k/v weight magnitudes and `attn_q_norm`/`attn_k_norm` (head_dim RMSNorm) are applied in the F32/ternary path — they may be null for this model, but if present they must be used.
+- Consider a residual scaling factor (DeepNet-style) of 1/sqrt(2·N) per sub-layer.
