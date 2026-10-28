@@ -554,11 +554,7 @@ pub fn forward_last_hidden_and_head(
     let emb_is_ternary = emb_tensor.t_type == MudTensorType::Ternary2Bit;
     let _ = emb_is_ternary;
     let scale_up = 1.0f32; // default MUD_INFER_SCALE_UP behavior
-    let logit_scale = if !tied_output {
-        1.0 / (hidden_size as f32).sqrt()
-    } else {
-        1.0
-    };
+    let logit_scale = 1.0 / (hidden_size as f32).sqrt();
     if (scale_up - 1.0).abs() > 1e-6 {
         for v in emb_f32.iter_mut() {
             *v *= scale_up;

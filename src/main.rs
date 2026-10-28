@@ -423,12 +423,10 @@ fn main() -> anyhow::Result<()> {
         }
         _ => if emb_is_ternary { 1.0 } else { (1.0 / emb_rms).clamp(1.0, 8.0) },
     };
-    let logit_scale = if !tied_output {
-        // Untied duplicate of emb → match HF/convert float path
-        1.0 / (hidden_size as f32).sqrt()
-    } else {
-        1.0
-    };
+    // Always scale logits by 1/sqrt(hidden) to prevent saturation, regardless
+    // of tied/untied. Tied path previously used 1.0, producing extreme logits
+    // (top-1 collapse). This was a key contributor to F32 path incoherence.
+    let logit_scale = 1.0 / (hidden_size as f32).sqrt();
     eprintln!(
         "[Inference] emb_rms={:.4e} scale_up={:.3} logit_scale={:.4} tied={} ternary={}",
         emb_rms, scale_up, logit_scale, tied_output, emb_is_ternary
