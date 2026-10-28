@@ -369,8 +369,8 @@ pub(crate) unsafe fn f32_gemv_submit(
         for r in 0..n_out {
             let row_ptr = w.add(r * n_in);
             let mut val = 0.0f32;
-            for c in 0..n_in {
-                val += acts_f32[c] * *row_ptr.add(c);
+            for (c, a) in acts_f32.iter().enumerate().take(n_in) {
+                val += a * *row_ptr.add(c);
             }
             *out_f32.as_mut_ptr().add(r) = val;
         }
