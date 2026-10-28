@@ -64,3 +64,11 @@ Conclusion: the blow-up originates in the **attention block** (residual jumps 0.
 - Scale attention output (o_proj) by 1/sqrt(num_layers) or apply a learned gain.
 - Verify Qwen2.5 q/k/v weight magnitudes and `attn_q_norm`/`attn_k_norm` (head_dim RMSNorm) are applied in the F32/ternary path — they may be null for this model, but if present they must be used.
 - Consider a residual scaling factor (DeepNet-style) of 1/sqrt(2·N) per sub-layer.
+
+## Live diagnostic #3 (2026-10-28) — QKV norms
+Layer 0 QKV norms (Kaggle model, ternary attention path): Q=7.06, K=2.72, V=0.136. V is anomalously small (≈20× smaller than K), so the attention output is dominated by Q/K alignment rather than value content. Combined with the O-projection, the residual jumps to 13.4 (after 0.5 scaling). The defect is consistent with PRQ scale mismatch in the O-projection / down-projection, not with RoPE or position encoding.
+
+## Next steps
+- Compare O-projection and down-projection PRQ scales between the converted F32 model and the ternary `ale.mud`; large variance in `blk.0.attn_o.prq_scale` would confirm scale corruption.
+- Apply per-projection output scaling (o_proj, down_proj) by 1/sqrt(hidden) as a temporary stabilizer and re-measure coherence.
+- Long-term: re-convert with per-block native scales (already done for Q2_0→F32) and verify `scale_audit` reports uniform ratio.

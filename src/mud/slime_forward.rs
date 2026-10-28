@@ -903,6 +903,13 @@ pub fn evaluate_slime_block_moe(
         }
     }
 
+    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
+        let qn: f32 = ws.q_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
+        let kn: f32 = ws.k_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
+        let vn: f32 = ws.v_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
+        eprintln!("[DBG] L0 QKV q_norm={:.4} k_norm={:.4} v_norm={:.4} (qnorm_w_null={})", qn, kn, vn, layer.q_norm_w.is_null());
+    }
+
     // ── Step 2a: Qwen3 q_norm / k_norm (per-head RMSNorm) before RoPE ──
     // Weights are `[head_dim]`; applied independently to each head slice.
     // AVX2: sum_sq via FMA (8 f32/iter), scale via weighted multiply (8 f32/iter).
