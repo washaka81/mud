@@ -364,7 +364,7 @@ impl SlimeWorkspace {
             jepa_inv_sigma: AlignedArray::new(2 * num_layers, 64),
             jepa_var_ema: AlignedArray::new(2 * num_layers, 64),
             jepa_z: AlignedArray::new(2 * num_layers * hidden_size, 64),
-            mhc_radius: 1.5 * (hidden_size as f32).sqrt(),
+            mhc_radius: 1.0 * (hidden_size as f32).sqrt(),
             jepa_integral: 0.0,
             gemv_accum: AlignedArray::new(ffn_sz.max(hidden_size), 64),
 

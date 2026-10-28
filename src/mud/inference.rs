@@ -664,6 +664,10 @@ pub fn forward_last_hidden_and_head(
             );
         }
         for (l_idx, layer) in layers.iter().enumerate() {
+            if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx < 3 {
+                let nrm: f32 = ws.registers.iter().take(hidden_size).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
+                eprintln!("[DBG] layer {} pre-norm hidden_norm={:.4}", l_idx, nrm);
+            }
             let use_moe = moe_buses
                 .get(l_idx)
                 .and_then(|b| b.as_ref())
@@ -684,6 +688,10 @@ pub fn forward_last_hidden_and_head(
                 );
             } else {
                 evaluate_slime_block(layer, l_idx, &mut ws, current_pos, rms_norm_eps, None, None);
+            }
+            if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx < 3 {
+                let nrm: f32 = ws.registers.iter().take(hidden_size).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
+                eprintln!("[DBG] layer {} post hidden_norm={:.4} r0={:.4}", l_idx, nrm, ws.registers[0].read_accum());
             }
         }
         current_pos += 1;

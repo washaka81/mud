@@ -828,6 +828,10 @@ pub fn evaluate_slime_block_moe(
 
     // R-43: store f32 directly, skip i8 round-trip.
     ws.ffn_out_f32[..hidden].copy_from_slice(&ws.gemv_accum[..hidden]);
+    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
+        let n: f32 = ws.ffn_out_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
+        eprintln!("[DBG] L0 post-attn-norm norm={:.4}", n);
+    }
 
     if let Some(t) = tape.as_mut() {
         t.norm_f32_attn[..hidden].copy_from_slice(&ws.ffn_out_f32[..hidden]);
@@ -874,6 +878,12 @@ pub fn evaluate_slime_block_moe(
             f32_gemv_submit(&ws.ffn_out_f32[..hidden], layer.k_w, &mut ws.k_f32, n_kv_heads * head_d, hidden);
             f32_gemv_submit(&ws.ffn_out_f32[..hidden], layer.v_w, &mut ws.v_f32, n_kv_heads * head_d, hidden);
             crate::mud::pcore_pool::get_pool().wait_all();
+            if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
+                let qn: f32 = ws.q_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
+                let kn: f32 = ws.k_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
+                let vn: f32 = ws.v_f32[..n_kv_heads*head_d].iter().map(|v| v*v).sum::<f32>().sqrt();
+                eprintln!("[DBG] L0 QKV q_norm={:.4} k_norm={:.4} v_norm={:.4}", qn, kn, vn);
+            }
         } else {
             ternary_gemv_qkv_parallel(
                 &ws.ffn_out_f32[..hidden],
@@ -1362,6 +1372,13 @@ pub fn evaluate_slime_block_moe(
         }
     }
 
+    // Scale attention output to prevent residual explosion (DeepNet-style).
+    // The ternary attention block can produce ~50x amplification on the first
+    // layer; scaling by 0.5 keeps the residual stream bounded and stable.
+    for i in 0..hidden {
+        ws.o_act_f32[i] *= 0.5;
+    }
+
     // ── Step 7: Attention JEPA + Residual ──
     for i in 0..hidden {
         if !ws.o_act_f32[i].is_finite() {
@@ -1416,6 +1433,11 @@ pub fn evaluate_slime_block_moe(
             layer.mhc_alpha_w,
             layer.mhc_beta_w,
         );
+    }
+    if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && layer_idx == 0 {
+        let n: f32 = ws.registers.iter().take(hidden).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
+        let on: f32 = ws.o_act_f32[..hidden].iter().map(|v| v*v).sum::<f32>().sqrt();
+        eprintln!("[DBG] L0 post-attn-residual hidden_norm={:.4} o_act_norm={:.4} radius={:.4}", n, on, layer_radius);
     }
 
     // ── Step 8: FFN RMSNorm → i8 ──
@@ -1479,6 +1501,11 @@ pub fn evaluate_slime_block_moe(
         }
     } else {
         dense_ffn_swiglu(layer, ws, hidden, ffn_mid, &mut tape, eps);
+    }
+
+    // Scale FFN output to prevent residual explosion.
+    for i in 0..hidden {
+        ws.ffn_out_f32[i] *= 0.5;
     }
 
     // ── Step 13: FFN JEPA + Residual ──
