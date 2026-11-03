@@ -128,6 +128,7 @@ fn main() -> anyhow::Result<()> {
         println!("  --kv-heads N       Override key-value heads");
         println!("  --head-dim N       Override head dimension");
         println!("  --ffn-hidden N     Override FFN intermediate size");
+    println!("  --f32-emb          Use Float32 for token_embd and output (default: ternary)");
         println!("Example: mud_forge nano models/qwen2_0.5b models/scratch.mud --vocab-size 32000");
         return Ok(());
     }
@@ -203,6 +204,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut vocab_size: usize = 151643;
+    let mut f32_emb: bool = false;
 
     let mut i = 4;
     while i < args.len() {
@@ -238,6 +240,14 @@ fn main() -> anyhow::Result<()> {
             "--ffn-hidden" => {
                 profile.ffn_hidden = args[i + 1].parse()?;
                 i += 2;
+            }
+            "--f32-emb" => {
+                f32_emb = true;
+                i += 1;
+            }
+            "--ternary-emb" => {
+                f32_emb = false;
+                i += 1;
             }
             _ => {
                 println!("❌ Unknown option: {}", args[i]);
@@ -292,9 +302,14 @@ fn main() -> anyhow::Result<()> {
     let mut tensors = HashMap::new();
     let mut rng = rand::rng();
 
-    println!("  🧱 Embeddings (vocab={}) + output_norm...", vocab_size);
-    init_ternary_tensor(&mut tensors, &mut rng, "token_embd.weight", vocab_size, profile.hidden_size);
-    init_ternary_tensor(&mut tensors, &mut rng, "output.weight", vocab_size, profile.hidden_size);
+    println!("  🧱 Embeddings (vocab={}) + output_norm... [f32_emb={}]", vocab_size, f32_emb);
+    if f32_emb {
+        init_f32_tensor(&mut tensors, "token_embd.weight", vec![vocab_size, profile.hidden_size], 1.0);
+        init_f32_tensor(&mut tensors, "output.weight", vec![vocab_size, profile.hidden_size], 1.0);
+    } else {
+        init_ternary_tensor(&mut tensors, &mut rng, "token_embd.weight", vocab_size, profile.hidden_size);
+        init_ternary_tensor(&mut tensors, &mut rng, "output.weight", vocab_size, profile.hidden_size);
+    }
     init_f32_tensor(&mut tensors, "output_norm.weight", vec![profile.hidden_size], 1.0);
 
     let hidden = profile.hidden_size;
