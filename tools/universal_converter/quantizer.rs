@@ -60,14 +60,21 @@ pub fn to_f32_vec(tensor: &TensorView) -> Vec<f32> {
             let cols = tensor.shape()[1];
             let mut un_packed = vec![0.0f32; rows_packed * 4 * cols];
 
+            // R-51: BitNet I2_S style packing - 4 consecutive values per byte in the same row
+            // MSB-first: bits [7:6]=v0, [5:4]=v1, [3:2]=v2, [1:0]=v3
             for r_p in 0..rows_packed {
                 for c in 0..cols {
                     let val = slice[r_p * cols + c];
-                    for k in 0..4 {
-                        let bits = (val >> (k * 2)) & 3;
-                        // Branchless LUT lookup (P-00)
-                        un_packed[(r_p * 4 + k) * cols + c] = U8_LUT[bits as usize];
-                    }
+                    let base = r_p * 4 * cols + c;
+                    // MSB-first, 4 consecutive in the row
+                    let bits0 = (val >> 6) & 3;
+                    let bits1 = (val >> 4) & 3;
+                    let bits2 = (val >> 2) & 3;
+                    let bits3 = val & 3;
+                    un_packed[base] = U8_LUT[bits0 as usize];
+                    un_packed[base + cols] = U8_LUT[bits1 as usize];
+                    un_packed[base + 2 * cols] = U8_LUT[bits2 as usize];
+                    un_packed[base + 3 * cols] = U8_LUT[bits3 as usize];
                 }
             }
             un_packed
