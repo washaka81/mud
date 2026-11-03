@@ -433,7 +433,6 @@ case $1 in
 
         echo -e "${BLUE}[5/6] PROJECT: Newton-Schulz Orthogonalization (Tier 3 PRQ Calibration)...${NC}"
         cargo run --release --bin recalibration_projector -- "$MODEL_PATH" --tier3
-        # cargo run --release --bin mud_autotrainer -- seating "$MODEL_PATH"
 
         echo -e "${BLUE}[6/6] ASSERT EFFECTIVENESS: 20-Parameter Validation (JEPA, mHC, Aphasia) >96%...${NC}"
         cargo run --release --bin iteration_validator -- "$MODEL_PATH"
@@ -597,6 +596,8 @@ case $1 in
         cargo test --lib --release -- --test-threads=2
         echo -e "${BLUE}→ P-13 property tests (release)${NC}"
         cargo test --lib --release p13 -- --test-threads=1
+        echo -e "${BLUE}→ proptest (all features, release) (R-63)${NC}"
+        cargo test --lib --release --features proptest -- --test-threads=2
         echo -e "${BLUE}→ loss_cert unit tests (stream K, release)${NC}"
         cargo test --lib --release loss_cert -- --test-threads=1
         echo -e "${BLUE}→ all-targets tests (release-test; R-62: release panic=abort cannot link tests/)${NC}"
@@ -681,7 +682,7 @@ case $1 in
         ;;
     inspect-var)
         echo -e "${PURPLE}[INSPECTOR] Corriendo Deep Variance Inspector...${NC}"
-        cargo run --release --bin variance_inspector -- "$MODEL_PATH"
+        echo "variance_inspector removed (R-61: stale, non-compiling)"
         ;;
     scale-audit)
         # P1.1 (2026-07-20): detect ternary vocabulary-collapse (PRQ scale inflation)
@@ -695,6 +696,12 @@ case $1 in
         MODEL=${2:-$MODEL_PATH}
         echo -e "${PURPLE}[POINTER-AUDIT] ELUT/ternary layout (P-00)${NC}"
         cargo run --release --bin pointer_audit -- "$MODEL"
+        ;;
+    parity)
+        REF=${2:-models/qwen2_0.5b/model.safetensors}
+        MUDM=${3:-$MODEL_PATH}
+        echo -e "${PURPLE}[PARITY-GATE] Numerical parity vs reference (R-50)${NC}"
+        cargo run --release --bin parity_gate -- "$REF" "$MUDM"
         ;;
     mhc-sync)
         # 2026-07-31: Verify mHC alpha/beta are synced to the .mud file.
@@ -751,9 +758,9 @@ case $1 in
         ;;
     coherence)
         MODEL=${2:-$MODEL_PATH}
-        PROMPTS=${3:-prompts.txt}
+        PROMPTS=${3:-tests/data/prompts.txt}
         echo -e "${PURPLE}[COHERENCE] Inference coherence: success, deviation, coherence path${NC}"
-        cargo run --release --bin inference_coherence -- "$MODEL" "$PROMPTS" "$@"
+        cargo run --release --bin inference_coherence -- "$MODEL" "$PROMPTS" "${@:4}"
         ;;
 
 # ============================================================================
