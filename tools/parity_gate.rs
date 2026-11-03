@@ -12,7 +12,6 @@ use std::fs::File;
 
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
-const RED: &str = "\x1b[31m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 const YELLOW: &str = "\x1b[33m";
