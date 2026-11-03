@@ -41,7 +41,6 @@ sysinfo = "0.38.4"
 serde_json = "1.0.149"
 byteorder = "1.5.0"
 parking_lot = "0.12.5"
-rayon = "1.12.0"
 zip = "8.6.0"
 pdf-extract = "0.10.0"
 roxmltree = "0.21.1"
@@ -305,6 +304,16 @@ path = "tools/asm_kernel_bench.rs"
 name = "inference_coherence"
 path = "tools/inference_coherence.rs"
 
+# ── Next-token prediction evaluation: top-k, MRR, NLL, perplexity. ─────────────
+[[bin]]
+name = "next_token_eval"
+path = "tools/next_token_eval.rs"
+
+# ── GEMV parity: real ternary tensor vs scalar dequantized reference. ─────────
+[[bin]]
+name = "gemv_parity"
+path = "tools/gemv_parity.rs"
+
 # ── mHC scale SGD stress test + benchmark (Vulkan/ash) ───────────────────────
 [[bin]]
 name = "mhc_stress_bench"
@@ -314,3 +323,54 @@ path = "tools/mhc_stress_bench.rs"
 [[bin]]
 name = "autofinetune"
 path = "tools/autofinetune.rs"
+
+[[bin]]
+name = "converter_auditor"
+path = "tools/converter_auditor.rs"
+
+[[bin]]
+name = "pointer_audit"
+path = "tools/pointer_audit.rs"
+[[bin]]
+name = "avx_math_validator"
+path = "tools/avx_math_validator.rs"
+
+[[bin]]
+name = "bitwise_quadrature_audit"
+path = "tools/bitwise_quadrature_audit.rs"
+
+[[bin]]
+name = "cmud_test_alpha"
+path = "tools/cmud_test_alpha.rs"
+
+[[bin]]
+name = "corpus_io_bench"
+path = "tools/corpus_io_bench.rs"
+
+[[bin]]
+name = "debug_tokenizer"
+path = "tools/debug_tokenizer.rs"
+
+[[bin]]
+name = "ezop_bench"
+path = "tools/ezop_bench.rs"
+
+[[bin]]
+name = "gen_fixture"
+path = "tools/gen_fixture.rs"
+
+[[bin]]
+name = "main_arithmetic_validator"
+path = "tools/main_arithmetic_validator.rs"
+
+[[bin]]
+name = "quadrature_bench"
+path = "tools/quadrature_bench.rs"
+
+[[bin]]
+name = "token_pointer_validator"
+path = "tools/token_pointer_validator.rs"
+
+[[bin]]
+name = "zerocopy_bench"
+path = "tools/zerocopy_bench.rs"
