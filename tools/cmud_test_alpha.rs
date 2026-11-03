@@ -4,11 +4,17 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("usage: {} <model.mud>", args[0]);
+        return ExitCode::FAILURE;
+    }
     let mud_path = &args[1];
-    let mut mud = MudFile::load(mud_path).unwrap();
-    mud.remap_tensors().unwrap();
-    let hidden = mud.meta.hidden_size as usize;
-    let seqs_data = vec![(vec![100, 200], 300)]; // just 1 short seq
+    let mud = MudFile::load(mud_path).unwrap();
+    let hidden = mud
+        .global_metadata
+        .get("hidden_size")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
 
     let tmp = std::env::temp_dir().join("cmud_test_alpha.json");
     std::env::set_var("MUD_CMUD_PARAMS", &tmp);
@@ -16,13 +22,14 @@ fn main() -> ExitCode {
     let params = CmudLayerParams::from_defaults(hidden);
     params.save_json(&tmp).ok();
 
-    let (_, grad, _) = forge_llm::mud::inference::cmud_training_forward(&mud, &seqs_data[0].0, seqs_data[0].1).unwrap();
+    let seqs_data_arr = [(vec![100, 200], 300)];
+    let (_, grad, _) = forge_llm::mud::inference::cmud_training_forward(&mud, &seqs_data_arr[0].0, seqs_data_arr[0].1).unwrap();
     let an = grad.alpha;
 
     let loss_of = |mut p: CmudLayerParams, delta: f32| -> f32 {
         p.alpha += delta;
         p.save_json(&tmp).ok();
-        forge_llm::mud::inference::cmud_training_forward(&mud, &seqs_data[0].0, seqs_data[0].1)
+        forge_llm::mud::inference::cmud_training_forward(&mud, &seqs_data_arr[0].0, seqs_data_arr[0].1)
             .unwrap()
             .0
     };
