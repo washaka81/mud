@@ -374,3 +374,8 @@ path = "tools/token_pointer_validator.rs"
 [[bin]]
 name = "zerocopy_bench"
 path = "tools/zerocopy_bench.rs"
+
+[[bin]]
+name = "parity_gate"
+path = "tools/parity_gate.rs"
+
