@@ -31,6 +31,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install system shaderc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libshaderc-dev
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -121,6 +126,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install system shaderc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libshaderc-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

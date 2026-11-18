@@ -51,12 +51,40 @@ env:
 No se fija CMake 3.x: la variable permite que CMake 4 acepte el mínimo
 antiguo de `shaderc-sys` y es ignorada por CMake 3.x.
 
+### Segundo fallo: glslang antiguo vs GCC de Ubuntu 26.04
+
+El primer intento superó CMake, pero el `glslang` empaquetado en
+`shaderc-sys 0.8.3` no compila con el GCC de Ubuntu 26.04:
+
+```text
+glslang/SPIRV/SpvBuilder.h:236:30: error: 'uint32_t' has not been declared
+```
+
+El runner del commit `0ae8da8` falló con ese error en
+[44379943075](https://github.com/washaka81/mud/actions/runs/44379943075).
+La solución definitiva es no compilar el `glslang` empaquetado: se instala
+`libshaderc-dev` del sistema y `shaderc-sys` enlaza
+`/usr/lib/x86_64-linux-gnu/libshaderc_combined.a` (el paquete existe en
+`resolute/universe`, versión 2026.1-1). El workflow añade en ambos jobs:
+
+```yaml
+- name: Install system shaderc
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends libshaderc-dev
+```
+
+Así se evita por completo la compilación C++ antigua y el problema de CMake.
+
 ## Evidencia
 
 | Gate | Comando | Resultado |
 |---|---|---|
 | Reproducción del fallo | `cmake` 4.5.0 sobre `shaderc-sys 0.8.3/build` sin la variable | exit 1, error de compatibilidad |
-| Fix | mismo `cmake` con `CMAKE_POLICY_VERSION_MINIMUM=3.5` | exit 0, configuración completa |
+| Fix CMake | mismo `cmake` con `CMAKE_POLICY_VERSION_MINIMUM=3.5` | exit 0, configuración completa |
+| CI con CMake fix | run 44379943075 | falla después, en `glslang` (`uint32_t` no declarado) |
+| Paquete del sistema | `libshaderc-dev` 2026.1-1 en `resolute/universe` | provee `libshaderc_combined.a` |
+| Link sistema | `SHADERC_LIB_DIR=/usr/lib cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings, sin compilar glslang |
 | Clippy | `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings |
 | Battery | `CMAKE_POLICY_VERSION_MINIMUM=3.5 ./mud.sh ci` | `[L-12] Health battery complete.` (exit 0) |
 | Tests lib | `cargo test --lib --release -- --test-threads=2` | **520/0/0** |
@@ -69,6 +97,7 @@ antiguo de `shaderc-sys` y es ignorada por CMake 3.x.
 
 - Los seis avisos de GitHub siguen sin marcar como leídos; el contenido quedó
   rescatado en este informe y en los logs locales de la sesión.
-- El commit `ci: allow shaderc-sys CMake 2.8 policy under CMake 4` aplica el
-  fix al workflow. El push a `main` vuelve a disparar la battery con
-  `ubuntu-26.04`.
+- El commit `ci: allow shaderc-sys CMake 2.8 policy under CMake 4` dejó el
+  primer fix; el commit `ci: use system libshaderc on ubuntu-26.04` añade el
+  paquete del sistema y evita el `glslang` empaquetado.
+- El push a `main` vuelve a disparar la battery con `ubuntu-26.04`.
