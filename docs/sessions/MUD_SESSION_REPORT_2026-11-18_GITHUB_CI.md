@@ -106,6 +106,7 @@ resolviera al constante de módulo deprecado; se eliminó el import.
 | Clippy 1.100 | `cargo +1.100.0 clippy --all-targets --all-features -- -D warnings` | 0 warnings |
 | Clippy stable | `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings |
 | Battery | `CMAKE_POLICY_VERSION_MINIMUM=3.5 ./mud.sh ci` | `[L-12] Health battery complete.` (exit 0) |
+| CI final | run 44384682011 (commit `1c4bf64`) | L-12 ✅ 10m39s · nightly ✅ 1m8s |
 | Tests lib | `cargo test --lib --release -- --test-threads=2` | **520/0/0** |
 | Proptest | `cargo test --lib --release --features proptest -- --test-threads=2` | **527/0/0** |
 | Unsafe | `./mud.sh unsafe-audit` | 536 · 0 sin justificar |
@@ -120,4 +121,6 @@ resolviera al constante de módulo deprecado; se eliminó el import.
   primer fix; `ci: use system libshaderc on ubuntu-26.04` añade el paquete del
   sistema y evita el `glslang` empaquetado; el commit de corrección de lints
   deja `checkpoint.rs` y `converter_auditor.rs` compatibles con Clippy 1.100.
-- El push a `main` vuelve a disparar la battery con `ubuntu-26.04`.
+- El push a `main` disparó la battery con `ubuntu-26.04`; el run
+  [44384682011](https://github.com/washaka81/mud/actions/runs/44384682011)
+  quedó verde en ambos jobs.
