@@ -1467,6 +1467,23 @@ impl MudCorpusTrainer {
                     // this single-threaded layer loop, so the `&mut` to the
                     // Adam state does not alias any other borrow.
                     let adam = unsafe { (*adam_p).as_mut() };
+                    if grad_w.is_empty() {
+                        continue;
+                    }
+                    let g_max = grad_w.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                    let s_max = shadow_w.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                    if std::env::var("MUD_TRAIN_DEBUG_GRAD").as_deref() == Ok("1") {
+                        eprintln!(
+                            "[GRAD] L{l_idx} {m_name} n={} max={g_max:.3e} shadow_max={s_max:.3e} lr={lr:.3e}",
+                            grad_w.len()
+                        );
+                    }
+                    // SAFETY: caller contract of `apply_optimizer_cpu_step_and_pack`:
+                    // `shadow_w` is this matrix's exclusive f32 shadow (length
+                    // rows*cols, checked by the callee), `grad_w` has the same
+                    // length, and `packed_ptr`/`scales_ptr` point to this
+                    // matrix's model tensor/scale storage for `rows *
+                    // ceil(cols/8)` u32 words and `rows` f32 respectively.
                     unsafe {
                         apply_optimizer_cpu_step_and_pack(
                             shadow_w, grad_w, packed_ptr, scales_ptr, lr, decay, num_tokens, cols,

@@ -1,0 +1,28 @@
+# Next-token evaluation set: context ... expected-last-token
+# Keep the expected answer as a single final token where possible.
+The capital of France is Paris
+The capital of Spain is Madrid
+The capital of Italy is Rome
+The capital of Germany is Berlin
+The capital of Portugal is Lisbon
+The capital of Japan is Tokyo
+The capital of Canada is Ottawa
+The capital of Australia is Canberra
+The capital of Brazil is Brasilia
+The capital of Egypt is Cairo
+The capital of Greece is Athens
+The capital of Russia is Moscow
+Two plus two equals four
+Three plus three equals six
+Five plus five equals ten
+The sky is blue
+The sun rises in the east
+The opposite of hot is cold
+The opposite of up is down
+A triangle has three sides
+A square has four sides
+The first month of the year is January
+The last month of the year is December
+The largest planet is Jupiter
+The closest planet to the sun is Mercury
+The chemical symbol for gold is Au

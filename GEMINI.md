@@ -1,9 +1,10 @@
 # Forge LLM (MUD) — Canonical Project Instructions
 
-> **Document hierarchy (2026-10-11)**
+> **Document hierarchy (2026-11-02)**
 >
 > | Document | Role | Authority |
 > |----------|------|-----------|
+> | **`PLAN_AUDITORIA_Y_MEJORAS.md`** | **Auditoría integral vigente y propuesta de fases (2026-11-02)** | **Diagnóstico y priorización; no sustituye al SSOT de ejecución** |
 > | **`docs/planning/MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md`** | **PRIORIDAD 0 — backlog activo (`R-##`)**. Correcciones, limpieza y mejoras con criterios de aceptación | **SSOT de ejecución** — manda sobre cualquier otro backlog |
 > | **`GEMINI.md`** (this file) | Policies (P-#), architecture truth, priority ledger, compliance | **SSOT** for agents & humans |
 > | **`AGENTS.md`** | Session context, recent fixes, commands for AI agents | Derived from this file — must not contradict |
@@ -12,6 +13,8 @@
 > | **`docs/audits/MUD_AUDIT_2026-10-11_LOW_COMPUTE.md`** | Auditoría vigente (evidencia `file:line` + mediciones) | Fuente de los hallazgos del plan |
 >
 > **Orden de prioridad:** (1) plan `R-##` — empezar por la **Ola 0**; (2) el resto de backlogs (`MUD_IMPROVEMENTS_POST_AE.md`, `MUD_GAP_ANALYSIS_POST_L15.md`) queda **congelado** hasta cerrar la Ola 1 y sólo se reanuda si no contradice la auditoría 2026-10-11.
+>
+> **Sesión 2026-11-02 cerrada:** informe [`docs/sessions/MUD_SESSION_REPORT_2026-11-02_AUDIT_PREDICTION.md`](docs/sessions/MUD_SESSION_REPORT_2026-11-02_AUDIT_PREDICTION.md) · plan siguiente [`docs/planning/PLAN_NEXT_SESSION_2026-11-02.md`](docs/planning/PLAN_NEXT_SESSION_2026-11-02.md) · protocolo de trazas [`docs/architecture/MUD_TOKEN_PREDICTION_TRACE_PROTOCOL.md`](docs/architecture/MUD_TOKEN_PREDICTION_TRACE_PROTOCOL.md).
 >
 > If two docs disagree, **this file wins for policies/status**, and **`ROADMAP.md` wins for product direction**.
 
@@ -27,10 +30,17 @@
 >
 > | Hecho | Evidencia |
 > |---|---|
-> | `cargo test --lib --release -- --test-threads=2` **PASA** (468 pass / 0 fail / 2 ignored); ub firmwick purgado (R-03, 2026-10-11) | `cargo test --lib --release -- --test-threads=2` |
+> | `cargo test --lib --release -- --test-threads=2` **PASA** (475 pass / 0 fail / 0 ignored, 0.40s; 2026-11-02) · `--features proptest` 482/0/0 | `cargo test --lib --release -- --test-threads=2`; `cargo test --lib --release --features proptest -- --test-threads=2` |
 > | CI workflow **válido**: `on:` movido a raíz (`push`, `pull_request`, `schedule`, `workflow_dispatch`); slug `washaka81/mud` (R-01) | `actionlint .github/workflows/ci.yml` exit 0 |
-> | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`) | `mud.sh` `ci)` case |
-> | Repo con **git init** + `.gitignore` limpio (R-04) | `git status` limpio tras commit |
+> | `./mud.sh ci` usa **release + all-targets + all-features** (`-D warnings`); clippy 0 | `cargo clippy --all-targets --all-features -- -D warnings` |
+> | Repo con **git init**; `.gitignore` cubre `**/target/`; 178 artefactos de `forge_autograd/target` purgados del índice (2026-11-02) | `git ls-files forge_autograd/target` → 0 |
+> | ✅ **R-60 / R-63 / R-64 / R-65 / R-66 / R-67 / R-73** (Ola 5 parcial, 2026-10-30): `skills/` purgado; `q4_0_gemv.s` purgado; `SmartTokenizer` a `Result`; `rayon` eliminado de `Cargo.toml`; shaders con hash/rerun; WORM claims degradados; regla R-73 | `cargo test --lib --release` 475/0/0; clippy 0; env-audit 0 |
+> | ✅ **Correcciones 2026-11-02**: `SmartTokenizer` detecta `mud:weight_type`/legacy y casing (5 tests); `env-audit` verde con `MUD_DEBUG_LAYERS`/`MUD_WORM_HOTPLUG`; `prompts.txt` movido a `tests/data/`; parser `--max` corregido; P-18 con excepción explícita para el plan de raíz | `cargo test --lib --release smart_tokenizer` 5/0; `bash mud.sh env-audit` exit 0; `git ls-files forge_autograd/target` 0 |
+> | ✅ **Fórmulas de calidad 2026-11-07**: research [`MUD_QUALITY_FORMULAS_2026-11-07.md`](docs/research/MUD_QUALITY_FORMULAS_2026-11-07.md) + plan [`PLAN_QUALITY_2026-11-07.md`](docs/planning/PLAN_QUALITY_2026-11-07.md). Cálculo: \(s=\gamma/\sqrt2\) actual vs \(s^*=\sum TW/\sum|T|\) → ratio **1.889**, NMSE **0.391→0.218**, SNR **4.08→6.62 dB** en `token_embd` Qwen (256 filas); BitNet exacto NMSE ~0.263. Post-hoc `scale×1.414` empeora PPL (ale 167k→244k; qwen 17.8k→20.7k) ⇒ corregir en conversión/QAT. Calibración: Qwen \(T^*=1.4\), PPL 17,788→**9,055**, ECE 0.264→**0.046**, top-1 sigue 0/2; `ale` \(T^*=2.0\) apenas cambia. Tools: `./mud.sh quant-audit`, `./mud.sh scale-rescale`, `predict-eval --temperature-scan`. **Inferencia 2026-11-07:** `ale.mud` 0/8 top-1 (PPL 167,472; \(T^*=2.0\) → 151,396); `qwen_coder_0.5b_trained` 0/2 (PPL 17,789; \(T^*=1.4\) → **9,055**, ECE 0.264→0.046); generación incoherente sin crash. **F-13:** `MUD_INFER_TEMPERATURE=0` cae a 0.8; usar 0.01 hasta corregir. Próxima sesión: [`PLAN_NEXT_SESSION_2026-11-07.md`](docs/planning/PLAN_NEXT_SESSION_2026-11-07.md) | `quant_formula_audit`; `next_token_eval`; `cargo test --lib --release` 520/0/0; clippy 0 |
+> | ✅ **Sesión 2026-11-07 (auditoría REA/Ghidra + ΔW)**: R-61 cerrado (`tools-audit`: 0 huérfanos / 0 `--bin` fantasma); R-74 cerrado (snapshot de pesos determinista + ΔW de sesión `[DW] session tensors=X/Y`); fix OOB del hash mmap (`checked_data_size`); P-13 en `next_token_eval`/`inference_coherence` (sin `vocab=32000`); catálogo `mud.sh tools` limpio + `predict-eval`/`gemv-parity`; `env-audit` y `tools-audit` en `mud.sh ci`/workflow. ASM verificado con Ghidra 12.1.2 (8-row: 383 instr/1803 B, `vzeroupper`+NaN guards; 2 call sites en `ternary_gemv_rowwise_submit`) y GDB (`n=384/stride=48/scale=1.0`) | `cargo test --lib --release` **520/0/0** (43 ASM tests recuperados: `src/asm/tests.rs` no estaba declarada); `--features proptest` **527/0/0**; `./mud.sh tools-audit` exit 0; `./mud.sh env-audit` exit 0; `gemv_parity` cosine 1.000000 (max_abs 9.54e-7); QAT corto: `[DW] session tensors=110/119 bytes=11,779,480 moved=1`, hash `0xe5c428a76558bc4e→0x02d5ceef20631ae7` |
+> | 🟠 **Hallazgos abiertos**: 11 bins huérfanos en `tools/` (R-61 parcial); Ola 4 (R-50/R-52/R-53) con baseline corregido: `ale.mud` es forge `nano` (6 capas, hidden 128), no Qwen 24×896 | [`PLAN_AUDITORIA_Y_MEJORAS.md`](PLAN_AUDITORIA_Y_MEJORAS.md) |
+> | 🟠 **Foco estratégico (Ola 4)**: `models/ale.mud` da **0/2** top-1 en el set de 2 prompts y entropía 11.7248 bits (68 % de 17.21). R-53 debe atacar `mud_forge` (emb/head ternary) o un modelo convertido real; `universal_converter` ya deja emb/head en F32 por defecto | `tools/inference_coherence.rs`; metadatos del binario |
+> | 🔴 **Next-token eval (2026-11-02)**: `ale.mud` 0/8 top-1 (PPL 167,471); `qwen_coder_0.5b` 0/8 (PPL 27,236,038); copy task 0/6. **Bypass de capas → 1/1** (head correcto). `gemv_parity` ASM vs escalar: **cosine 1.000000, max_abs ≤1.7e-6**. Causa: QAT de 3 épocas dejó **617/674 tensores idénticos** al base (solo capas 20-23 + `output_norm`). QAT fuerte (ale, 64 pasos, LR 0.1, sin token scaling, deadzone 0): **53 `.weight` ternarios cambiados**; copy task **2/6 top-1 (33.33 %)** vs **0/6** base; NLL 12.081→11.076. El warning `ΔW 0/N` es **sync-level** (el optimizer ya empaquetó en el tensor), no un no-op. Set factual 0/8 por capacidad del forge nano. **Qwen QAT 64 pasos:** 198 tensores cambiados (30 `.weight` ternarios), PPL 27.2M→4.73M (5.8×), entropía 1.815→12.395, pero top-1 0/8 factual y 0/6 copy; 64 pasos no bastan para un PTQ 0.5B | `next_token_eval`, hashes base vs QAT, `mud.sh ci` |
 > | ✅ **R-10**: el trainer SÍ entrena la cabeza evaluada — `sync_shadow_to_mud` espeja `token_embd.weight`→`output.weight` (+ `output.prq_scale`) vía `sync_tied_output_weight`; inferencia (`inference.rs:395`) y trainer (`train_step.rs:593`) coinciden. No-op para modelos *tied*. | `checkpoint.rs` + tests; `cargo test --lib --release` 462/0 |
 > | ✅ **R-11**: FFN backward SiLU — `slime_backward.rs` reemplazó ReLU² (`g²·up`) por `silu(gate)·up` vía `ezop::silu_backward_avx2` (AVX2 8-f32/iter + escalar, σ via exp2 ≈ forward `silu_vectorial`). `test_silu_backward_matches_reference` ✅; `cargo test --lib --release` 463/0. |
 > | ✅ **R-12**: mHC activation backward — `grad_out *= alpha[i]`, `grad_branch *= (1-gate)·beta[i]` vía `ezop::mhc_activation_backward` (AVX2 + escalar, gate=sigmoid(v_jepa) recomputado, `kinetic` preservado). Ambas rutas (ternaria + F32). `test_mhc_activation_backward_matches_reference` ✅ (alpha=0.85/beta=1.2/gate≠0.5). |
@@ -51,9 +61,9 @@
 > | ⏸ **R-42/R-46/R-47** diferidos: formato 5 trits/byte (4-6d), KV sub-8-bit (2-3d), LUT mpGEMM (3d). Sesiones dedicadas.
 > | Inferencia medida (post-R-40): **~159 tok/s** default (`MUD_INFER_MAX_TOKENS=256`); cuello restante = sampling nucleus (~3.8 ms/token) | medición 2026-10-13 |
 > | ✅ **R-30/R-31** (2026-10-12): validación `metadata↔shape` (`validate_model_shapes` en `load`+forward) + aritmética checked en el loader (`MAX_TENSOR_DIM`); ✅ **R-32** (2026-10-13): parser GGUF con cotas; ✅ **R-36** (2026-10-13): `./mud.sh unsafe-audit` = 0 `unsafe` sin justificar (532 productivos; gate en CI); ✅ **R-37/R-38** (2026-10-13): RCE feature-gated documentado estructuralmente (+ gate tests), `data_analysis` confinado a `AgentWorkspace`; symlink escape cerrado (`symlink_metadata`+`O_NOFOLLOW`, 4 tests) → **Ola 2 completa** | tests R-30 ×3/R-31 ×2/R-32 ×12+proptest/R-38 ×4; `./mud.sh unsafe-audit` OK; `cargo test --lib --release --features proptest` 513/0/2 |
-> | ✅ **R-05**: env vars SSOT (117 `R` + 7 shell + 6 retiradas en `MUD_ENV_REFERENCE.md`); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)`. `rayon` sigue en `Cargo.toml` (R-66) | `bash mud.sh env-audit` exit 0 |
+> | ✅ **R-05**: env vars SSOT (119 `R` + 51 shell + 6 retiradas en `MUD_ENV_REFERENCE.md`); `./mud.sh env-audit` → `OK — 0 divergencias (R-05)`. `rayon` ya no está en `Cargo.toml` (R-66) | `bash mud.sh env-audit` exit 0 (2026-11-02) |
 >
-> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 468 en release tras purgar batch4/batch8 UB, R-03), "0 OOB" (falso, ver R-30/R-31), "Rayon removed from runtime crate" (`rayon` sigue en `[dependencies]`, R-66), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67).
+> **Claims retirados** (aparecían como ✅ en §0/§6 y en `AGENTS.md`): "460 tests ✅" (sólo debug; ahora 475 en release, R-03), "0 OOB" (falso, ver R-30/R-31), "`MUD_GPU_GEMV` default `auto` en mud.sh" (es `0`), "Fenwick batch prefix sum COMPLETADO (~4×)" (UB + sin llamadores ⇒ purgado, R-03), "wormholes peer-to-peer −50 % host compute" (mismo trabajo con un multiplicador local, R-67), "`ale.mud` = 24 capas / hidden 896" (real: forge `nano`, 6 capas / hidden 128), "`universal_converter` ternariza emb/head por defecto" (falso: `--ternarize-emb` es opt-in; el camino de `ale.mud` es `mud_forge`), "la suite ASM de `src/asm/tests.rs` pasaba en CI" (falso hasta 2026-11-07: `mod tests;` no estaba declarado; 45 tests nunca se compilaron. Ahora 43 live tests, 0 ignored).
 >
 > **Regla nueva (R-73):** toda fila de estado exige `(comando, salida, fecha)`. Prohibido `COMPLETADO` sin ejecución.
 
@@ -98,7 +108,7 @@
 - **Live training telemetry TUI (`train_telemetry`):** parses `[TELEM]`/`[DW]` from `mud_train_metrics.log` (trainer now writes to **stderr AND file**); panels: PosLoss / VarH / VarJ / JEPA-integral / Cognitive + new **Weight Δ (bytes moved / sync)**. fixes the empty-panel bug where `[TELEM]` was stderr-only. Verified via `tmux capture-pane`.
 - **Pointer-optimized hot loops (P-00/P-01):** `apply_optimizer_cpu_step_and_pack` clamp, `dequantize_ternary_row` (LUT branchless), `unpack_ternary2bit_to_f32` (raw ptr, 8/u32), `pack_ternary_into` (8/u32 word), `pack_elut_prq` (2/byte) — zero-alloc.
 - **Debate/circuit writeback (`run_debate_session`):** now compares `hash_trained_weights` in vs out and prints ✓/⚠ NO-OP; reuses `sync_shadow_to_mud` (PRQ-scale-aware). fixes C1/C2 collapsed-writeback class (forensic §8).
-- **STE deadzone caveat:** on a converged base at default `QAT_LEARNING_RATE=0.0005` (threshold `s*0.7`) ΔW≈0 is expected, not a bug; use higher LR (e.g. `MUD_QAT_LR=0.03`) for visible weight movement.
+- **STE deadzone caveat:** on a converged base at default `QAT_LEARNING_RATE=0.0005` (threshold `s*0.7`) ΔW≈0 is expected, not a bug; use higher LR (e.g. `MUD_QAT_LR=0.03`) for visible weight movement. **2026-11-02:** el `ΔW` de `sync_shadow_to_mud` es **sync-level** (el optimizer ya empaquetó en el tensor); para medir movimiento real comparar hashes del modelo antes/después, no el `ΔW` del sync.
 - **Fixed:** trainer console banner now uses `qat_learning_rate()` (was hardcoded `3e-4`).
 
 ### Depth streams A–E (post-ledger, 2026-07-16) — **DONE**
@@ -160,7 +170,7 @@
 - **Deprecated constants (do not reintroduce as mandates):**
   - `SLIME_RESEAT_STRIDE` / i16 mid-row reseat (P-04) — obsolete after f16-packing accum
 - **Bilingual corpus (P-23):** ES + EN.
-- **Docs layout (P-18 — CLARIFIED):** Long-form docs under `docs/{audits,sessions,architecture,research,manuals,dumps}/`. **Allowed at repo root:** `GEMINI.md`, `AGENTS.md`, `ROADMAP.md`, `README.md`, `TREE.md`, `LICENSE`. Other root markdown is debt (move or delete).
+- **Docs layout (P-18 — CLARIFIED):** Long-form docs under `docs/{audits,sessions,architecture,research,manuals,dumps}/`. **Allowed at repo root:** `GEMINI.md`, `AGENTS.md`, `ROADMAP.md`, `README.md`, `TREE.md`, `LICENSE`, `CHANGELOG.md`, `SECURITY.md`, `PLAN_AUDITORIA_Y_MEJORAS.md` (excepción explícita 2026-11-02: auditoría/propuesta, no estado canónico). Other root markdown is debt (move or delete).
 
 ---
 
@@ -227,8 +237,8 @@ Completed capability areas (not exhaustive): SlimeForward/Backward STE, ELUT 4-b
 > | **1** | Correctitud de entrenamiento (cabeza, SiLU, mHC, escala, deadzone) | R-10…R-20 | ✅ cerrada |
 > | **2** | Seguridad de entrada (metadata↔shape, GGUF, SAFETY) | R-30…R-38 | ✅ cerrada (R-30…R-36 ✅; R-37 RCE estructural + confinamiento; R-38 symlink escape ✅) |
 > | **3** | Eficiencia de inferencia (head ternario, 1.6 bpp, i8, hilos) | R-40…R-48 | 🟠 en curso (R-40 head ternario ✅, R-48 doc GPU_GEMV ✅) |
-> | **4** | Calidad de conversión (paridad, rotación, emb 8-bit) | R-50…R-55 | pendiente |
-> | **5** | Limpieza (skills/, bins, tests, P-18, rayon) | R-60…R-68 | pendiente |
+> | **4** | Calidad de conversión (paridad, rotación, emb 8-bit) | R-50…R-55 | pendiente (baseline `ale.mud` corregido: forge nano 6×128) |
+> | **5** | Limpieza (skills/, bins, tests, P-18, rayon) | R-60…R-68 | 🟠 parcial: R-60/63/64/65/66/67/73 ✅; R-61 parcial (11 tools) |
 > | **6** | Verificación y honestidad (gates, energía, bench-infer) | R-70…R-74 | pendiente |
 
 | ID | Title | Status | Notes |
@@ -359,7 +369,7 @@ See `docs/manuals/LAUNCH_COUNTDOWN.md`.
 | `docs/STATUS_REPORT.md` | Logros vs deuda (moved from root P-18) |
 | `docs/dumps/` | Temporary dumps |
 
-Root exceptions listed in §2. Update **this file's §0 and §6** when status changes — do not invent parallel status sections in other root files.
+Root exceptions listed in §2. Update **this file's §0 and §6** when status changes — do not invent parallel status sections in other root files. `PLAN_AUDITORIA_Y_MEJORAS.md` is the sole **audit-plan** exception: it may hold the audit narrative and phase proposal, but canonical status stays in §0/§6 and execution stays in the `R-##` master plan. `CHANGELOG.md`/`SECURITY.md` are standard project metadata.
 
 ---
 

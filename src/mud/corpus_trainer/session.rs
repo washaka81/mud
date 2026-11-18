@@ -73,8 +73,11 @@ impl MudCorpusTrainer {
                 mud.materialize_for_ste_train(first_train, freeze_emb);
             }
         }
-        // Capture the input weight hash BEFORE training so the final save can prove the
-        // checkpoint actually changed vs the original (guards against silent no-op runs).
+        // Capture the input weight state BEFORE training:
+        //  - `weight_baseline` powers the session-level ΔW report (the optimizer
+        //    packs in-place, so per-sync ΔW is structurally 0);
+        //  - `input_weights_hash` proves the final checkpoint changed.
+        self.capture_weight_baseline(&mud);
         let input_weights_hash = Self::hash_trained_weights(&mud);
         // Persist model-native specials into metadata (converter often only has raw_config_json).
         {

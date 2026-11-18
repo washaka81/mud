@@ -1,7 +1,6 @@
 fn main() {
     // Handwritten AVX2 ASM for i7-1260P hot paths (L-04: purged obsolete orphans)
     cc::Build::new()
-        .file("src/asm/q4_0_gemv.s")
         .file("src/asm/rmsnorm.s")
         .file("src/asm/ternary_gemv.s")
         .file("src/asm/ternary_gemv_4rows.s")
@@ -28,7 +27,6 @@ fn main() {
         .compile("forge_asm");
 
     for f in [
-        "src/asm/q4_0_gemv.s",
         "src/asm/rmsnorm.s",
         "src/asm/ternary_gemv.s",
         "src/asm/ternary_gemv_4rows.s",
@@ -104,6 +102,10 @@ fn compile_spirv_shaders() {
             "assets/shaders/spirv/rms_norm.spv",
         ),
         ("assets/shaders/mha.comp", "assets/shaders/spirv/mha.spv"),
+        (
+            "assets/shaders/elementwise.comp",
+            "assets/shaders/spirv/elementwise.spv",
+        ),
     ];
 
     if Command::new("glslc").arg("--version").output().is_err() {
@@ -139,5 +141,6 @@ fn compile_spirv_shaders() {
         }
 
         println!("cargo:rerun-if-changed={src}");
+        println!("cargo:rerun-if-changed={dst}");
     }
 }

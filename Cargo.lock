@@ -926,7 +926,6 @@ dependencies = [
  "rand 0.10.2",
  "rand_distr",
  "ratatui",
- "rayon",
  "roxmltree 0.21.1",
  "safetensors 0.4.5",
  "serde",

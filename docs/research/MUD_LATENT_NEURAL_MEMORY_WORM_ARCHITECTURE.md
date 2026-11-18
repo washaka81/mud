@@ -74,7 +74,7 @@ If $\mathcal{R}(\mathbf{q}, \mathbf{b}) > \Theta_{\text{resonance}}$, the host i
 ```
 
 **Key benefits for scarce-resource teams:**
-* **50% host compute reduction** — blocks communicate directly via Memory Continuity Table O(1) pointer lookups
+* Host compute reduction claim RETIRED (R-67): no measurement; both branches execute the same work with a `strength` multiplier. Memory Continuity Table provides O(1) pointer lookups only.
 * **Zero-copy** — mmap (P-00/P-01) — no heap allocation
 * **CPU-only** — no GPU required (P-07)
 * **Automatic discovery** — `WormholeRouter::discover()` finds compatible blocks via JEPA resonance

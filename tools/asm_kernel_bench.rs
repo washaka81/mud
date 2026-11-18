@@ -633,7 +633,8 @@ fn bench_ternary_gemv_8rows(n: usize, iterations: usize) -> BenchResult {
     let mut out_asm = [0.0f32; 8];
     let mut out_scalar = [0.0f32; 8];
     unsafe { ternary_gemv_8rows(n, x.as_ptr(), weights.as_ptr(), out_asm.as_mut_ptr(), scale, n_u32) };
-    // Scalar: run 8 single-row gemvs
+    // Scalar reference: 8 explicit dequantized row dots (not the ASM
+    // single-row kernel — otherwise "speedup" would compare ASM vs ASM).
     let lut = [0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0];
     for row in 0..8 {
         let mut acc = 0.0f32;

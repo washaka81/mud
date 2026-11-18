@@ -266,22 +266,24 @@ flowchart LR
 | R-53 | Emb/head en mayor precisión | 🟠 | TODO | |
 | R-54 | Evaluar Signed-Zero Ternary | 🟡 | TODO | |
 | R-55 | CellV5/SlimeX: wirear o purgar | 🟡 | TODO | |
-| R-60 | `skills/` compilar o borrar | 🟠 | TODO | |
-| R-61 | bins fantasma en `mud.sh` | 🟠 | TODO | |
+| R-60 | `skills/` compilar o borrar | 🟠 | ✅ 2026-10-30 | `rm -rf src/mud/skills` (16 ficheros/663 LOC nunca compilados); `cargo test --lib --release` 469/0/0; clippy 0 |
+| R-61 | bins fantasma en `mud.sh` | 🟠 | ✅ 2026-11-07 | Los 11 tools huérfanos quedaron declarados (`Cargo.toml`); catálogo `mud.sh tools` sin `variance_inspector`; `tools-audit` verifica cada `tools/*.rs`/`tools/*/main.rs` contra `[[bin]]` y cada `cargo run --bin NAME` contra `Cargo.toml`. Evidencia: `./mud.sh tools-audit` → `OK — 0 tools huérfanos, 0 bins fantasma (R-61)`, exit 0 |
 | R-62 | Tests del bucle de entrenamiento | 🟠 | TODO | |
-| R-63 | proptest en CI + purga q4_0 | 🟡 | TODO | |
-| R-64 | build.rs determinista (shaders) | 🟡 | TODO | |
-| R-65 | Un solo tokenizer, sin defaults | 🟡 | TODO | |
-| R-66 | Deuda P-18 en raíz + rayon | 🟡 | TODO | |
-| R-67 | WORM: medir o degradar claim | 🟡 | TODO | |
+| R-63 | proptest en CI + purga q4_0 | 🟡 | ✅ 2026-10-30 | `q4_0_gemv.s` + wrappers purgados; step proptest en `.github/workflows/ci.yml` y `mud.sh ci`; `cargo test --lib --release --features proptest` 482/0/0 (2026-11-02, +6 tests SmartTokenizer/K-attention) |
+| R-64 | build.rs determinista (shaders) | 🟡 | ✅ 2026-10-30 | `elementwise.comp/.spv` en pipeline + `cargo:rerun-if-changed` por `.spv`; build release OK |
+| R-65 | Un solo tokenizer, sin defaults | 🟡 | ✅ 2026-10-30 | `SmartTokenizer::new`/`from_mud_metadata` → `Result`; hidden/vocab obligatorios (P-13); call sites propagan error |
+| R-66 | Deuda P-18 en raíz + rayon | 🟡 | ✅ 2026-10-30 | `rayon` eliminado de `Cargo.toml`; deuda raíz movida a `docs/debt/`; `prompts.txt` movido a `tests/data/` (2026-11-02); `git status` sin artefactos trackeados |
+| R-67 | WORM: medir o degradar claim | 🟡 | ✅ 2026-10-30 | Claims “50 % host compute” retirados en `MUD_WORM_IMPLEMENTATION.md` y `MUD_LATENT_NEURAL_MEMORY_WORM_ARCHITECTURE.md` |
 | R-68 | Telemetría real o borrar paneles | 🟡 | TODO | |
 | R-70 | Tests de los gates | 🟠 | TODO | |
 | R-71 | Medición de energía (J/token) | 🟠 | TODO | |
 | R-72 | `mud.sh bench-infer` | 🟠 | TODO | |
-| R-73 | Regla documental "claim con evidencia" | 🟡 | TODO | |
-| R-74 | Sensibilidad del hash de pesos | 🟡 | TODO | |
+| R-73 | Regla documental "claim con evidencia" | 🟡 | ✅ 2026-10-30 | Sección “Claim evidence rule (R-73)” en `AGENTS.md`; tablas §12/§0.3 sincronizadas 2026-11-02 |
+| R-74 | Sensibilidad del hash de pesos | 🟡 | ✅ 2026-11-07 | `hash_trained_weights` = digest ordenado de `snapshot_trainable_weights` (determinista, incluye cabeza/`output_norm`/mHC). Tests `test_weight_snapshot_detects_change_and_is_deterministic` (un byte ⇒ hash distinto; segunda lectura ⇒ mismo hash) y `test_tensor_bytes_uses_checked_data_size` (fix OOB mmap). `cargo test --lib --release checkpoint` 18/18 |
 
-**Estado global:** 30/55 (R-01…R-06 + R-10…R-20 + R-30…R-38 + R-40 + R-41 + R-43 + R-48) · F0/1/2 cerradas; **Ola 3 (F3) cerrada** (4 completados: R-40/R-41/R-43/R-48 ✅; R-42 parcial (tipo+decoder+tests); 5 diferidos: R-42(kernel/converter)/R-44/R-45/R-46/R-47 con rationale). Ningún item en estado TODO. Tests 509/0/2, clippy 0, build release OK.
+**Plan de calidad asociado (2026-11-07):** [`PLAN_QUALITY_2026-11-07.md`](PLAN_QUALITY_2026-11-07.md) (`Q-01…Q-12`, mapea a R-50/R-52/R-53). Investigación/cálculos: [`../research/MUD_QUALITY_FORMULAS_2026-11-07.md`](../research/MUD_QUALITY_FORMULAS_2026-11-07.md).
+
+**Estado global:** 39/55 cerrados (30 previos + R-60/R-63/R-64/R-65/R-66/R-67/R-73 + R-61/R-74). **R-42/R-44/R-45 parciales**; abiertos: R-50…R-55, R-62, R-68, R-70…R-72. Evidencia 2026-11-07: `cargo test --lib --release` **520/0/0** (43 tests ASM recuperados); `--features proptest` **527/0/0**; `bash mud.sh ci` verde; clippy 0; `./mud.sh env-audit` exit 0; `./mud.sh unsafe-audit` 536/0; `./mud.sh tools-audit` exit 0; `git ls-files forge_autograd/target` 0.
 
 ---
 

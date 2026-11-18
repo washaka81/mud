@@ -84,6 +84,10 @@ pub struct MudCorpusTrainer {
     pub best_loss: std::cell::RefCell<f32>,
     /// Whether best-model saving is enabled (MUD_BEST_CHECKPOINT, default 1).
     pub best_checkpoint_enabled: bool,
+    /// Session-start trainable-weight snapshot. The optimizer packs updated
+    /// trits into the model tensor in-place, so per-sync ΔW (`sync_shadow_to_mud`)
+    /// is structurally 0; diffing against this baseline is the real signal.
+    pub(crate) weight_baseline: std::cell::RefCell<Option<crate::mud::checkpoint::WeightSnapshot>>,
 }
 
 impl MudCorpusTrainer {
@@ -100,7 +104,8 @@ impl MudCorpusTrainer {
             .get("tokenizer.merges")
             .map(|s| s.as_str())
             .unwrap_or("");
-        let tokenizer = SmartTokenizer::from_mud_metadata(tokens_str, merges_str, &mud.global_metadata);
+        let tokenizer = SmartTokenizer::from_mud_metadata(tokens_str, merges_str, &mud.global_metadata)
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         let vk = crate::vulkan::ash_backend::AshContext::new()
             .map(Arc::new)
@@ -121,6 +126,7 @@ impl MudCorpusTrainer {
             best_checkpoint_enabled: std::env::var("MUD_BEST_CHECKPOINT")
                 .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
                 .unwrap_or(true),
+            weight_baseline: std::cell::RefCell::new(None),
         };
         trainer.audit_tokenization();
         Ok(trainer)
@@ -149,6 +155,20 @@ impl MudCorpusTrainer {
             vk_qat,
             final_verify,
         );
+        // Session-level ΔW: compare the just-synced model against the snapshot
+        // captured before the first optimizer step. This is the signal that
+        // proves training moved weights; the per-sync value is 0 by design.
+        if let Some(baseline) = self.weight_baseline.borrow().as_ref() {
+            let diff = crate::mud::checkpoint::diff_trainable_weights(mud, baseline);
+            crate::mud::checkpoint::session_dw_report_to_log(&diff);
+        }
+    }
+
+    /// Capture the pre-training weight state used by the session ΔW report.
+    /// Call after model load/materialization and before the first optimizer step.
+    pub(crate) fn capture_weight_baseline(&self, mud: &MudFile) {
+        *self.weight_baseline.borrow_mut() =
+            Some(crate::mud::checkpoint::snapshot_trainable_weights(mud));
     }
 
     pub(crate) fn save_checkpoint(

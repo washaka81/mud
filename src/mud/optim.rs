@@ -608,7 +608,7 @@ pub unsafe fn apply_optimizer_cpu_step_and_pack(
                             let s = ((abs_sum / cols as f32) * std::f32::consts::FRAC_1_SQRT_2)
                                 .max(crate::mud::constants::EPSILON_FLOOR);
                             *sc.add(r) = s;
-                            let delta = s * crate::mud::constants::TERNARY_DEADZONE;
+                            let delta = s * crate::mud::constants::train_deadzone();
                             let word_ptr =
                                 pk.add(abs_row * row_bytes) as *mut u32;
                             crate::mud::ezop::pack_ternary_into(

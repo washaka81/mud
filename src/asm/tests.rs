@@ -1,27 +1,32 @@
 use crate::asm::*;
-use half::f16;
 use rand::RngExt;
 
+/// `apply_row_scales_8_avx2` must match the scalar fallback for pathological
+/// PRQ scales: finite values clamp to ±1e8, non-finite (NaN/±Inf) become 0.
+/// Before this guard, the scalar path clamped +Inf to +1e8 while the AVX2
+/// kernel zeroed it — a silent ASM/scalar divergence.
 #[test]
-fn test_basic_gemv_regression() {
-    let n = 32;
-    let x = vec![1.0f32; n];
-    let mut out = vec![0.0f32; 1]; // Only needs one float for the reduced result
-    let weights = [BlockQ4_0 {
-        d: f16::from_f32(1.0),
-        qs: [0x99; 16],
-    }];
-
-    // The kernel adds to *out, so it must be initialized to 0.0
-    unsafe {
-        q4_0_gemv_asm(n, x.as_ptr(), weights.as_ptr(), out.as_mut_ptr());
-    }
-
-    println!("Basic GEMV Result: {:?}", out[0]);
-    // 0x99 -> both nibbles are 9.
-    // 9 - 8 = 1.0 real value.
-    // 32 elements * 1.0 * 1.0 = 32.0
-    assert_eq!(out[0], 32.0);
+fn test_apply_row_scales_8_finite_guard() {
+    let mut out = [1.0f32; 8];
+    let scales = [
+        2.0,
+        0.5,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1.0e9,
+        -1.0e9,
+        0.0,
+    ];
+    unsafe { apply_row_scales_8_avx2(out.as_mut_ptr(), scales.as_ptr()) };
+    assert_eq!(out[0], 2.0);
+    assert_eq!(out[1], 0.5);
+    assert_eq!(out[2], 0.0, "NaN scale must zero the output");
+    assert_eq!(out[3], 0.0, "+Inf scale must zero the output");
+    assert_eq!(out[4], 0.0, "-Inf scale must zero the output");
+    assert_eq!(out[5], 1.0e8, "finite outlier clamps to +1e8");
+    assert_eq!(out[6], -1.0e8, "finite outlier clamps to -1e8");
+    assert_eq!(out[7], 0.0);
 }
 
 #[test]
@@ -546,47 +551,6 @@ fn bench_ternary_gemv_comparison() {
 }
 
 #[test]
-#[ignore]
-fn test_hadamard_transform_avx2() {
-    let n = 1024;
-    let mut rng = rand::rng();
-    let x_asm: Vec<f32> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
-    let mut x_rust = x_asm.clone();
-
-    // Reference FWHT
-    fn fwht_ref(x: &mut [f32]) {
-        let n = x.len();
-        let mut s = 1;
-        while s < n {
-            for i in (0..n).step_by(s * 2) {
-                for j in 0..s {
-                    let a = x[i + j];
-                    let b = x[i + j + s];
-                    x[i + j] = a + b;
-                    x[i + j + s] = a - b;
-                }
-            }
-            s *= 2;
-        }
-    }
-
-    fwht_ref(&mut x_rust);
-    // P-08 purge (2026-08-03): hadamard_transform_avx2 kernel deleted — the
-    // ASM call was already commented out, and the kernel was #[ignore]d.
-    // The test now just exercises the reference FWHT (no ASM comparison).
-    let _ = x_asm; // suppress unused warning
-
-    for (i, &v) in x_rust.iter().enumerate() {
-        assert!(
-            v.is_finite(),
-            "FWHT produced non-finite at {}: {}",
-            i,
-            v
-        );
-    }
-}
-
-#[test]
 fn test_ternary_gemv_8rows_matches_scalar() {
     // Extra coverage: verify optimized reduction produces correct results vs scalar
     let mut rng = rand::rng();
@@ -1094,44 +1058,6 @@ fn test_mhc_gate_backward_tail() {
     let max_err = asm_out.iter().zip(ref_out.iter())
         .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(max_err < 1e-5, "mhc_gate_backward tail max_err = {}", max_err);
-}
-
-#[test]
-#[ignore]
-fn test_sgemm_avx2() {
-    let m = 4;
-    let n = 128;
-    let k = 4;
-    let mut rng = rand::rng();
-
-    let a: Vec<f32> = (0..m * k).map(|_| rng.random_range(-1.0..1.0)).collect();
-    let b: Vec<f32> = (0..k * n).map(|_| rng.random_range(-1.0..1.0)).collect();
-    let c = vec![0.0f32; m * n];
-
-    // {
-    //     // sgemm(m, n, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr());
-    // }
-
-    let mut expected = vec![0.0f32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for p in 0..k {
-                sum += a[i * k + p] * b[p * n + j];
-            }
-            expected[i * n + j] = sum;
-        }
-    }
-
-    for i in 0..(m * n) {
-        assert!(
-            (c[i] - expected[i]).abs() < 1e-3,
-            "sgemm mismatch at {}: expected {} got {}",
-            i,
-            expected[i],
-            c[i]
-        );
-    }
 }
 
 // ──── backward_ternary_gemv_dx tests ─────

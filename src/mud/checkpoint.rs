@@ -19,6 +19,7 @@
 use crate::mud::ash_qat_dispatcher::AshQatDispatcher;
 use crate::mud::slime_backward::SlimeLayerShadowF32;
 use crate::mud::{MudFile, MudTensor, MudTensorType};
+use std::collections::HashMap;
 
 // ── SPRINT-6 (P-01): thread-local scratch buffers for sync_shadow_to_mud ────
 // Avoids `vec![0u8; byte_count]` + `Vec::with_capacity(rows)` allocations on
@@ -31,22 +32,153 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// FNV-1a hash of the trainable tensors. Used to detect "checkpoint no-op"
-/// cases where the trainer exited without moving any weights.
-///
-/// Hashes only the LAST_N trainable layers (per `sequence_pack::train_last_n_layers`)
-/// so that frozen / pre-trained layers don't dominate the signal.
-pub(crate) fn hash_trained_weights(mud: &MudFile) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x100000001b3;
-    let mut fnv = |b: u8| {
+/// Size of one weight-delta comparison block. A changed block counts as
+/// `min(1024, remaining)` changed bytes, giving a 1 KiB-granular ΔW estimate
+/// without storing a full second copy of the model.
+const DW_BLOCK_BYTES: usize = 1024;
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+/// Deterministic 64-bit byte mixer (FNV-1a constants, 8 bytes/iteration).
+/// Used only for snapshot/diff equality — not for cryptographic integrity.
+#[inline]
+fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    let mut chunks = bytes.chunks_exact(8);
+    for c in &mut chunks {
+        h ^= u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+        h = h.wrapping_mul(FNV_PRIME).rotate_left(13);
+    }
+    for &b in chunks.remainder() {
         h ^= b as u64;
-        h = h.wrapping_mul(PRIME);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Fingerprint of one trainable tensor: exact byte length, a whole-tensor hash
+/// and per-block hashes for a granular ΔW estimate.
+#[derive(Debug, Clone)]
+pub(crate) struct TensorFingerprint {
+    pub bytes: usize,
+    pub hash: u64,
+    pub blocks: Vec<u64>,
+}
+
+/// Snapshot of every trainable tensor at a point in time (normally: right
+/// after loading the model, before the first optimizer step).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WeightSnapshot {
+    pub tensors: HashMap<String, TensorFingerprint>,
+    pub total_bytes: usize,
+    /// Trainable-layer boundary captured with the snapshot. Diffing must use
+    /// the same scope even if the training env changes mid-session.
+    pub first_train: usize,
+    pub freeze_emb: bool,
+}
+
+impl WeightSnapshot {
+    /// Order-independent digest of the whole snapshot (FNV-1a over sorted
+    /// tensor names). Used by the final no-op checkpoint guard.
+    pub fn digest(&self) -> u64 {
+        let mut names: Vec<&String> = self.tensors.keys().collect();
+        names.sort_unstable();
+        let mut h = FNV_OFFSET;
+        for name in names {
+            let fp = &self.tensors[name];
+            h = fnv1a_bytes(h, name.as_bytes());
+            h = fnv1a_bytes(h, &(fp.bytes as u64).to_le_bytes());
+            h = fnv1a_bytes(h, &fp.hash.to_le_bytes());
+        }
+        h
+    }
+}
+
+/// Result of comparing a live model against a [`WeightSnapshot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WeightDiff {
+    /// Number of tensors whose bytes differ from the baseline (plus new ones).
+    pub changed_tensors: usize,
+    /// Number of tensors present in the live model.
+    pub total_tensors: usize,
+    /// Sum of changed 1 KiB blocks (capped to each tensor's exact byte size).
+    pub changed_bytes: u64,
+    /// Sum of all live trainable tensor sizes.
+    pub total_bytes: u64,
+}
+
+impl WeightDiff {
+    pub fn moved(&self) -> bool {
+        self.changed_tensors > 0 || self.changed_bytes > 0
+    }
+}
+
+/// Exact byte view of a tensor's live storage.
+///
+/// `owned_data` wins; otherwise `data_ptr` is the mmap-backed extent validated
+/// by the loader (R-30/R-31). The length comes from [`MudTensor::checked_data_size`],
+/// never from a hand-rolled shape formula (the old code used
+/// `rows * cols * cols.div_ceil(2) * 4`, which over-read by orders of
+/// magnitude for mmap-backed Ternary2Bit tensors).
+fn tensor_bytes(t: &MudTensor) -> &[u8] {
+    if let Some(d) = t.owned_data.as_deref() {
+        return d;
+    }
+    if t.data_ptr.is_null() {
+        return &[];
+    }
+    let n = t.checked_data_size().unwrap_or(0);
+    if n == 0 {
+        return &[];
+    }
+    // SAFETY: mmap-backed tensor — `data_ptr` was validated at load
+    // (R-30/R-31) and `n` is the exact checked size for this tensor's type
+    // and shape, so the slice stays within the mapped extent.
+    unsafe { std::slice::from_raw_parts(t.data_ptr, n) }
+}
+
+fn fingerprint_tensor(t: &MudTensor) -> TensorFingerprint {
+    let bytes = tensor_bytes(t);
+    let mut blocks = Vec::with_capacity(bytes.len().div_ceil(DW_BLOCK_BYTES));
+    let mut hash = FNV_OFFSET;
+    for chunk in bytes.chunks(DW_BLOCK_BYTES) {
+        let bh = fnv1a_bytes(FNV_OFFSET, chunk);
+        blocks.push(bh);
+        hash = fnv1a_bytes(hash, &bh.to_le_bytes());
+    }
+    hash = fnv1a_bytes(hash, &(bytes.len() as u64).to_le_bytes());
+    TensorFingerprint {
+        bytes: bytes.len(),
+        hash,
+        blocks,
+    }
+}
+
+/// True when `name` belongs to the tensors the trainer actually persists.
+/// Mirrors `materialize_for_ste_train` / `sync_shadow_to_mud`:
+/// * embedding + head only when embeddings are trainable;
+/// * `output_norm.weight` always (updated every chunk by `train_step`);
+/// * every tensor of the last-N trainable transformer blocks;
+/// * ECC sidecars excluded (derived, not trained).
+fn is_trainable_tensor(name: &str, first_train: usize, freeze_emb: bool) -> bool {
+    if name.ends_with(".ecc") {
+        return false;
+    }
+    if name.starts_with("token_embd") || name.starts_with("output.") {
+        return !freeze_emb;
+    }
+    if name == "output_norm.weight" {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix("blk.") else {
+        return false;
     };
-    let core = match mud.skills.get("core") {
-        Some(c) => c,
-        None => return h,
+    let Some(idx) = rest.split('.').next().and_then(|s| s.parse::<usize>().ok()) else {
+        return false;
     };
+    idx >= first_train
+}
+
+fn first_train_layer(mud: &MudFile) -> usize {
     let n_layers = mud
         .global_metadata
         .get("num_hidden_layers")
@@ -54,57 +186,120 @@ pub(crate) fn hash_trained_weights(mud: &MudFile) -> u64 {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let last_n = crate::mud::sequence_pack::train_last_n_layers(n_layers.max(1));
-    let first_train = n_layers.saturating_sub(last_n);
-    // We can't iterate tensors in order here (HashMap), but we can hash the
-    // first and last layers to detect "did the last N change at all".
-    for (name, t) in core.tensors.iter() {
-        if name.starts_with("token_embd.weight") {
-            for &b in t.owned_data.as_deref().unwrap_or(&[]) {
-                fnv(b);
-            }
-        }
-    }
-    for (name, t) in core.tensors.iter() {
-        if !name.starts_with("blk.") {
+    n_layers.saturating_sub(last_n)
+}
+
+/// Capture the current trainable-weight state. Call once at session start
+/// (after materialization, before the first optimizer step).
+pub(crate) fn snapshot_trainable_weights(mud: &MudFile) -> WeightSnapshot {
+    let first_train = first_train_layer(mud);
+    let freeze_emb = crate::mud::constants::train_freeze_emb();
+    let mut snap = WeightSnapshot {
+        first_train,
+        freeze_emb,
+        ..WeightSnapshot::default()
+    };
+    let Some(core) = mud.skills.get("core") else {
+        return snap;
+    };
+    for (name, t) in &core.tensors {
+        if !is_trainable_tensor(name, first_train, freeze_emb) {
             continue;
         }
-        // crude: any block whose idx is in [first_train, n_layers)
-        if let Some(rest) = name.strip_prefix("blk.") {
-            if let Some(idx_str) = rest.split('.').next() {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    if idx < first_train {
-                        continue;
+        let fp = fingerprint_tensor(t);
+        snap.total_bytes += fp.bytes;
+        snap.tensors.insert(name.clone(), fp);
+    }
+    snap
+}
+
+/// Compare the live model against a session baseline.
+pub(crate) fn diff_trainable_weights(mud: &MudFile, baseline: &WeightSnapshot) -> WeightDiff {
+    let mut diff = WeightDiff::default();
+    let Some(core) = mud.skills.get("core") else {
+        return diff;
+    };
+    // Use the scope captured with the baseline, not the current env: a mid-run
+    // `MUD_TRAIN_FREEZE_EMB`/`LAST_N` change must not distort the comparison.
+    let first_train = baseline.first_train;
+    let freeze_emb = baseline.freeze_emb;
+
+    for (name, t) in &core.tensors {
+        if !is_trainable_tensor(name, first_train, freeze_emb) {
+            continue;
+        }
+        let cur = fingerprint_tensor(t);
+        diff.total_tensors += 1;
+        diff.total_bytes += cur.bytes as u64;
+        match baseline.tensors.get(name) {
+            None => {
+                // Tensor created by the session (e.g. mirrored `output.prq_scale`).
+                diff.changed_tensors += 1;
+                diff.changed_bytes += cur.bytes as u64;
+            }
+            Some(base) if base.hash != cur.hash => {
+                diff.changed_tensors += 1;
+                let common = base.blocks.len().min(cur.blocks.len());
+                for i in 0..common {
+                    if base.blocks[i] != cur.blocks[i] {
+                        let start = i * DW_BLOCK_BYTES;
+                        diff.changed_bytes +=
+                            (cur.bytes.saturating_sub(start)).min(DW_BLOCK_BYTES) as u64;
                     }
                 }
-            }
-        }
-        // Hash owned_data first; if None, try mmap-backed data_ptr for mHC
-        // alpha/beta (Float32 tensors that are mmap'd read-only initially but
-        // get owned_data after sync_shadow_to_mud). This ensures mHC changes
-        // are detectable in the no-op check both before and after sync.
-        if let Some(bytes) = t.owned_data.as_deref() {
-            for &b in bytes {
-                fnv(b);
-            }
-        } else if !t.data_ptr.is_null() && t.shape.iter().product::<usize>() > 0 {
-            // mmap-backed fallback: read from data_ptr
-            let n_bytes = t.shape.iter().product::<usize>() * match t.t_type {
-                crate::mud::MudTensorType::Float32 => 4,
-                crate::mud::MudTensorType::Ternary2Bit => {
-                    t.shape.iter().skip(1).product::<usize>().div_ceil(2) * 4
+                if base.blocks.len() != cur.blocks.len() {
+                    let start = common * DW_BLOCK_BYTES;
+                    diff.changed_bytes += cur.bytes.saturating_sub(start) as u64;
                 }
-                _ => 4,
-            };
-            // SAFETY: mmap-backed tensor — `data_ptr` was validated at load
-            // (R-30/R-31) and `n_bytes` is derived from this tensor's own
-            // shape (product × bytes/element), so the slice stays in extent.
-            let slice = unsafe { std::slice::from_raw_parts(t.data_ptr, n_bytes) };
-            for &b in slice {
-                fnv(b);
             }
+            Some(_) => {}
         }
     }
-    h
+    // Tensors that disappeared are movement too, but they no longer have a
+    // live size. Count them in the tensor totals only (bytes were baseline).
+    for name in baseline.tensors.keys() {
+        if !core.tensors.contains_key(name) {
+            diff.changed_tensors += 1;
+        }
+    }
+    diff
+}
+
+/// Hashes only the LAST_N trainable layers (per `sequence_pack::train_last_n_layers`)
+/// so that frozen / pre-trained layers don't dominate the signal.
+///
+/// Deterministic: the digest folds sorted tensor names, so it is stable across
+/// processes (the old implementation hashed `HashMap` iteration order).
+/// Covers exactly the tensors the trainer can move (see
+/// [`is_trainable_tensor`]), including `output.weight`, `output_norm.weight`
+/// and mHC/norm tensors.
+pub(crate) fn hash_trained_weights(mud: &MudFile) -> u64 {
+    snapshot_trainable_weights(mud).digest()
+}
+
+/// Emit the session-level ΔW line. Per-sync ΔW is usually 0 because the
+/// optimizer already packed the new trits into the model tensor (so
+/// `sync_shadow_to_mud`'s "previous codes" are the updated codes). This line
+/// compares against the snapshot captured at session start and is the
+/// authoritative "did training move the weights?" signal.
+pub(crate) fn session_dw_report_to_log(diff: &WeightDiff) {
+    use std::io::Write;
+    if let Ok(mut dwf) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("mud_train_metrics.log")
+    {
+        let _ = writeln!(
+            dwf,
+            "[DW] session tensors={}/{} bytes={} total={} moved={}",
+            diff.changed_tensors,
+            diff.total_tensors,
+            diff.changed_bytes,
+            diff.total_bytes,
+            if diff.moved() { 1 } else { 0 }
+        );
+        let _ = dwf.flush();
+    }
 }
 
 /// Stats from a single `sync_shadow_to_mud` pass. Emitted to the telemetry
@@ -198,7 +393,7 @@ unsafe fn stable_pack_ternary_rows(
             s_new
         };
         scales.push(s);
-        let delta = crate::mud::constants::TERNARY_DEADZONE * s;
+        let delta = crate::mud::constants::train_deadzone() * s;
         let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
         // SAFETY: fn contract `packed.len() == rows*cols.div_ceil(8)*4`;
         // `r * row_words * 4` with `r < rows` keeps `word_ptr` in-bounds and
@@ -253,7 +448,7 @@ unsafe fn stable_pack_ternary_rows(
             };
             let s = s_new;
             scales[r] = s;
-            let delta = crate::mud::constants::TERNARY_DEADZONE * s;
+            let delta = crate::mud::constants::train_deadzone() * s;
             let word_ptr = packed.as_mut_ptr().add(r * row_words * 4) as *mut u32;
             // SAFETY: same `packed` bounds as Phase 1 (fn contract; r < rows).
             unsafe {
@@ -644,7 +839,11 @@ pub(crate) fn sync_shadow_to_mud(
                     if moved { "ok" } else { "warn" },
                     &format!(
                         "ΔW: ternary {dbg_bits_changed}/{dbg_bytes_total} bytes ({pct:.4}%) | PRQ scale Σ|Δ|/Σ|s|={scale_pct:.4}%{}",
-                        if moved { "" } else { " — no change this sync" }
+                        if moved {
+                            ""
+                        } else {
+                            " — no change since previous sync (optimizer packs in-place; see session ΔW line)"
+                        }
                     )
                 )
             );
@@ -1193,6 +1392,113 @@ mod tests {
         let r = DwReport::default();
         assert_eq!(r.bits_changed, 0);
         assert!(!r.moved);
+    }
+
+    /// R-74: a session baseline must report 0 for an untouched model and a
+    /// positive tensor/byte delta after a single byte changes. The old code
+    /// hashed `HashMap` iteration order (non-deterministic) and could not
+    /// answer "did the model move since session start?".
+    #[test]
+    fn test_weight_snapshot_detects_change_and_is_deterministic() {
+        let _g = SYNC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("MUD_TRAIN_FREEZE_EMB", "0");
+            std::env::remove_var("MUD_TRAIN_LAST_N_LAYERS");
+        }
+        let mut core = crate::mud::MudSkill {
+            name: "core".to_string(),
+            tensors: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        core.tensors.insert(
+            "token_embd.weight".to_string(),
+            mk_tensor(
+                "token_embd.weight",
+                MudTensorType::Float32,
+                vec![2, 4],
+                vec![0u8; 32],
+            ),
+        );
+        core.tensors.insert(
+            "output_norm.weight".to_string(),
+            mk_tensor(
+                "output_norm.weight",
+                MudTensorType::Float32,
+                vec![4],
+                vec![0u8; 16],
+            ),
+        );
+        core.tensors.insert(
+            "blk.0.attn_q.weight".to_string(),
+            mk_tensor(
+                "blk.0.attn_q.weight",
+                MudTensorType::Float32,
+                vec![2, 4],
+                vec![0u8; 32],
+            ),
+        );
+        let mut mud = crate::mud::MudFile {
+            mmap: None,
+            skills: HashMap::new(),
+            global_metadata: HashMap::new(),
+            path: None,
+        };
+        mud.global_metadata
+            .insert("num_hidden_layers".to_string(), "1".to_string());
+        mud.skills.insert("core".to_string(), core);
+
+        let base = snapshot_trainable_weights(&mud);
+        assert_eq!(base.tensors.len(), 3, "emb + output_norm + blk.0");
+        let d0 = diff_trainable_weights(&mud, &base);
+        assert_eq!(d0.changed_tensors, 0, "untouched model must not move");
+        assert_eq!(d0.changed_bytes, 0, "untouched model must not move");
+        assert_eq!(d0.total_tensors, 3);
+        assert!(!d0.moved());
+
+        let h0 = hash_trained_weights(&mud);
+        assert_eq!(h0, hash_trained_weights(&mud), "digest must be deterministic");
+
+        // Flip one bit in one tensor.
+        let core = mud.skills.get_mut("core").unwrap();
+        core.tensors
+            .get_mut("blk.0.attn_q.weight")
+            .unwrap()
+            .owned_data
+            .as_mut()
+            .unwrap()[7] ^= 0x01;
+
+        let d1 = diff_trainable_weights(&mud, &base);
+        assert_eq!(d1.changed_tensors, 1);
+        assert_eq!(d1.total_tensors, 3);
+        assert!(d1.changed_bytes > 0);
+        assert!(d1.moved());
+        let h1 = hash_trained_weights(&mud);
+        assert_ne!(h0, h1, "one-byte change must alter the digest");
+        assert_eq!(h1, hash_trained_weights(&mud));
+
+        unsafe {
+            std::env::remove_var("MUD_TRAIN_FREEZE_EMB");
+        }
+    }
+
+    /// Guard the OOB fix: a mmap-backed Ternary2Bit tensor's byte extent is
+    /// `checked_data_size()` (rounded packed words), never the old
+    /// `rows * cols * cols.div_ceil(2) * 4` over-read.
+    #[test]
+    fn test_tensor_bytes_uses_checked_data_size() {
+        let buf = [0xA5u8; 8]; // [2,8] Ternary2Bit = 2 rows * 1 u32
+        let t = MudTensor {
+            name: "t".to_string(),
+            t_type: MudTensorType::Ternary2Bit,
+            shape: vec![2, 8],
+            data_ptr: buf.as_ptr(),
+            offset: 0,
+            data_base: 0,
+            mmap: None,
+            owned_data: None,
+        };
+        assert_eq!(tensor_bytes(&t).len(), 8);
+        assert_eq!(t.checked_data_size(), Some(8));
     }
 
     /// R-10 fixture: build a minimal MudTensor with owned bytes.

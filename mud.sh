@@ -181,11 +181,19 @@ show_help() {
     echo "  bound           Run Quantization Boundary Validator (NaN/Grid check)"
     echo "  estimate        Run Universal Training Estimator (seating predictions)"
     echo "  validate        Run Cognitive Iteration Validator (Score % metric)"
-    echo "  inspect-var     Run Deep Variance Inspector (VarH/VarJ check per layer)"
+    echo "  predict-eval    Next-token eval: top-1/5/10, MRR, NLL, PPL, entropy"
+    echo "                  Usage: ./mud.sh predict-eval [model.mud] [prompts.txt] [--max N] [--json] [--temperature-scan]"
+    echo "  gemv-parity     ASM ternary GEMV vs scalar dequant reference (R-50/GEMV audit)"
+    echo "                  Usage: ./mud.sh gemv-parity [model.mud] [tensor]"
+    echo "  quant-audit     Ternary scale/deadzone formulas vs empirical MSE"
+    echo "                  Usage: ./mud.sh quant-audit [model.mud] [--max-rows N] [--json]"
+    echo "  scale-rescale   Multiply all PRQ scales by a factor (scale-bias A/B)"
+    echo "                  Usage: ./mud.sh scale-rescale <in.mud> <out.mud> <factor>"
     echo "  scale-audit     PRQ scale audit vs BF16 source (detects vocabulary collapse)"
     echo "  pointer-audit   Raw pointer & ELUT nibble formula audit (P-00/P-01)"
     echo "  env-audit       Verify 0 env-var doc/code/mud.sh divergences (R-05)"
     echo "  unsafe-audit    Verify 0 unjustified unsafe blocks in prod code (R-36)"
+    echo "  tools-audit     Verify 0 orphan tools / 0 phantom --bin references (R-61)"
     echo "  mhc-sync        Verify mHC alpha/beta persisted to .mud after checkpoint save"
     echo ""
     echo -e "${BLUE}🧪 C-MUD (Complex Manifold Thinking):${NC}"
@@ -207,7 +215,7 @@ show_help() {
     echo -e "${BLUE}📊 Benchmarks:${NC}"
     echo "  fenwick-bench   Fenwick Tree vs Linear scan (F4/F1/F3 + FenwickLogF32)"
     echo "                  Flags: --size, --queries, --iterations, --json, --quiet"
-    echo "  asm-bench       ASM kernel benchmark: AVX2 vs Scalar (16 kernels)"
+    echo "  asm-bench       ASM kernel benchmark: AVX2 vs Scalar (13 ASM kernels + 3 Fenwick)"
     echo "                  Flags: --size, --iterations, --queries, --json, --quiet"
     echo ""
     echo -e "${BLUE}📦 Weights Management:${NC}"
@@ -235,6 +243,36 @@ show_help() {
     echo "  MUD_DEBATE_JEPB_LAMBDA=0.05        JEPA intrinsic aux weight"
     echo "  MUD_DEBATE_LEARN=1                 persist shadow->MUD after session (0=off)"
     echo "  MUD_DEBATE_MAX_NEW_TOKENS=auto     per-response cap (auto by free RAM if unset)"
+}
+
+# R-61: verify every tools/*.rs and tools/*/main.rs is declared as a [[bin]]
+# (or [[example]]/test target) and every `--bin NAME` referenced by mud.sh
+# exists in Cargo.toml. Prevents the "phantom tool" class of drift.
+run_tools_audit() {
+    local fail=0
+    local f
+    for f in tools/*.rs tools/*/main.rs; do
+        [ -e "$f" ] || continue
+        if ! grep -qF "path = \"$f\"" Cargo.toml; then
+            echo -e "${RED}[TOOLS-AUDIT] orphan (not declared in Cargo.toml): $f${NC}"
+            fail=1
+        fi
+    done
+    local b
+    # Only real invocations, not comments/help text: lines with `cargo run`
+    # followed by `--bin NAME`.
+    for b in $(grep -vE '^[[:space:]]*#' mud.sh \
+        | grep -oE 'cargo run[^|;]*--bin [A-Za-z0-9_]+' \
+        | sed -E 's/.*--bin //' | sort -u); do
+        if ! grep -qE "^name = \"$b\"$" Cargo.toml; then
+            echo -e "${RED}[TOOLS-AUDIT] mud.sh references missing bin: $b${NC}"
+            fail=1
+        fi
+    done
+    if [ "$fail" -eq 0 ]; then
+        echo -e "${GREEN}[TOOLS-AUDIT] OK — 0 tools huérfanos, 0 bins fantasma (R-61)${NC}"
+    fi
+    return "$fail"
 }
 
 # R-36: verifica que todo `unsafe` en código de producción tenga justificación.
@@ -592,6 +630,14 @@ case $1 in
         cargo clippy --all-targets --all-features -- -D warnings
         echo -e "${BLUE}→ unsafe-audit (R-36)${NC}"
         run_unsafe_audit
+        echo -e "${BLUE}→ env-audit (R-05)${NC}"
+        # Run in a subshell: the env-audit branch ends with `exit`, which would
+        # terminate the whole CI battery. Invoke through `bash` so a relative
+        # `$0` (e.g. `mud.sh` when run as `bash mud.sh ci`) does not depend on
+        # `.` being in PATH.
+        ( bash "$0" env-audit )
+        echo -e "${BLUE}→ tools-audit (R-61)${NC}"
+        run_tools_audit
         echo -e "${BLUE}→ cargo test --lib --release${NC}"
         cargo test --lib --release -- --test-threads=2
         echo -e "${BLUE}→ P-13 property tests (release)${NC}"
@@ -762,6 +808,30 @@ case $1 in
         echo -e "${PURPLE}[COHERENCE] Inference coherence: success, deviation, coherence path${NC}"
         cargo run --release --bin inference_coherence -- "$MODEL" "$PROMPTS" "${@:4}"
         ;;
+    predict-eval)
+        MODEL=${2:-$MODEL_PATH}
+        PROMPTS=${3:-tests/data/next_token_eval.txt}
+        echo -e "${PURPLE}[PREDICT-EVAL] Next-token top-k / MRR / NLL / PPL / entropy${NC}"
+        cargo run --release --bin next_token_eval -- "$MODEL" "$PROMPTS" "${@:4}"
+        ;;
+    gemv-parity)
+        MODEL=${2:-$MODEL_PATH}
+        TENSOR=${3:-blk.0.attn_q.weight}
+        echo -e "${PURPLE}[GEMV-PARITY] ASM ternary GEMV vs scalar dequant reference${NC}"
+        cargo run --release --bin gemv_parity -- "$MODEL" "$TENSOR"
+        ;;
+    quant-audit)
+        MODEL=${2:-$MODEL_PATH}
+        echo -e "${PURPLE}[QUANT-AUDIT] Ternary scale/deadzone formulas vs empirical MSE${NC}"
+        cargo run --release --bin quant_formula_audit -- "$MODEL" "${@:3}"
+        ;;
+    scale-rescale)
+        if [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
+            echo "Usage: ./mud.sh scale-rescale <in.mud> <out.mud> <factor>"
+            exit 2
+        fi
+        cargo run --release --bin scale_rescale -- "$2" "$3" "$4"
+        ;;
 
 # ============================================================================
 # ⚡ PERFORMANCE & HARDWARE
@@ -896,12 +966,39 @@ case $1 in
         echo "  boundary_validator      Quantization boundary & mathematical safety validator"
         echo "  training_estimator      Universal training workload estimator"
         echo "  iteration_validator     Cognitive cohesion & effectiveness validator"
-        echo "  variance_inspector      Deep variance inspector (VarH/VarJ per layer)"
+        echo "  training_healthcheck    Structural healthcheck for .mud models"
         echo "  loss_certification_bench STE loss-must-fall gate (stream K)"
+        echo "  inference_coherence     Inference top-1 / entropy / C-MUD coherence probe"
+        echo "  next_token_eval         Next-token eval: top-1/5/10, MRR, NLL, PPL, entropy"
+        echo "  gemv_parity             ASM ternary GEMV vs scalar dequant reference"
+        echo "  quant_formula_audit     Ternary scale/deadzone formulas vs empirical MSE"
+        echo "  scale_rescale           Multiply PRQ scales by a factor (scale-bias A/B)"
+        echo "  parity_gate             Numerical parity gate vs reference GGUF/safetensors"
+        echo "  precise_converter_audit Bitnet-scale-correct SQNR/MAE/MSE audit"
+        echo "  converter_auditor       Post-conversion structural & magic-byte audit"
+        echo "  pipeline_overlap_bench  D4 CPU→GPU→CPU overlap benchmark"
+        echo "  gemv_auto_bench         GEMV CPU-vs-GPU break-even calibration"
+        echo "  mhc_stress_bench        mHC SGD stress / precision / speed / gradcheck"
+        echo "  autofinetune            Automatic LR / step calibration probe"
+        echo "  avx_math_validator      AVX2 math kernel validator"
+        echo "  bitwise_quadrature_audit Bitwise quadrature audit"
+        echo "  cmud_test_alpha         C-MUD alpha probe"
+        echo "  corpus_io_bench         Corpus I/O benchmark"
+        echo "  debug_tokenizer         Tokenizer debug probe"
+        echo "  ezop_bench              EZOP kernel benchmark"
+        echo "  gen_fixture             Generate .mud test fixtures"
+        echo "  main_arithmetic_validator Main arithmetic validator"
+        echo "  quadrature_bench        Quadrature benchmark"
+        echo "  token_pointer_validator Token pointer / vocabulary validator"
+        echo "  zerocopy_bench          Zero-copy path benchmark"
+        echo "  check_scales            PRQ scale consistency checker"
+        echo "  model_dumper            .mud metadata/tensor dumper"
+        echo "  step_inference          Step-by-step inference autopsy"
+        echo "  recalibration_projector Bayesian recalibration projector"
         echo "  extract_code_docs       Extract Rust docs + Markdown into training/corpus/mud_docs.txt"
-        echo "  env-audit              Verify 0 env-var doc/code/mud.sh divergences (R-05)"
-        echo "  unsafe-audit           Verify 0 unjustified unsafe blocks in prod code (R-36)"
-        echo "  circuit_telemetry       Seed-driven infinite training circuit TUI"
+        echo "  env-audit               Verify 0 env-var doc/code/mud.sh divergences (R-05)"
+        echo "  unsafe-audit            Verify 0 unjustified unsafe blocks in prod code (R-36)"
+        echo "  tools-audit             Verify 0 orphan tools / 0 phantom --bin refs (R-61)"
         ;;
     env-audit)
         # R-05: Verifica 0 divergencias entre código (env::var), mud.sh vars y docs.
@@ -959,6 +1056,11 @@ case $1 in
             echo -e "${YELLOW}[ENV-AUDIT] Divergencias detectadas — corregir según §3 de $REF${NC}"
         fi
         exit $ERR
+        ;;
+    tools-audit)
+        # R-61: every tools/*.rs declared + every --bin referenced exists.
+        run_tools_audit
+        exit $?
         ;;
     unsafe-audit)
         # R-36: every unsafe in production code must be justified (adjacent

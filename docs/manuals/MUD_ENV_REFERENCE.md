@@ -26,9 +26,16 @@
 | Variable | Default | Valores | Propósito | Origen |
 |---|---|---|---|---|
 | `MUD_DEBUG` | `0`/`false` | `1\|true` | Verbose logits + top‑10 + `reg_f32` por token en el REPL | `main.rs:229` R |
+| `MUD_DEBUG_LAYERS` | `0`/`false` | `1` (match exacto) | Diagnóstico de capas: norma post‑hidden en las 3 primeras capas de inferencia y QKV de la capa 0 en forward | `inference.rs:684` / `slime_forward.rs:877` R |
+| `MUD_BYPASS_LAYERS` | `0`/`false` | `1` (match exacto) | **Diagnóstico**: salta todas las capas del transformer (prueba embedding→output_norm→head) | `inference.rs` R |
+| `MUD_ZERO_ATTN_BRANCH` | `0`/`false` | `1` (match exacto) | **Diagnóstico**: anula la rama de atención antes del residual | `slime_forward.rs` R |
+| `MUD_ZERO_FFN_BRANCH` | `0`/`false` | `1` (match exacto) | **Diagnóstico**: anula la rama FFN antes del residual | `slime_forward.rs` R |
+| `MUD_DISABLE_SUB_NORM` | `0`/`false` | `1` (match exacto) | **Diagnóstico/compat**: omite `attn_sub_norm`/`ffn_sub_norm` inyectados por el converter (Qwen2.5/Llama no los tienen) | `slime_forward.rs` R |
+| `MUD_ATTN_OUT_SCALE` | `0.25` | f32 > 0 | Escala de la salida de atención antes del residual (modelos convertidos: `1.0`) | `slime_forward.rs` R |
+| `MUD_FFN_OUT_SCALE` | `0.25` | f32 > 0 | Escala de la salida FFN antes del residual (modelos convertidos: `1.0`) | `slime_forward.rs` R |
 | `MUD_SYSTEM_PROMPT` | `""` | string | System prompt para el chat (formato Llama‑style) | `main.rs:461` R |
 | `MUD_INFER_MAX_TOKENS` | `128` (clamp 8..1024) | usize | Máx tokens a generar por prompt | `main.rs:539` R |
-| `MUD_INFER_TEMPERATURE` | `0.8` (>0) | f32 | Sampling temperature (0 = deterministic greedy) | `main.rs:464` R |
+| `MUD_INFER_TEMPERATURE` | `0.8` (>0) | f32 | Sampling temperature (0 = deterministic greedy) | `main.rs:576` R |
 | `MUD_INFER_TOP_P` | `0.95` (0..1) | f32 | Top‑p nucleus sampling | `main.rs:471` / `debate_trainer.rs:510` R |
 | `MUD_INFER_REP_PENALTY` | `1.25` | f32 | Penalización de repetición | `main.rs:478` R |
 | `MUD_INFER_GREEDY` | `0`/`false` | `1\|true` | Forzar decodificación greedy (ignora temp/top_p) | `main.rs:688` R |
@@ -44,7 +51,7 @@
 | `MUD_GPU_GEMV_MIN` | `256·256 = 65536` (`GEMV_GPU_MIN_WORK`) | usize | Work‑units mínimos para activar GPU (sólo con `MUD_GPU_GEMV=1`) | `gemv_policy.rs:94` R |
 | `MUD_GPU_GEMV_LOG` | `0`/`false` | `1\|true` | Imprime la tabla de calibración CPU‑vs‑GPU a stderr | `gemv_policy.rs:101` R |
 | `MUD_USE_VULKAN` | `1` | `0\|false` | Activa el backend Vulkan (ash 0.38). `0` lo desactiva | `ash_backend.rs:248,2182` R |
-| `MUD_GEMV_ROWS` | `4`; `8` con `MUD_GEMV_ROWS=8` | `4\|8` | Filas por kernel AVX2 de GEMV (opt‑in 8) | `gemv_gpu.rs:20` R |
+| `MUD_GEMV_ROWS` | `8` (default desde 2026-08-03); `4` fuerza el kernel de 4 filas | `4\|8` | Filas por kernel AVX2 de GEMV. El default real es 8; `MUD_GEMV_ROWS=4` lo desactiva (el código no lo trata como opt-in). | `gemv_gpu.rs:16-29` R |
 
 ### 1.3 KV cache — HCA / CSA / compresión (`kv_context.rs`, `csa_indexer.rs`, `kv_compressed.rs`)
 
@@ -71,6 +78,9 @@
 | Variable | Default | Valores | Propósito | Origen |
 |---|---|---|---|---|
 | `MUD_QAT_LR` | `0.0005` (align: `0.0008`); clamp `1e-6..0.1` | f32 | LR fija de QAT; al fijarla **desactiva** el schedule cosino | `constants.rs:64` R; `mud.sh:454` S |
+| `MUD_TRAIN_GRAD_TOKEN_SCALE` | `num_tokens` (mean-loss) | f32 ≥ 0 | **Diagnóstico**: divisor de gradiente; `0` desactiva la división para permitir que los códigos ternarios crucen el umbral | `adam_state.rs:543` R |
+| `MUD_TRAIN_DEBUG_GRAD` | `0`/`false` | `1` | **Diagnóstico**: imprime `[GRAD]` por matriz (max gradiente, max shadow, LR) antes del optimizer | `train_step.rs` R |
+| `MUD_TRAIN_DEADZONE` | `0.7` (`TERNARY_DEADZONE`) | f32 `0..1` | Umbral de empaquetado ternario durante QAT; valores bajos permiten que el shadow mueva más trits | `constants.rs` R |
 | `MUD_LR_RESTART` | `1` (SGDR activado) | `0\|1` | `0` = single‑cosine; `1` = reinicios SGDR | `train_step.rs:63` R / `mud.sh:482` S |
 | `MUD_LR_CYCLES` | `max(3, sqrt(total))` (clamp 3..16) | usize | Número de ciclos cosenoidales SGDR | `train_step.rs:73` R |
 | `MUD_GRAD_CLIP` | `1.0` (>0 finito) | f32 | Umbral de clip global de gradiente (L2) | `constants.rs:41` R |
@@ -169,6 +179,7 @@
 | `MUD_CMUD_CELLV5` | `0`/`false` | `1\|true` | Empaquetar estado C‑MUD en CellV5 u32 (8:8:8:8) — opt‑in (P‑02 safe) | `cmud_params.rs:148` R / `mud.sh:64` S |
 | `MUD_SLIMEX` | `0`/`false` | `1\|true` | SlimeX CellV5 activo (16 KB → L1) | `slime.rs:322` R / `mud.sh:55` S |
 | `MUD_FENWICK` | `1`/`true` | `0\|false` | Árboles de Fenwick (prefijo/sampling); fallback lineal si `0` | `fenwick.rs:551` R / `mud.sh:64` S |
+| `MUD_WORM_HOTPLUG` | `0`/`false` | `1\|true` (case‑insensitive) | Descubre y asienta mini‑modelos de `models/` (excluye el base) y aplica acoplamiento latente al hidden state | `main.rs:524` R |
 
 ### 1.10 Hilos / hardware (`constants.rs`, `pcore_pool.rs`)
 

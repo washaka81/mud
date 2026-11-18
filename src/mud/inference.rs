@@ -282,19 +282,29 @@ pub fn forward_last_hidden_and_head(
                 })
                 .unwrap_or(std::ptr::null())
         };
-        // tc: lookup for non-`.weight` tensors (mHC alpha/beta/radius).
-        // FIX (2026-07-30): `tn("mhc_alpha")` looked up `blk.N.mhc_alpha.weight`
-        // (missing) → always null → mHC residual treated as base model → overflow.
+        // tc: lookup for mHC alpha/beta/radius. Forge names them
+        // `blk.N.mhc_alpha`; the universal converter appends `.weight`
+        // (`blk.N.mhc_alpha.weight`). Accept both so converted models use
+        // their stored mHC values instead of the sqrt(hidden) fallback.
         let tc = |name: &str| -> *const f32 {
-            core.tensors
-                .get(&format!("{}{}", prefix, name))
-                .map(|t| {
-                    t.owned_data
-                        .as_ref()
-                        .map(|d| d.as_ptr() as *const f32)
-                        .unwrap_or(t.data_ptr as *const f32)
-                })
-                .unwrap_or(std::ptr::null())
+            let base = format!("{}{}", prefix, name);
+            let lookup = |key: &str| -> *const f32 {
+                core.tensors
+                    .get(key)
+                    .map(|t| {
+                        t.owned_data
+                            .as_ref()
+                            .map(|d| d.as_ptr() as *const f32)
+                            .unwrap_or(t.data_ptr as *const f32)
+                    })
+                    .unwrap_or(std::ptr::null())
+            };
+            let p = lookup(&base);
+            if p.is_null() {
+                lookup(&format!("{}.weight", base))
+            } else {
+                p
+            }
         };
         let ffn_norm_w = {
             let a = tn("ffn_norm");
@@ -659,31 +669,34 @@ pub fn forward_last_hidden_and_head(
                 current_pos == 0,
             );
         }
-        for (l_idx, layer) in layers.iter().enumerate() {
+        let bypass_layers = std::env::var("MUD_BYPASS_LAYERS").as_deref() == Ok("1");
+        if !bypass_layers {
+            for (l_idx, layer) in layers.iter().enumerate() {
                 let use_moe = moe_buses
-                .get(l_idx)
-                .and_then(|b| b.as_ref())
-                .map(|b| b.mounted_count() > 1)
-                .unwrap_or(false);
-            if use_moe {
-                let bus = moe_buses[l_idx].as_ref().unwrap();
-                evaluate_slime_block_moe(
-                    layer,
-                    l_idx,
-                    &mut ws,
-                    current_pos,
-                    rms_norm_eps,
-                    None,
-                    Some(bus),
-                    Some(&mut moe_scratch),
-                    None,
-                );
-            } else {
-                evaluate_slime_block(layer, l_idx, &mut ws, current_pos, rms_norm_eps, None, None);
-            }
-            if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx < 3 {
-                let nrm: f32 = ws.registers.iter().take(hidden_size).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
-                eprintln!("[DBG] layer {} post hidden_norm={:.4} r0={:.4}", l_idx, nrm, ws.registers[0].read_accum());
+                    .get(l_idx)
+                    .and_then(|b| b.as_ref())
+                    .map(|b| b.mounted_count() > 1)
+                    .unwrap_or(false);
+                if use_moe {
+                    let bus = moe_buses[l_idx].as_ref().unwrap();
+                    evaluate_slime_block_moe(
+                        layer,
+                        l_idx,
+                        &mut ws,
+                        current_pos,
+                        rms_norm_eps,
+                        None,
+                        Some(bus),
+                        Some(&mut moe_scratch),
+                        None,
+                    );
+                } else {
+                    evaluate_slime_block(layer, l_idx, &mut ws, current_pos, rms_norm_eps, None, None);
+                }
+                if std::env::var("MUD_DEBUG_LAYERS").as_deref() == Ok("1") && l_idx < 3 {
+                    let nrm: f32 = ws.registers.iter().take(hidden_size).map(|r| r.read_accum().powi(2)).sum::<f32>().sqrt();
+                    eprintln!("[DBG] layer {} post hidden_norm={:.4} r0={:.4}", l_idx, nrm, ws.registers[0].read_accum());
+                }
             }
         }
         current_pos += 1;

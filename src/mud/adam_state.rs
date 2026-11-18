@@ -541,7 +541,23 @@ pub fn sparse_adam_step(
 
 /// Normalize grad by num_tokens into `out` (EZOP). Vectorized AVX2 path.
 pub fn scale_grad_by_tokens(g: &mut [f32], num_tokens: f32) {
-    let ntok = num_tokens.max(1.0);
+    // Diagnostic/training override: `MUD_TRAIN_GRAD_TOKEN_SCALE=N` divides by
+    // N instead of `num_tokens`; `0` disables the division entirely. The
+    // default preserves the historical mean-loss scaling.
+    let ntok = {
+        static OVERRIDE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        let ov = *OVERRIDE.get_or_init(|| {
+            std::env::var("MUD_TRAIN_GRAD_TOKEN_SCALE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+        });
+        match ov {
+            Some(v) if v > 0.0 => v,
+            Some(_) => 1.0,
+            None => num_tokens.max(1.0),
+        }
+    };
     if (ntok - 1.0).abs() < 1e-12 {
         return;
     }

@@ -4,8 +4,11 @@
  *
  * For each of 8 rows:
  *   s = scales[i]
- *   if s is NaN/Inf or |s| > 1e8: out[i] = 0.0
- *   else: out[i] *= s
+ *   if s is NaN/Inf: out[i] = 0.0
+ *   else: out[i] *= clamp(s, -1e8, 1e8)
+ *
+ * The finite clamp matches the scalar fallback in
+ * `gemv_gpu::ternary_gemv_rowwise_submit`; only non-finite scales become 0.
  *
  * Uses packed f32 (8 values per YMM register) to leverage every computation.
  * Replaces the scalar loop in ternary_gemv_rowwise_submit.

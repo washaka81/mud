@@ -790,6 +790,9 @@ fn test_collect_files_max_depth_constant() {
     // of read_dir syscalls (and would loop forever on a symlink loop).
     use crate::mud::corpus::COLLECT_FILES_MAX_DEPTH;
     use std::path::PathBuf;
+    let _env_guard = crate::mud::ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let prev_text_only = std::env::var("MUD_TRAIN_TEXT_ONLY").ok();
     std::env::set_var("MUD_TRAIN_TEXT_ONLY", "0");
     // Build a chain deeper than MAX_DEPTH; place a .rs file at the bottom.

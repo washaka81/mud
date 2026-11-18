@@ -379,3 +379,13 @@ path = "tools/zerocopy_bench.rs"
 name = "parity_gate"
 path = "tools/parity_gate.rs"
 
+# ── Quality formulas: ternary scale/deadzone audit (2026-11-08) ───────────────
+[[bin]]
+name = "quant_formula_audit"
+path = "tools/quant_formula_audit.rs"
+
+# ── Scale-bias experiment: multiply PRQ scales without touching trit codes ────
+[[bin]]
+name = "scale_rescale"
+path = "tools/scale_rescale.rs"
+

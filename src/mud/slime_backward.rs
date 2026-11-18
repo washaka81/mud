@@ -1847,4 +1847,100 @@ mod tests {
         );
         assert_eq!(grad_out[0], 1.0); // Because residual bypasses grad_in -> grad_out
     }
+
+    /// Regression: the forward must populate `tape.q_f32` (and K/V) after RoPE.
+    /// The attention backward computes `grad_k = grad_o * Q`; if the tape is
+    /// zero, K weights receive exactly zero gradient on every training step.
+    #[test]
+    fn test_forward_tape_populates_qkv_for_attention_backward() {
+        let hidden = 32;
+        let ffn_mid = 32;
+        let head_d = 32;
+        let mut ws = SlimeWorkspace::new(hidden, 8, 1, 1, head_d, ffn_mid, 1, 128.0);
+        for reg in ws.registers.iter_mut().take(hidden) {
+            reg.write_accum(1.0);
+        }
+        let row_sz = hidden / 8 * 4;
+        let w = vec![0x11u8; hidden * row_sz]; // every nibble = +1
+        let scales = vec![0.01f32; hidden];
+        let norm_w = vec![1.0f32; hidden];
+        let layer = SlimeLayer {
+            q_w: w.as_ptr(),
+            k_w: w.as_ptr(),
+            v_w: w.as_ptr(),
+            o_w: w.as_ptr(),
+            q_scales: scales.as_ptr(),
+            k_scales: scales.as_ptr(),
+            v_scales: scales.as_ptr(),
+            o_scales: scales.as_ptr(),
+            ffn_up_w: w.as_ptr(),
+            ffn_gate_w: w.as_ptr(),
+            ffn_down_w: w.as_ptr(),
+            ffn_up_scales: scales.as_ptr(),
+            ffn_gate_scales: scales.as_ptr(),
+            ffn_down_scales: scales.as_ptr(),
+            attn_norm_w: norm_w.as_ptr(),
+            ffn_norm_w: norm_w.as_ptr(),
+            attn_sub_norm_w: std::ptr::null(),
+            ffn_sub_norm_w: std::ptr::null(),
+            q_norm_w: std::ptr::null(),
+            k_norm_w: std::ptr::null(),
+            mhc_alpha_w: std::ptr::null(),
+            mhc_beta_w: std::ptr::null(),
+            mhc_alpha_shadow: None,
+            mhc_beta_shadow: None,
+            attn_norm_shadow: None,
+            ffn_norm_shadow: None,
+            mhc_radius_w: std::ptr::null(),
+            n_kv_heads: 1,
+            ffn_mid,
+            rope_theta: 0.0,
+            rope_inv_freq: Vec::new(),
+            rope_cache: parking_lot::Mutex::new(crate::mud::slime_forward::RopeCache::new()),
+            is_f32_weights: false,
+        };
+        let mut tape = SlimeLayerTape::new(hidden, ffn_mid, 1, head_d, 8, 0);
+        crate::mud::slime_forward::evaluate_slime_block(
+            &layer,
+            0,
+            &mut ws,
+            0,
+            1e-6,
+            Some(&mut tape),
+            None,
+        );
+        assert!(
+            tape.q_f32.iter().any(|v| v.abs() > 1e-8),
+            "tape.q_f32 must be populated after the forward (K grad depends on it)"
+        );
+        assert!(
+            tape.k_f32.iter().any(|v| v.abs() > 1e-8),
+            "tape.k_f32 must be populated after the forward"
+        );
+        for i in 0..hidden {
+            assert!(
+                (tape.q_f32[i] - ws.q_f32[i]).abs() < 1e-6,
+                "tape.q_f32[{i}] must match post-RoPE Q"
+            );
+        }
+
+        // End-to-end attention backward: K must receive a non-zero gradient.
+        let mut grads = SlimeLayerGradients::new(hidden, ffn_mid, 1, head_d);
+        let mut b_ws = SlimeBackwardWorkspace::new(hidden, ffn_mid, hidden, 0);
+        let grad_in = vec![1.0f32; hidden];
+        let mut grad_out = vec![0.0f32; hidden];
+        backward_slime_block(
+            &layer,
+            &ws,
+            &mut b_ws,
+            &tape,
+            &mut grads,
+            &grad_in,
+            &mut grad_out,
+        );
+        assert!(
+            grads.k_w_grad.iter().any(|v| v.abs() > 1e-10),
+            "k_w_grad must be non-zero; a zero tape.q_f32 silently kills K learning"
+        );
+    }
 }

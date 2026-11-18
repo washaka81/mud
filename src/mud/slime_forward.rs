@@ -68,6 +68,55 @@ fn nan_skip(counter: &AtomicU64, label: &'static str, layer_idx: usize, pos: usi
 // ── PERF-2 (V25 audit) + SPRINT-5 (5.2): env caches + GPU dispatch.
 // Moved to gemv_gpu module. Internal helpers + re-exports below.
 use crate::mud::gemv_gpu::{try_gpu_ternary_gemv};
+
+/// Residual-branch scale for attention output (diagnostic override).
+///
+/// Default `0.25` is the historical stability hack. Converted models expect
+/// the standard residual (scale `1.0`); set `MUD_ATTN_OUT_SCALE=1.0` to test.
+fn attn_out_scale() -> f32 {
+    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        std::env::var("MUD_ATTN_OUT_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.25)
+    })
+}
+
+/// Residual-branch scale for FFN output (diagnostic override).
+///
+/// See [`attn_out_scale`]; `MUD_FFN_OUT_SCALE=1.0` disables the hack.
+fn ffn_out_scale() -> f32 {
+    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        std::env::var("MUD_FFN_OUT_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.25)
+    })
+}
+
+/// Diagnostic: zero the attention branch before the residual (isolates attn).
+fn zero_attn_branch() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MUD_ZERO_ATTN_BRANCH").as_deref() == Ok("1"))
+}
+
+/// Diagnostic: zero the FFN branch before the residual (isolates FFN).
+fn zero_ffn_branch() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MUD_ZERO_FFN_BRANCH").as_deref() == Ok("1"))
+}
+
+/// Diagnostic: skip the converter-injected `attn_sub_norm`/`ffn_sub_norm`.
+/// Qwen2.5/Llama do not have these; applying them adds an extra RMSNorm to
+/// the branch outputs.
+fn sub_norm_disabled() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MUD_DISABLE_SUB_NORM").as_deref() == Ok("1"))
+}
 pub use crate::mud::gemv_gpu::{apply_output_norm, try_gpu_dense_mha};
 pub(crate) use crate::mud::gemv_gpu::{ternary_gemv_qkv_parallel, ternary_gemv_rowwise_submit};
 
@@ -683,7 +732,7 @@ fn dense_ffn_swiglu(
             .copy_from_slice(&ws.ffn_mid_f32[..layer.ffn_mid]);
     }
 
-    if !layer.ffn_sub_norm_w.is_null() {
+    if !layer.ffn_sub_norm_w.is_null() && !sub_norm_disabled() {
         unsafe {
             let mid_ptr = ws.ffn_mid_f32.as_mut_ptr();
             // AVX2 sum_sq (8 f32/iter via FMA)
@@ -1017,6 +1066,16 @@ pub fn evaluate_slime_block_moe(
         }
     }
 
+    // Tape Q/K/V after RoPE for the attention backward. The K gradient is
+    // `grad_o * Q` (see `slime_backward.rs`), so `tape.q_f32` MUST be populated
+    // here; otherwise K weights receive exactly zero gradient on every step.
+    if let Some(t) = tape.as_mut() {
+        let kv_dim = n_kv_heads * head_d;
+        t.q_f32[..hidden].copy_from_slice(&ws.q_f32[..hidden]);
+        t.k_f32[..kv_dim].copy_from_slice(&ws.k_f32[..kv_dim]);
+        t.v_f32[..kv_dim].copy_from_slice(&ws.v_f32[..kv_dim]);
+    }
+
     // ── Step 3: Store K, V in dense ring (L-13; stream I f16 packs when enabled) ──
     let pos_slot = ws.dense_slot(pos);
     for kv_h in 0..n_kv_heads {
@@ -1267,6 +1326,18 @@ pub fn evaluate_slime_block_moe(
         }
     }
 
+    if layer_idx == 0 && pos <= 1 {
+        log::debug!(
+            "[DBG-ATTN] L0 pos{} scores={:?} q[0..2]={:?} k[0..2]={:?} v[0..2]={:?} o[0..2]={:?}",
+            pos,
+            &ws.scores[..=pos],
+            &ws.q_f32[..2],
+            &ws.k_f32[..2],
+            &ws.v_f32[..2],
+            &ws.o_act_f32[..2]
+        );
+    }
+
     if let Some(t) = tape.as_mut() {
         // Copy the softmax scores up to the current position
         t.scores[..=pos].copy_from_slice(&ws.scores[..=pos]);
@@ -1342,7 +1413,7 @@ pub fn evaluate_slime_block_moe(
     }
 
     // ── Step 6: attn_sub_norm (optional) ──
-    if !layer.attn_sub_norm_w.is_null() {
+    if !layer.attn_sub_norm_w.is_null() && !sub_norm_disabled() {
         unsafe {
             let o_ptr = ws.o_act_f32.as_mut_ptr();
             // AVX2 sum_sq (8 f32/iter via FMA)
@@ -1371,9 +1442,14 @@ pub fn evaluate_slime_block_moe(
 
     // Scale attention output to prevent residual explosion (DeepNet-style).
     // The ternary attention block can produce ~50x amplification on the first
-    // layer; scaling by 0.5 keeps the residual stream bounded and stable.
+    // layer; the historical default 0.25 keeps the residual bounded. Converted
+    // models expect 1.0 (`MUD_ATTN_OUT_SCALE=1.0`).
+    let attn_scale = attn_out_scale();
     for i in 0..hidden {
-        ws.o_act_f32[i] *= 0.25;
+        ws.o_act_f32[i] *= attn_scale;
+    }
+    if zero_attn_branch() {
+        ws.o_act_f32[..hidden].fill(0.0);
     }
 
     // ── Step 7: Attention JEPA + Residual ──
@@ -1495,9 +1571,14 @@ pub fn evaluate_slime_block_moe(
         dense_ffn_swiglu(layer, ws, hidden, ffn_mid, &mut tape, eps);
     }
 
-    // Scale FFN output to prevent residual explosion.
+    // Scale FFN output to prevent residual explosion (default 0.25; converted
+    // models expect 1.0 via `MUD_FFN_OUT_SCALE=1.0`).
+    let ffn_scale = ffn_out_scale();
     for i in 0..hidden {
-        ws.ffn_out_f32[i] *= 0.25;
+        ws.ffn_out_f32[i] *= ffn_scale;
+    }
+    if zero_ffn_branch() {
+        ws.ffn_out_f32[..hidden].fill(0.0);
     }
 
     // ── Step 13: FFN JEPA + Residual ──

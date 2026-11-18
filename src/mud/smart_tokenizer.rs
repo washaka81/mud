@@ -165,20 +165,35 @@ pub struct SmartTokenizer {
     jepa_scratch: Vec<f32>,
 }
 
+/// Resolve the weight format from MUD metadata.
+///
+/// Canonical key is `mud:weight_type` with lowercase values (`float32` /
+/// `ternary2bit`). Legacy files may use the unprefixed `weight_type` key
+/// and/or `Float32` casing. The canonical key wins when both are present.
+fn metadata_is_f32(meta: &HashMap<String, String>) -> bool {
+    let is_f32 = |v: &str| v.eq_ignore_ascii_case("float32") || v.eq_ignore_ascii_case("f32");
+    if let Some(v) = meta.get("mud:weight_type") {
+        return is_f32(v);
+    }
+    meta.get("weight_type").map(|v| is_f32(v)).unwrap_or(false)
+}
+
 impl SmartTokenizer {
     pub fn new(
         tokenizer: Tokenizer,
         meta: &HashMap<String, String>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let hidden = meta
             .get("hidden_size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(256);
+            .ok_or_else(|| "missing hidden_size in metadata (P-13)".to_string())?
+            .parse::<usize>()
+            .map_err(|_| "invalid hidden_size in metadata".to_string())?;
         let vocab = meta
             .get("vocab_size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(32000);
-        let mode = if meta.get("weight_type").map(|s| s == "Float32").unwrap_or(false) {
+            .ok_or_else(|| "missing vocab_size in metadata (P-13)".to_string())?
+            .parse::<usize>()
+            .map_err(|_| "invalid vocab_size in metadata".to_string())?;
+        let mode = if metadata_is_f32(meta) {
             ModelMode::F32
         } else {
             ModelMode::Ternary
@@ -191,19 +206,19 @@ impl SmartTokenizer {
             hidden_size: hidden,
             vocab_size: vocab,
         };
-        Self {
+        Ok(Self {
             tokenizer,
             caps,
             encode_buf: Vec::with_capacity(4096),
             jepa_scratch: Vec::new(),
-        }
+        })
     }
 
     pub fn from_mud_metadata(
         tokens_str: &str,
         merges_str: &str,
         meta: &HashMap<String, String>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let tk = Tokenizer::from_mud_metadata(tokens_str, merges_str);
         Self::new(tk, meta)
     }
@@ -318,5 +333,67 @@ impl SmartTokenizer {
     /// Look up a special token ID by name (e.g. `<|im_end|>`, `<|endoftext|>`).
     pub fn special_id(&self, name: &str) -> Option<u32> {
         self.tokenizer.special_tokens.get(name).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps_with(weight_type: &[(&str, &str)]) -> ModelCapabilities {
+        let mut meta = HashMap::new();
+        meta.insert("hidden_size".to_string(), "128".to_string());
+        meta.insert("vocab_size".to_string(), "32000".to_string());
+        for (k, v) in weight_type {
+            meta.insert((*k).to_string(), (*v).to_string());
+        }
+        SmartTokenizer::new(Tokenizer::from_mud_metadata("", ""), &meta)
+            .expect("valid metadata")
+            .caps
+    }
+
+    #[test]
+    fn test_mode_canonical_prefixed_float32() {
+        assert_eq!(
+            caps_with(&[("mud:weight_type", "float32")]).mode,
+            ModelMode::F32
+        );
+    }
+
+    #[test]
+    fn test_mode_canonical_prefixed_is_case_insensitive() {
+        assert_eq!(
+            caps_with(&[("mud:weight_type", "FLOAT32")]).mode,
+            ModelMode::F32
+        );
+    }
+
+    #[test]
+    fn test_mode_legacy_unprefixed_float32() {
+        assert_eq!(
+            caps_with(&[("weight_type", "Float32")]).mode,
+            ModelMode::F32
+        );
+    }
+
+    #[test]
+    fn test_mode_canonical_wins_over_legacy() {
+        assert_eq!(
+            caps_with(&[
+                ("mud:weight_type", "ternary2bit"),
+                ("weight_type", "Float32"),
+            ])
+            .mode,
+            ModelMode::Ternary
+        );
+    }
+
+    #[test]
+    fn test_mode_ternary_and_missing() {
+        assert_eq!(
+            caps_with(&[("mud:weight_type", "ternary2bit")]).mode,
+            ModelMode::Ternary
+        );
+        assert_eq!(caps_with(&[]).mode, ModelMode::Ternary);
     }
 }

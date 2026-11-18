@@ -72,6 +72,12 @@ pub mod worm;
 #[cfg(test)]
 mod tests;
 
+/// Serializes tests that mutate process-wide `MUD_*` environment variables.
+/// `cargo test` runs tests in parallel; without this lock a test that restores
+/// `MUD_TRAIN_TEXT_ONLY` can flip the value seen by another test mid-walk.
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// MUD: Modular Understanding Dynamics
 /// File version 1.0
 pub const MUD_MAGIC: &[u8; 4] = b"MUD\x01";

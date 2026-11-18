@@ -216,7 +216,8 @@ fn main() -> anyhow::Result<()> {
         .get("tokenizer.merges")
         .map(|s| s.as_str())
         .unwrap_or("");
-    let tokenizer = forge_llm::mud::smart_tokenizer::SmartTokenizer::from_mud_metadata(tokens_str, merges_str, &mud.global_metadata);
+    let tokenizer = forge_llm::mud::smart_tokenizer::SmartTokenizer::from_mud_metadata(tokens_str, merges_str, &mud.global_metadata)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     // Setup embedding and output weights.
     // R-41: do NOT materialize the full `vocab × hidden` f32 embedding matrix.

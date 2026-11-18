@@ -19,6 +19,17 @@ pub const DEPTH_DAMPENING_FACTOR: f32 = std::f32::consts::FRAC_1_SQRT_2;
 /// checkpoint. Valor 0.7 ≈ 1/√2·(|w|_mean≈0.7·s) conserva ~92 % sparsity en bases
 /// convencionales. Ver `docs/planning/MUD_MASTER_REMEDIATION_PLAN_2026-10-11.md` §R-13.
 pub const TERNARY_DEADZONE: f32 = 0.7;
+
+/// Training-time deadzone override (`MUD_TRAIN_DEADZONE`, default
+/// `TERNARY_DEADZONE`). Lower values let the f32 shadow flip more trits during
+/// QAT; the converter/checkpoint SSOT remains 0.7 unless explicitly overridden.
+pub fn train_deadzone() -> f32 {
+    std::env::var("MUD_TRAIN_DEADZONE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        .unwrap_or(TERNARY_DEADZONE)
+}
 /// Alias histórico de `TERNARY_DEADZONE` (SSOT). Mantenido para compat con
 /// `ezop::pack_elut_prq`, `optim.rs` y `p13.rs`; importe `TERNARY_DEADZONE` en
 /// código nuevo.

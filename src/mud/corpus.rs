@@ -152,6 +152,9 @@ mod tests {
     fn test_collect_files_respects_exclusion() {
         // Save/restore MUD_TRAIN_TEXT_ONLY — mud.sh exports it as 1 by default,
         // which would skip .rs files and break this test.
+        let _env_guard = crate::mud::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("MUD_TRAIN_TEXT_ONLY").ok();
         std::env::set_var("MUD_TRAIN_TEXT_ONLY", "0");
         let dir = fresh_dir("excl");
@@ -174,6 +177,9 @@ mod tests {
     #[test]
     fn test_collect_files_skips_project_corpus() {
         // Save/restore MUD_TRAIN_TEXT_ONLY — mud.sh exports it as 1 by default.
+        let _env_guard = crate::mud::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("MUD_TRAIN_TEXT_ONLY").ok();
         std::env::set_var("MUD_TRAIN_TEXT_ONLY", "0");
         let dir = fresh_dir("pcc");

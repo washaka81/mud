@@ -45,11 +45,20 @@ jobs:
       - name: "Unsafe audit (R-36: every production unsafe justified)"
         run: ./mud.sh unsafe-audit
 
+      - name: "Env-var SSOT audit (R-05)"
+        run: ./mud.sh env-audit
+
+      - name: "Tools/bins audit (R-61)"
+        run: ./mud.sh tools-audit
+
       - name: Unit tests (lib, release)
         run: cargo test --lib --release -- --test-threads=2
 
       - name: P-13 property tests (release)
         run: cargo test --lib --release p13 -- --test-threads=1
+
+      - name: Proptest (all features, release) (R-63)
+        run: cargo test --lib --release --features proptest -- --test-threads=2
 
       - name: Stream K loss_cert unit tests (release)
         run: cargo test --lib --release loss_cert -- --test-threads=1

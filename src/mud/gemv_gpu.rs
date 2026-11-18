@@ -11,6 +11,17 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 // Read once at first call (AtomicU64: 0/1). Hot path is `ternary_gemv_rowwise_submit`
 // (7 mats × 30 layers × 1024 tokens = 215k times/chunk); env::var (~50 ns) → ~1 ns.
 static MUD_GEMV_ROWS_8: AtomicU64 = AtomicU64::new(0);
+/// Sanitize a per-row PRQ scale exactly like `apply_row_scales_8_avx2`:
+/// non-finite (NaN/±Inf) → 0, finite outliers clamped to ±1e8.
+#[inline]
+fn finite_scale(s: f32) -> f32 {
+    if s.is_finite() {
+        s.clamp(-1e8, 1e8)
+    } else {
+        0.0
+    }
+}
+
 /// Returns true when `MUD_GEMV_ROWS=8` (enables 8-row AVX2 kernel).
 #[inline]
 pub(crate) fn prefer_gemv_8_rows() -> bool {
@@ -295,14 +306,13 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
         while row + 4 <= n_out {
             crate::asm::ternary_gemv_4rows(n_in, acts_ptr, w_ptr.add(row * row_u32s), out_ptr.add(row), 1.0, row_u32s);
             for r in 0..4 {
-                let s = (*sc_ptr.add(row + r)).clamp(-1e8, 1e8);
-                *out_ptr.add(row + r) *= if s.is_finite() { s } else { 0.0 };
+                *out_ptr.add(row + r) *= finite_scale(*sc_ptr.add(row + r));
             }
             row += 4;
         }
         for r in row..n_out {
-            let s = (*sc_ptr.add(r)).clamp(-1e8, 1e8);
-            crate::asm::ternary_gemv(n_in, acts_ptr, w_ptr.add(r * row_u32s), out_ptr.add(r), if s.is_finite() { s } else { 0.0 });
+            let s = finite_scale(*sc_ptr.add(r));
+            crate::asm::ternary_gemv(n_in, acts_ptr, w_ptr.add(r * row_u32s), out_ptr.add(r), s);
         }
         return;
     }
@@ -380,8 +390,7 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
                     );
                     // Scalar scale for 4-row remainder (AVX2 needs 8 elements)
                     for r in 0..4 {
-                        let s = (*sc.add(row + r)).clamp(-1e8, 1e8);
-                        *out.add(row + r) *= if s.is_finite() { s } else { 0.0 };
+                        *out.add(row + r) *= finite_scale(*sc.add(row + r));
                     }
                 }
                 row += 4;
@@ -392,13 +401,13 @@ pub(crate) unsafe fn ternary_gemv_rowwise_submit(
                 // n_out`, so `sc[r]`, `w[r*row_u32s ..]` and `out[r]` are all
                 // in-bounds.
                 unsafe {
-                    let s = (*sc.add(r)).clamp(-1e8, 1e8);
+                    let s = finite_scale(*sc.add(r));
                     crate::asm::ternary_gemv(
                         n_in,
                         acts,
                         w.add(r * row_u32s),
                         out.add(r),
-                        if s.is_finite() { s } else { 0.0 },
+                        s,
                     );
                 }
             }

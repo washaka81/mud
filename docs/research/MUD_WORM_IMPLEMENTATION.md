@@ -12,7 +12,7 @@
 
 This document describes the **implementation** of the MUD-WORM architecture — connecting already-trained `.mud` models in the `models/` directory automatically as "Worm Blocks" that propagate through the Memory Continuity Table and interact as a **single unified model**.
 
-**Wormholes** enable direct block-to-block communication that bypasses the host, critical for teams with scarce resources (CPU-only, zero-copy, low RAM). Wormholes reduce host compute by **50%** and memory from O(N × model_size) to O(max_model_size).
+**Wormholes** enable direct block-to-block communication that bypasses the host, critical for teams with scarce resources (CPU-only, zero-copy, low RAM). Claim of "50% host compute reduction" is RETIRED (R-67): both branches execute the same work with a `strength` multiplier; no measurement supports a reduction. Memory remains O(N × model_size) → O(max_model_size) only if weights are shared/mmap (not measured).
 
 The implementation builds on the existing infrastructure:
 - `MemoryContinuityTable` (256-slot O(1) pointer table)

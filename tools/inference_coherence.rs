@@ -16,10 +16,10 @@
 //!    (manifold no colapsado, fase bloqueada, normas dentro del radio hermitiano).
 //!
 //! Uso:
-//!   cargo run --release --bin inference_coherence -- models/smollm2.mud prompts.txt
-//!   cargo run --release --bin inference_coherence -- models/smollm2.mud prompts.txt --think
+//!   cargo run --release --bin inference_coherence -- models/smollm2.mud tests/data/prompts.txt
+//!   cargo run --release --bin inference_coherence -- models/smollm2.mud tests/data/prompts.txt --think
 //!
-//! `prompts.txt` formato: una línea por prompt, con el token esperado al final:
+//! `tests/data/prompts.txt` formato: una línea por prompt, con el token esperado al final:
 //!   <token_ids_espaciados> <token_esperado>
 //! Ejemplo:
 //!   123 456 789 101112
@@ -105,24 +105,32 @@ impl CoherenceStats {
 fn parse_args() -> (String, String, bool, usize) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut model = "models/smollm2.mud".to_string();
-    let mut prompts = "prompts.txt".to_string();
+    let mut prompts = "tests/data/prompts.txt".to_string();
     let mut think = false;
     let mut max_prompts = 0usize; // 0 = unlimited
 
     let mut i = 0;
+    let mut positional = 0usize;
     while i < args.len() {
         match args[i].as_str() {
             "--think" | "-t" => think = true,
             "--max" => {
                 if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
                     max_prompts = v;
+                    i += 1; // consume the value; otherwise it is parsed as a positional
                 }
             }
-            s if !s.starts_with('-') && model == "models/smollm2.mud" => {
-                model = s.to_string();
-            }
             s if !s.starts_with('-') => {
-                prompts = s.to_string();
+                // Positional args in order: <model.mud> [prompts.txt]. Do not
+                // use the default model string as a sentinel: passing the
+                // default path explicitly would otherwise consume the prompts
+                // path as a second model.
+                if positional == 0 {
+                    model = s.to_string();
+                } else {
+                    prompts = s.to_string();
+                }
+                positional += 1;
             }
             _ => {}
         }
@@ -146,8 +154,15 @@ fn load_prompts(mud: &MudFile, prompts_path: &str, vocab_size: u32, max_prompts:
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
-            let ids: Vec<u32> = l
-                .split_whitespace()
+            // A line is a raw-ID prompt only if *every* token parses as u32.
+            // The old `filter_map` silently turned "Hello 42 world 7" into the
+            // token IDs [42,7], corrupting the evaluation set.
+            let words: Vec<&str> = l.split_whitespace().collect();
+            if words.is_empty() || !words.iter().all(|w| w.parse::<u32>().is_ok()) {
+                return None;
+            }
+            let ids: Vec<u32> = words
+                .iter()
                 .filter_map(|w| w.parse::<u32>().ok())
                 .filter(|&id| id < vocab_size)
                 .collect();
@@ -346,11 +361,33 @@ fn main() -> ExitCode {
         }
     };
 
+    // P-13: metadata or fail. A hardcoded 32000 silently drops valid tokens
+    // and makes the coherence numbers meaningless.
     let vocab_size = mud
         .global_metadata
         .get("vocab_size")
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(32000);
+        .or_else(|| {
+            mud.skills
+                .get("core")
+                .and_then(|c| c.tensors.get("token_embd.weight"))
+                .and_then(|t| t.shape.first().copied())
+                .map(|v| v as u32)
+        })
+        .or_else(|| {
+            mud.skills
+                .get("core")
+                .and_then(|c| c.tensors.get("output.weight"))
+                .and_then(|t| t.shape.first().copied())
+                .map(|v| v as u32)
+        });
+    let Some(vocab_size) = vocab_size else {
+        eprintln!(
+            "[inference-coherence] P-13: no vocab_size in metadata and no rank-2 \
+             token_embd.weight/output.weight to derive it from"
+        );
+        return ExitCode::from(1);
+    };
 
     println!("[inference-coherence] Loading prompts from {} (vocab={})...", prompts_path, vocab_size);
     let prompts = load_prompts(&mud, &prompts_path, vocab_size, max_prompts);

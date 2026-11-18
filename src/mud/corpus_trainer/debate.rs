@@ -56,7 +56,9 @@ impl MudCorpusTrainer {
         // reset by ecc_verify) yields a dangling/null pointer → reads as zeros
         // → "Dead RMSNorm" panic on the first forward (norm weights ~0).
         mud.materialize_writable();
-        // Capture input weight hash (post deep_local_alignment) before the debate trains.
+        // Capture input weight state (post deep_local_alignment) before the
+        // debate trains: session ΔW baseline + no-op checkpoint hash.
+        self.capture_weight_baseline(&mud);
         let input_weights_hash = Self::hash_trained_weights(&mud);
 
         let hidden = mud

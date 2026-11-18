@@ -68,7 +68,6 @@ extern "C" {
     );
     pub fn dot_product_avx2(n: usize, a: *const f32, b: *const f32) -> f32;
     pub fn sum_squares_avx2(n: usize, x: *const f32) -> f32;
-    pub fn q4_0_gemv_asm(n: usize, x: *const f32, weights: *const BlockQ4_0, out: *mut f32);
     pub fn silu_vectorial_avx2(n: usize, src: *const f32, dst: *mut f32);
     /// Backward ternary GEMV (grad_x accumulation):
     /// dx[j] += scale_gy * dequant(w[j]) per element.
@@ -209,38 +208,6 @@ pub unsafe fn dequantize_q4_0_row(row: *const BlockQ4_0, out: &mut [f32], n: usi
         }
     }
 }
-
-/// Fused Matrix-Vector multiplication for Q4_0 block quantization.
-/// # Safety
-/// The caller must ensure that `x`, `x_norm`, and `out` have sufficient length for
-/// `n_in` and `n_out` sizes. `weights` must point to valid memory.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn q4_0_gemv_fused(
-    n_in: usize,
-    n_out: usize,
-    x: &[f32],
-    weights: *const BlockQ4_0,
-    norm_w: *const f32,
-    out: &mut [f32],
-    eps: f32,
-    x_norm: &mut [f32],
-) {
-    let scale = rms_norm_scale_asm(n_in, x.as_ptr(), eps);
-    for (i, item) in x_norm.iter_mut().enumerate().take(n_in) {
-        *item = x[i] * scale * (*norm_w.add(i));
-    }
-
-    let row_size_blocks = n_in / 32;
-    for (i, item) in out.iter_mut().enumerate().take(n_out) {
-        let weight_ptr = weights.add(i * row_size_blocks);
-        let mut val = 0.0f32;
-        q4_0_gemv_asm(n_in, x_norm.as_ptr(), weight_ptr, &mut val as *mut f32);
-        *item = val;
-    }
-}
-
-#[cfg(test)]
-mod tests;
 
 /// R-35: scalar 1..7 tail for ternary GEMV rows.
 ///
@@ -414,3 +381,11 @@ pub unsafe fn gate_batch_into(
     }
     n - n8
 }
+
+// The ASM kernel regression suite lives in `src/asm/tests.rs` (43 live tests:
+// ternary GEMV 1/4/8-row, backward kernels, SiLU, RMSNorm, RoPE, JEPA, mHC,
+// lm_head, sgemm_abt, scales guard...). It was orphaned (not declared) before
+// 2026-11-07, so `cargo test` never ran it. The two #[ignore]d tests for
+// kernels purged under P-08 (hadamard, non-transposed sgemm) were removed.
+#[cfg(test)]
+mod tests;
