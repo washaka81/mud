@@ -18,6 +18,10 @@ env:
   # (nightly-cert-loss failed on `dyn-stack` download, 2026-10-16).
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_TIMEOUT: "60"
+  # ubuntu-latest now resolves to ubuntu-26.04 (CMake 4.x).
+  # shaderc-sys 0.8.3 (via vulkano-shaders) declares CMake 2.8.12, which
+  # CMake 4 rejects. Re-allow the old policy floor instead of pinning CMake.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 jobs:
   health-battery:
