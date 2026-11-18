@@ -115,8 +115,9 @@ resolviera al constante de módulo deprecado; se eliminó el import.
 
 ## Notas
 
-- Los seis avisos de GitHub siguen sin marcar como leídos; el contenido quedó
-  rescatado en este informe y en los logs locales de la sesión.
+- Los seis avisos originales, más los dos generados por los runs intermedios
+  (44379943075 y 44382083211), se marcaron como leídos el 2026-11-18 tras
+  confirmar el run verde 44386762964. La bandeja quedó en 0 sin leer.
 - El commit `ci: allow shaderc-sys CMake 2.8 policy under CMake 4` dejó el
   primer fix; `ci: use system libshaderc on ubuntu-26.04` añade el paquete del
   sistema y evita el `glslang` empaquetado; el commit de corrección de lints
