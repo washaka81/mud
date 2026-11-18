@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         if t.shape != vec![vocab_size, hidden_size] {
             println!(
                 "  ❌ SHAPE MISMATCH: token_embd.weight | Expected {:?} | Got {:?}",
-                &[vocab_size, hidden_size],
+                [vocab_size, hidden_size],
                 t.shape
             );
             shape_mismatches += 1;
@@ -227,7 +227,7 @@ fn main() -> anyhow::Result<()> {
         if t.shape != vec![vocab_size, hidden_size] {
             println!(
                 "  ❌ SHAPE MISMATCH: output.weight | Expected {:?} | Got {:?}",
-                &[vocab_size, hidden_size],
+                [vocab_size, hidden_size],
                 t.shape
             );
             shape_mismatches += 1;

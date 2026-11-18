@@ -76,6 +76,23 @@ La solución definitiva es no compilar el `glslang` empaquetado: se instala
 
 Así se evita por completo la compilación C++ antigua y el problema de CMake.
 
+### Tercer fallo: lints nuevos de Clippy 1.100
+
+El runner del commit `259ee55` ya pasó el job nocturno, pero `L-12` falló en
+Clippy 1.100 con `clippy::chunks_exact_to_as_chunks`:
+
+```text
+error: using `chunks_exact` with a constant chunk size
+  --> src/mud/checkpoint.rs:46:28
+```
+
+Se reemplazó `bytes.chunks_exact(8)` por `bytes.as_chunks::<8>()` (misma
+semántica, sin allocaciones). En la misma pasada aparecieron dos
+`clippy::useless_borrows_in_formatting` en `tools/converter_auditor.rs`
+(corregidos quitando el `&` redundante) y un `use std::f32;` en
+`tools/main_arithmetic_validator.rs` que hacía que `f32::NEG_INFINITY`
+resolviera al constante de módulo deprecado; se eliminó el import.
+
 ## Evidencia
 
 | Gate | Comando | Resultado |
@@ -85,7 +102,9 @@ Así se evita por completo la compilación C++ antigua y el problema de CMake.
 | CI con CMake fix | run 44379943075 | falla después, en `glslang` (`uint32_t` no declarado) |
 | Paquete del sistema | `libshaderc-dev` 2026.1-1 en `resolute/universe` | provee `libshaderc_combined.a` |
 | Link sistema | `SHADERC_LIB_DIR=/usr/lib cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings, sin compilar glslang |
-| Clippy | `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings |
+| CI con system shaderc | run 44382083211 | job nocturno ✅; `L-12` falla por lint de Clippy 1.100 |
+| Clippy 1.100 | `cargo +1.100.0 clippy --all-targets --all-features -- -D warnings` | 0 warnings |
+| Clippy stable | `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo clippy --all-targets --all-features -- -D warnings` | 0 warnings |
 | Battery | `CMAKE_POLICY_VERSION_MINIMUM=3.5 ./mud.sh ci` | `[L-12] Health battery complete.` (exit 0) |
 | Tests lib | `cargo test --lib --release -- --test-threads=2` | **520/0/0** |
 | Proptest | `cargo test --lib --release --features proptest -- --test-threads=2` | **527/0/0** |
@@ -98,6 +117,7 @@ Así se evita por completo la compilación C++ antigua y el problema de CMake.
 - Los seis avisos de GitHub siguen sin marcar como leídos; el contenido quedó
   rescatado en este informe y en los logs locales de la sesión.
 - El commit `ci: allow shaderc-sys CMake 2.8 policy under CMake 4` dejó el
-  primer fix; el commit `ci: use system libshaderc on ubuntu-26.04` añade el
-  paquete del sistema y evita el `glslang` empaquetado.
+  primer fix; `ci: use system libshaderc on ubuntu-26.04` añade el paquete del
+  sistema y evita el `glslang` empaquetado; el commit de corrección de lints
+  deja `checkpoint.rs` y `converter_auditor.rs` compatibles con Clippy 1.100.
 - El push a `main` vuelve a disparar la battery con `ubuntu-26.04`.

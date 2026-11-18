@@ -43,12 +43,12 @@ const FNV_PRIME: u64 = 0x100000001b3;
 /// Used only for snapshot/diff equality — not for cryptographic integrity.
 #[inline]
 fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
-    let mut chunks = bytes.chunks_exact(8);
-    for c in &mut chunks {
-        h ^= u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    for c in chunks {
+        h ^= u64::from_le_bytes(*c);
         h = h.wrapping_mul(FNV_PRIME).rotate_left(13);
     }
-    for &b in chunks.remainder() {
+    for &b in remainder {
         h ^= b as u64;
         h = h.wrapping_mul(FNV_PRIME);
     }
